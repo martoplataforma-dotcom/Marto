@@ -8,7 +8,6 @@ function getToken() {
   return localStorage.getItem('marto_access');
 }
 
-// ✅ 1️⃣ ADICIONE ESTA FUNÇÃO (no topo do arquivo)
 function formatCnpjDigits(digits: string) {
   const d = String(digits ?? '')
     .replace(/\D/g, '')
@@ -33,6 +32,25 @@ type Merchant = {
   cepPrefix?: string | null;
   status?: string | null;
 };
+
+type ProductItem = {
+  id: string;
+  title: string;
+  description?: string | null;
+  priceCents: number;
+  active: boolean;
+  createdAt?: string;
+};
+
+type ProductsResponse = {
+  ok: boolean;
+  items: ProductItem[];
+};
+
+// ✅ sem any
+type CreateProductResponse =
+  | { ok: true; created: ProductItem }
+  | { ok: false; message: string };
 
 function statusLabel(status?: string | null) {
   const s = String(status ?? '').toUpperCase();
@@ -72,12 +90,18 @@ export default function MerchantDash() {
   const [data, setData] = useState<Merchant | null>(null);
 
   const [tradeName, setTradeName] = useState('');
-  // ✅ NÃO use "document" como state (conflita com window.document)
   const [docNumber, setDocNumber] = useState('');
   const [city, setCity] = useState('');
   const [cepPrefix, setCepPrefix] = useState('');
 
-  // ✅ CNPJ obrigatório (14 números)
+  const [products, setProducts] = useState<ProductItem[]>([]);
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [productsMsg, setProductsMsg] = useState('');
+
+  const [pTitle, setPTitle] = useState('');
+  const [pPrice, setPPrice] = useState('');
+  const [pSaving, setPSaving] = useState(false);
+
   const canSave = useMemo(() => {
     if (!tradeName.trim()) return false;
     if (!/^\d{14}$/.test(docNumber)) return false;
@@ -88,10 +112,14 @@ export default function MerchantDash() {
   useEffect(() => {
     (async () => {
       setMsg('');
+      setProductsMsg('');
+
       const token = getToken();
       if (!token) {
         setMsg('Sem token. Faça login novamente.');
         setLoading(false);
+        setProductsLoading(false);
+        setProducts([]);
         return;
       }
 
@@ -106,9 +134,29 @@ export default function MerchantDash() {
         setDocNumber(String(m.document ?? '').replace(/\D/g, '').slice(0, 14));
         setCity(m.city ?? '');
         setCepPrefix(m.cepPrefix ?? '');
+
+        setProductsLoading(true);
+        try {
+          const pr = await fetchJSON<ProductsResponse>('/merchants/me/products', {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+
+          setProducts(Array.isArray(pr?.items) ? pr.items : []);
+          setProductsMsg('');
+        } catch (e: unknown) {
+          const err = e as ApiError;
+          setProductsMsg(err?.message ?? 'Não foi possível carregar produtos.');
+          setProducts([]);
+        } finally {
+          setProductsLoading(false);
+        }
       } catch (e: unknown) {
         const err = e as ApiError;
         setMsg(err?.message ?? 'Não foi possível carregar o perfil da loja.');
+        setProductsMsg('');
+        setProducts([]);
+        setProductsLoading(false);
       } finally {
         setLoading(false);
       }
@@ -143,7 +191,7 @@ export default function MerchantDash() {
         },
         body: JSON.stringify({
           tradeName: tradeName.trim() || null,
-          document: docNumber.trim() || null, // envia só dígitos
+          document: docNumber.trim() || null,
           city: city.trim() || null,
           cepPrefix: cepPrefix.trim() || null,
         }),
@@ -158,6 +206,69 @@ export default function MerchantDash() {
     }
   }
 
+  async function createProductQuick() {
+    setMsg('');
+    setProductsMsg('');
+
+    const token = getToken();
+    if (!token) {
+      setMsg('Sem token. Faça login novamente.');
+      return;
+    }
+
+    const title = pTitle.trim();
+    const priceNum = Number(String(pPrice).replace(',', '.'));
+    const priceCents = Math.round(priceNum * 100);
+
+    if (!title) {
+      setProductsMsg('Informe o nome do produto.');
+      return;
+    }
+
+    if (!Number.isFinite(priceNum) || priceCents <= 0) {
+      setProductsMsg('Informe um preço válido (ex: 299.90).');
+      return;
+    }
+
+    setPSaving(true);
+    try {
+      const res = await fetchJSON<CreateProductResponse>('/merchants/me/products', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          title,
+          description: null,
+          priceCents,
+        }),
+      });
+
+      if (!res?.ok) {
+        setProductsMsg(res?.message ?? 'Não foi possível criar o produto.');
+        return;
+      }
+
+      setPTitle('');
+      setPPrice('');
+
+      setProductsLoading(true);
+      const pr = await fetchJSON<ProductsResponse>('/merchants/me/products', {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setProducts(Array.isArray(pr?.items) ? pr.items : []);
+      setProductsMsg('Produto criado.');
+    } catch (e: unknown) {
+      const err = e as ApiError;
+      setProductsMsg(err?.message ?? 'Erro ao criar produto.');
+    } finally {
+      setPSaving(false);
+      setProductsLoading(false);
+    }
+  }
+
   const showName =
     tradeName.trim() ||
     data?.tradeName ||
@@ -168,16 +279,13 @@ export default function MerchantDash() {
 
   return (
     <main className="min-h-screen bg-white">
-      {/* ✅ tela cheia */}
       <div className="w-full px-6 py-8">
-        {/* NAV */}
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
           <div className="text-sm font-semibold text-zinc-500">
             Lojista • Marto
           </div>
 
           <div className="flex flex-wrap gap-2">
-            {/* ✅ 2️⃣ CORRIJA O LINK “MEU PERFIL” (navbar) */}
             <a
               href="/dash/merchant#perfil-loja"
               className="rounded-xl border px-4 py-2 text-sm font-semibold hover:bg-zinc-50"
@@ -204,7 +312,6 @@ export default function MerchantDash() {
           </div>
         </div>
 
-        {/* HERO */}
         <div className="rounded-3xl bg-zinc-950 p-8 text-white">
           <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
             <div>
@@ -258,7 +365,6 @@ export default function MerchantDash() {
                 </a>
               </div>
 
-              {/* msg */}
               {msg ? (
                 <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/90">
                   {msg}
@@ -266,7 +372,6 @@ export default function MerchantDash() {
               ) : null}
             </div>
 
-            {/* IDENTIDADE RÁPIDA */}
             <div className="grid w-full gap-3 sm:grid-cols-2 lg:w-[520px]">
               <Chip label="Tipo" value="Lojista" />
               <Chip label="Status" value={statusLabel(data?.status)} />
@@ -276,7 +381,6 @@ export default function MerchantDash() {
           </div>
         </div>
 
-        {/* STATUS DA LOJA */}
         <div className="mt-6 rounded-3xl border bg-white p-6">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
@@ -296,11 +400,9 @@ export default function MerchantDash() {
           </div>
         </div>
 
-        {/* AÇÕES / MÓDULOS */}
         <div className="mt-6 grid gap-4 lg:grid-cols-12">
-          {/* Reputação em destaque */}
           <a
-           href="/review"
+            href="/review"
             className="rounded-3xl border bg-white p-7 transition hover:bg-zinc-50 lg:col-span-7"
           >
             <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
@@ -335,7 +437,102 @@ export default function MerchantDash() {
           </div>
         </div>
 
-        {/* PERFIL DA LOJA */}
+        <div id="produtos" className="mt-6 rounded-3xl border bg-white p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <div className="text-lg font-semibold">Produtos</div>
+              <div className="mt-1 text-sm text-zinc-600">
+                Comece simples: cadastre os primeiros itens e depois a gente
+                evolui para gestão completa.
+              </div>
+            </div>
+
+            <div className="rounded-2xl border px-4 py-2 text-sm font-semibold text-zinc-700">
+              {productsLoading ? 'Carregando…' : `${products.length} produto(s)`}
+            </div>
+          </div>
+
+          {productsMsg ? (
+            <div className="mt-4 rounded-2xl border bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
+              {productsMsg}
+            </div>
+          ) : null}
+
+          <div className="mt-5 grid gap-3 sm:grid-cols-12">
+            <label className="sm:col-span-6">
+              <span className="text-sm font-semibold">Nome do produto</span>
+              <input
+                value={pTitle}
+                onChange={(e) => setPTitle(e.target.value)}
+                placeholder="Ex: Cadeira Madeira"
+                className="mt-2 w-full rounded-2xl border px-4 py-3 outline-none focus:border-black"
+                disabled={productsLoading || pSaving}
+              />
+            </label>
+
+            <label className="sm:col-span-4">
+              <span className="text-sm font-semibold">Preço (R$)</span>
+              <input
+                value={pPrice}
+                onChange={(e) => setPPrice(e.target.value)}
+                placeholder="Ex: 299.90"
+                className="mt-2 w-full rounded-2xl border px-4 py-3 outline-none focus:border-black"
+                disabled={productsLoading || pSaving}
+                inputMode="decimal"
+              />
+            </label>
+
+            <div className="sm:col-span-2 flex items-end">
+              <button
+                onClick={createProductQuick}
+                disabled={productsLoading || pSaving}
+                className="w-full rounded-2xl bg-black px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+              >
+                {pSaving ? 'Criando…' : 'Adicionar'}
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-3">
+            {productsLoading ? (
+              <div className="rounded-2xl border bg-zinc-50 px-4 py-3 text-sm text-zinc-600">
+                Buscando seus produtos…
+              </div>
+            ) : products.length === 0 ? (
+              <div className="rounded-2xl border bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
+                Você ainda não tem produtos cadastrados.
+              </div>
+            ) : (
+              products.slice(0, 3).map((p) => (
+                <div
+                  key={p.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3"
+                >
+                  <div>
+                    <div className="text-sm font-semibold text-zinc-900">
+                      {p.title}
+                    </div>
+                    <div className="mt-1 text-xs text-zinc-600">
+                      {p.active ? 'Ativo' : 'Inativo'} • R${' '}
+                      {(p.priceCents / 100).toFixed(2)}
+                    </div>
+                  </div>
+
+                  <div className="text-xs font-semibold text-zinc-600">
+                    Ver detalhes → (em breve)
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          {!productsLoading && products.length > 3 ? (
+            <div className="mt-4 text-sm text-zinc-600">
+              Mostrando 3 mais recentes. Gestão completa em breve.
+            </div>
+          ) : null}
+        </div>
+
         <div id="perfil-loja" className="mt-6 rounded-3xl border bg-white p-6">
           <div className="flex items-start justify-between gap-4">
             <div>
@@ -367,7 +564,6 @@ export default function MerchantDash() {
               />
             </label>
 
-            {/* ✅ 3️⃣ SUBSTITUA APENAS O INPUT DO CNPJ (com máscara enquanto digita) */}
             <label className="grid gap-2">
               <span className="text-sm font-semibold">CNPJ</span>
               <input
