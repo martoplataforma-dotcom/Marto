@@ -1,0 +1,740 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model OutboxEvent {
+  id          String       @id @default(uuid())
+  aggregate   String
+  aggregateId String
+  type        String
+  payload     Json
+  status      OutboxStatus @default(PENDING)
+  attempts    Int          @default(0)
+  lastError   String?
+  availableAt DateTime     @default(now())
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  processedAt DateTime?
+
+  @@index([status, availableAt])
+  @@index([aggregate, aggregateId])
+  @@index([type])
+}
+
+model Transporter {
+  id          String          @id @default(uuid())
+  name        String
+  type        TransporterType
+  active      Boolean         @default(true)
+  city        String?
+  state       String?
+  serviceArea Json?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  shipments   Shipment[]
+}
+
+model Shipment {
+  id            String             @id @default(uuid())
+  orderId       String
+  transporterId String?
+  status        ShipmentStatus     @default(CREATED)
+  quotedPrice   Int?
+  estimatedDays Int?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
+  proofs        DeliveryProof[]
+  review        LogisticsReview?
+  transporter   Transporter?       @relation(fields: [transporterId], references: [id])
+  events        ShipmentEvent[]
+  incidents     ShipmentIncident[]
+
+  @@index([orderId])
+  @@index([transporterId])
+  @@index([status])
+}
+
+model ShipmentEvent {
+  id          String         @id @default(uuid())
+  shipmentId  String
+  status      ShipmentStatus
+  description String?
+  createdAt   DateTime       @default(now())
+  shipment    Shipment       @relation(fields: [shipmentId], references: [id])
+
+  @@index([shipmentId])
+  @@index([status])
+}
+
+model ShipmentIncident {
+  id          String       @id @default(uuid())
+  shipmentId  String
+  type        IncidentType
+  description String?
+  createdAt   DateTime     @default(now())
+  shipment    Shipment     @relation(fields: [shipmentId], references: [id])
+
+  @@index([shipmentId])
+  @@index([type])
+}
+
+model DeliveryProof {
+  id         String   @id @default(uuid())
+  shipmentId String
+  type       PodType
+  code       String?
+  photoUrl   String?
+  signedBy   String?
+  createdAt  DateTime @default(now())
+  shipment   Shipment @relation(fields: [shipmentId], references: [id])
+
+  @@index([shipmentId])
+}
+
+model LogisticsReview {
+  id         String          @id @default(uuid())
+  shipmentId String          @unique
+  rating     LogisticsRating
+  comment    String?
+  createdAt  DateTime        @default(now())
+  shipment   Shipment        @relation(fields: [shipmentId], references: [id])
+}
+
+model SocialPost {
+  id               String           @id @default(uuid())
+  status           SocialPostStatus @default(ACTIVE)
+  userId           String
+  orderId          String
+  productId        String
+  serviceRequestId String?
+  caption          String?
+  deletedAt        DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+  comments         SocialComment[]
+  likes            SocialLike[]
+  media            SocialMedia[]
+
+  @@unique([userId, orderId, productId])
+  @@index([userId, createdAt])
+  @@index([productId, createdAt])
+  @@index([orderId])
+}
+
+model SocialMedia {
+  id          String          @id @default(uuid())
+  postId      String
+  type        SocialMediaType
+  url         String
+  durationSec Int?
+  createdAt   DateTime        @default(now())
+  post        SocialPost      @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+}
+
+model SocialLike {
+  id        String     @id @default(uuid())
+  postId    String
+  userId    String
+  createdAt DateTime   @default(now())
+  post      SocialPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+  @@index([userId, createdAt])
+  @@index([postId, createdAt])
+}
+
+model SocialComment {
+  id        String     @id @default(uuid())
+  postId    String
+  userId    String
+  text      String
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  post      SocialPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([postId, createdAt])
+  @@index([userId, createdAt])
+}
+
+model MartoFund {
+  id        String   @id @default(uuid())
+  balance   Decimal  @default(0) @db.Decimal(14, 2)
+  updatedAt DateTime @updatedAt
+  createdAt DateTime @default(now())
+}
+
+model MartoFundEntry {
+  id        String        @id @default(uuid())
+  type      FundEntryType
+  amount    Decimal       @db.Decimal(14, 2)
+  reason    String?
+  refType   String?
+  refId     String?
+  createdAt DateTime      @default(now())
+
+  @@index([type, createdAt])
+  @@index([refType, refId])
+}
+
+model PointsWallet {
+  id        String   @id @default(uuid())
+  userId    String   @unique
+  balance   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model PointsTransaction {
+  id          String       @id @default(uuid())
+  userId      String
+  type        PointsTxType
+  amount      Int
+  description String?
+  refType     String?
+  refId       String?
+  createdAt   DateTime     @default(now())
+
+  @@index([userId, createdAt])
+  @@index([type, createdAt])
+  @@index([refType, refId])
+}
+
+model Mission {
+  id                    String              @id @default(uuid())
+  code                  String              @unique
+  title                 String
+  description           String?
+  status                MissionStatus       @default(ACTIVE)
+  rewardType            MissionRewardType   @default(POINTS)
+  rewardValue           Int
+  startsAt              DateTime?
+  endsAt                DateTime?
+  maxCompletionsPerUser Int?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  completions           MissionCompletion[]
+}
+
+model MissionCompletion {
+  id        String   @id @default(uuid())
+  missionId String
+  userId    String
+  refType   String?
+  refId     String?
+  createdAt DateTime @default(now())
+  mission   Mission  @relation(fields: [missionId], references: [id], onDelete: Cascade)
+
+  @@unique([missionId, userId, refType, refId])
+  @@index([userId, createdAt])
+}
+
+model FactoryChannel {
+  id              String                @id @default(uuid())
+  factoryId       String                @unique
+  name            String
+  description     String?
+  catalogInfo     Json?
+  isActive        Boolean               @default(true)
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+  purchaseIntents PurchaseIntent[]
+  relationships   RelationshipHistory[]
+
+  @@index([factoryId])
+}
+
+model PurchaseIntent {
+  id           String               @id @default(uuid())
+  channelId    String
+  companyName  String
+  contactName  String
+  contactEmail String?
+  contactPhone String?
+  productInfo  Json
+  quantity     Int?
+  frequency    String?
+  notes        String?
+  status       PurchaseIntentStatus @default(OPEN)
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+  channel      FactoryChannel       @relation(fields: [channelId], references: [id])
+  relationship RelationshipHistory?
+
+  @@index([channelId])
+  @@index([status])
+}
+
+model RelationshipHistory {
+  id               String             @id @default(uuid())
+  channelId        String
+  purchaseIntentId String?            @unique
+  summary          String?
+  internalNotes    String?
+  status           RelationshipStatus @default(ACTIVE)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  channel          FactoryChannel     @relation(fields: [channelId], references: [id])
+  purchaseIntent   PurchaseIntent?    @relation(fields: [purchaseIntentId], references: [id])
+
+  @@index([channelId])
+  @@index([status])
+}
+
+model Order {
+  id         String      @id @default(uuid())
+  merchantId String
+  userId     String?
+  status     OrderStatus @default(CREATED)
+  city       String?
+  state      String?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  items      OrderItem[]
+
+  @@index([merchantId, createdAt])
+  @@index([status])
+}
+
+model OrderItem {
+  id        String   @id @default(uuid())
+  orderId   String
+  productId String
+  quantity  Int      @default(1)
+  unitPrice Decimal  @db.Decimal(12, 2)
+  createdAt DateTime @default(now())
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([productId])
+}
+
+model AnalyticsProductDaily {
+  id            String   @id @default(uuid())
+  date          DateTime
+  productId     String
+  merchantId    String
+  region        String
+  ordersCount   Int
+  unitsSold     Int
+  grossRevenue  Decimal  @db.Decimal(12, 2)
+  avgPrice      Decimal  @db.Decimal(12, 2)
+  reviewsCount  Int
+  avgRating     Decimal? @db.Decimal(3, 2)
+  logisticsCost Decimal? @db.Decimal(12, 2)
+  serviceCost   Decimal? @db.Decimal(12, 2)
+  margin        Decimal? @db.Decimal(12, 2)
+  createdAt     DateTime @default(now())
+
+  @@unique([date, productId, region])
+  @@index([merchantId])
+  @@index([date])
+}
+
+model ExportLog {
+  id         String         @id @default(uuid())
+  resource   ExportResource
+  format     ExportFormat
+  merchantId String?
+  params     Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime       @default(now())
+
+  @@index([resource, createdAt])
+  @@index([merchantId, createdAt])
+}
+
+model Wallet {
+  id        String        @id @default(uuid())
+  type      WalletType
+  ownerId   String
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  ledger    LedgerEntry[]
+  holds     WalletHold[]
+
+  @@unique([type, ownerId])
+}
+
+model LedgerEntry {
+  id          String          @id @default(uuid())
+  walletId    String
+  type        LedgerEntryType
+  amount      Decimal         @db.Decimal(14, 2)
+  description String
+  reference   String?
+  status      LedgerStatus    @default(POSTED)
+  createdAt   DateTime        @default(now())
+  wallet      Wallet          @relation(fields: [walletId], references: [id])
+
+  @@index([walletId])
+  @@index([reference])
+  @@index([createdAt])
+}
+
+model WalletHold {
+  id        String           @id @default(uuid())
+  walletId  String
+  amount    Decimal          @db.Decimal(14, 2)
+  reason    String
+  reference String
+  status    WalletHoldStatus @default(ACTIVE)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+  wallet    Wallet           @relation(fields: [walletId], references: [id])
+
+  @@index([walletId, status])
+  @@index([reference])
+  @@index([createdAt])
+}
+
+model Anticipation {
+  id         String             @id @default(uuid())
+  merchantId String
+  orderId    String?
+  amount     Decimal            @db.Decimal(14, 2)
+  fee        Decimal            @db.Decimal(14, 2)
+  netAmount  Decimal            @db.Decimal(14, 2)
+  status     AnticipationStatus @default(REQUESTED)
+  reason     String?
+  reference  String?
+  createdAt  DateTime           @default(now())
+  updatedAt  DateTime           @updatedAt
+
+  @@index([merchantId, createdAt])
+  @@index([orderId])
+  @@index([status])
+}
+
+model PixCharge {
+  id         String          @id @default(uuid())
+  receiver   String
+  reference  String
+  amount     Decimal         @db.Decimal(14, 2)
+  status     PixChargeStatus @default(CREATED)
+  provider   String?
+  providerId String?
+  brCode     String?
+  qrCodeUrl  String?
+  expiresAt  DateTime?
+  paidAt     DateTime?
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+  settledAt  DateTime?
+
+  @@index([reference])
+  @@index([status])
+  @@index([provider, providerId])
+  @@index([createdAt])
+}
+
+model User {
+  id           String @id @default(uuid())
+  email        String @unique
+  passwordHash String
+
+  // ✅ novo: identificador público (rota /u/:handle)
+  // ✅ COMEÇA opcional pra não quebrar a linha existente
+  handle String? @unique
+
+  // ✅ público (MVP)
+  displayName String?
+  bio         String?
+  avatarUrl   String?
+
+  createdAt DateTime @default(now())
+  // ✅ precisa de default pra preencher a linha existente
+  updatedAt DateTime @default(now()) @updatedAt
+
+  merchant        Merchant?
+  serviceProvider ServiceProvider?
+  consumer        Consumer?
+  representative  Representative?
+
+  roles UserRole[]
+}
+
+model UserRole {
+  id     String   @id @default(uuid())
+  userId String
+  role   RoleCode
+
+  user User @relation(fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@unique([userId, role])
+  @@index([userId])
+}
+
+model Merchant {
+  id        String @id @default(uuid())
+  userId    String @unique
+  tradeName String
+  document  String
+
+  city      String?
+  cepPrefix String?
+
+  status    MerchantStatus @default(ACTIVE)
+  createdAt DateTime       @default(now())
+  user      User           @relation(fields: [userId], references: [id])
+
+  // ✅ ADICIONADO: produtos do lojista
+  products Product[]
+}
+
+model Product {
+  id         String   @id @default(uuid())
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+
+  title       String
+  description String?
+  priceCents  Int
+  active      Boolean @default(true)
+
+  // opcional agora (pra não travar): fotos, variações etc depois
+  images Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([merchantId])
+  @@index([active])
+}
+
+model ServiceProvider {
+  id        String                @id @default(uuid())
+  userId    String                @unique
+  cpf       String
+  city      String?
+  cepPrefix String?
+  status    ServiceProviderStatus @default(ACTIVE)
+  createdAt DateTime              @default(now())
+  user      User                  @relation(fields: [userId], references: [id])
+}
+
+model Consumer {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id])
+
+  city      String?
+  cepPrefix String?
+
+  status ConsumerStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+}
+
+model Representative {
+  id     String @id @default(uuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id])
+
+  region     String
+  inviteCode String?
+
+  status RepresentativeStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+enum OutboxStatus {
+  PENDING
+  PROCESSING
+  SENT
+  FAILED
+}
+
+enum TransporterType {
+  CARRIER
+  LOCAL_COURIER
+  STORE_PICKUP
+}
+
+enum ShipmentStatus {
+  CREATED
+  QUOTED
+  CONFIRMED
+  PICKED_UP
+  IN_TRANSIT
+  DELIVERED
+  FAILED
+  CANCELLED
+}
+
+enum IncidentType {
+  DELAY
+  DAMAGE
+  LOSS
+  INVALID_ADDRESS
+  OTHER
+}
+
+enum PodType {
+  CODE
+  PHOTO
+  SIGNATURE
+}
+
+enum LogisticsRating {
+  ONE
+  TWO
+  THREE
+  FOUR
+  FIVE
+}
+
+enum SocialMediaType {
+  IMAGE
+  VIDEO
+}
+
+enum SocialPostStatus {
+  ACTIVE
+  DELETED
+}
+
+enum FundEntryType {
+  PLATFORM_FEE
+  BREAKAGE
+  PARTNER_INCENTIVE
+  MANUAL_ADJUSTMENT
+}
+
+enum PointsTxType {
+  EARN_PURCHASE
+  EARN_REVIEW
+  EARN_REFERRAL
+  EARN_MISSION
+  SPEND_CASHBACK
+  ADJUSTMENT
+  REVERSAL
+}
+
+enum MissionStatus {
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+enum MissionRewardType {
+  POINTS
+}
+
+enum PurchaseIntentStatus {
+  OPEN
+  NEGOTIATING
+  CONVERTED
+  LOST
+  CANCELLED
+}
+
+enum RelationshipStatus {
+  ACTIVE
+  INACTIVE
+  CLOSED
+}
+
+enum OrderStatus {
+  CREATED
+  PAID
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+
+enum ExportFormat {
+  CSV
+  JSON
+}
+
+enum ExportResource {
+  INSIGHTS_PRODUCTS_REPORT
+  INSIGHTS_PRODUCTS_COMPARE
+  INSIGHTS_PRODUCTS_BENCHMARK
+}
+
+enum WalletType {
+  USER
+  MERCHANT
+  PROVIDER
+  MARTO
+}
+
+enum LedgerEntryType {
+  CREDIT
+  DEBIT
+}
+
+enum LedgerStatus {
+  PENDING
+  POSTED
+  REVERSED
+}
+
+enum WalletHoldStatus {
+  ACTIVE
+  RELEASED
+  CANCELLED
+}
+
+enum AnticipationStatus {
+  REQUESTED
+  APPROVED
+  PAID
+  CANCELLED
+  FAILED
+}
+
+enum PixChargeStatus {
+  CREATED
+  WAITING_PAYMENT
+  PAID
+  EXPIRED
+  CANCELLED
+  FAILED
+}
+
+enum MerchantStatus {
+  ACTIVE
+  REVIEW
+  BLOCKED
+}
+
+enum ServiceProviderStatus {
+  ACTIVE
+  REVIEW
+  BLOCKED
+}
+
+enum ConsumerStatus {
+  ACTIVE
+  BLOCKED
+}
+
+enum RepresentativeStatus {
+  ACTIVE
+  REVIEW
+  BLOCKED
+}
+
+enum RoleCode {
+  CONSUMER
+  SERVICE_PROVIDER
+  MERCHANT
+  CARRIER
+  FACTORY
+  REPRESENTATIVE
+  ADMIN
+}

@@ -1,0 +1,67 @@
+@import "tailwindcss";
+
+/* =========================
+   Tokens globais (Marto)
+   ========================= */
+:root {
+  --background: 0 0% 100%;
+  --foreground: 220 15% 15%;
+
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+/* Dark mode automático */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: 220 15% 8%;
+    --foreground: 0 0% 95%;
+  }
+}
+
+/* =========================
+   Base global
+   ========================= */
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-family: var(--font-sans), system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* =========================
+   Marto — Design Tokens
+   (PASSO 3: vestir as telas)
+   ========================= */
+:root {
+  /* Base */
+  --marto-bg: #ffffff;
+  --marto-surface: #ffffff;
+  --marto-border: #e4e4e7; /* zinc-200 */
+  --marto-text: #18181b;   /* zinc-900 */
+  --marto-muted: #52525b;  /* zinc-600 */
+
+  /* Marca */
+  --marto-primary: #0f172a; /* slate-900 */
+  --marto-primary-foreground: #ffffff;
+
+  /* Estados */
+  --marto-success: #16a34a; /* green-600 */
+  --marto-danger: #dc2626;  /* red-600 */
+  --marto-warning: #f59e0b; /* amber-500 */
+
+  /* Focus ring */
+  --marto-ring: rgba(24, 24, 27, 0.18);
+}
+
+/* Reforço explícito da identidade Marto */
+html,
+body {
+  background: var(--marto-bg);
+  color: var(--marto-text);
+}

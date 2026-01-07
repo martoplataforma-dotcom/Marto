@@ -1,0 +1,20 @@
+{
+  "name": "marto",
+  "private": true,
+  "packageManager": "pnpm@10.26.1",
+  "scripts": {
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "lint": "turbo lint",
+    "format": "turbo format"
+  },
+  "devDependencies": {
+    "prisma": "^6.15.0",
+    "turbo": "^2.0.0"
+  },
+  "dependencies": {
+    "@prisma/client": "6.15.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.3"
+  }
+}

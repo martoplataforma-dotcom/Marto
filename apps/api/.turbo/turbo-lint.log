@@ -1,0 +1,4 @@
+
+> api@0.0.1 lint C:\Users\Luu\Desktop\Marto\apps\api
+> eslint "{src,test}/**/*.ts" --fix
+
