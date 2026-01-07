@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Post, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Put,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import type { Request } from 'express';
 
 import { JwtAuthGuard } from '../../identity/auth/jwt-auth.guard';
@@ -39,5 +48,21 @@ export class ProductsController {
     const userId = user?.id ?? user?.sub;
 
     return this.service.createByUserId(String(userId), body);
+  }
+
+  /**
+   * ✅ PUT /api/merchants/me/products/:id
+   * Atualiza um produto do lojista (MVP: active)
+   */
+  @Put(':id')
+  async update(
+    @Req() req: Request,
+    @Param('id') id: string,
+    @Body() body: { active?: boolean },
+  ) {
+    const user = req.user as any;
+    const userId = user?.id ?? user?.sub;
+
+    return this.service.updateByUserId(String(userId), String(id), body);
   }
 }

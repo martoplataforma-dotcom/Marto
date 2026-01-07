@@ -83,4 +83,54 @@ export class ProductsService {
 
     return { ok: true, created };
   }
+
+  async updateByUserId(
+    userId: string,
+    productId: string,
+    body: { active?: boolean },
+  ) {
+    if (!userId) throw new UnauthorizedException('Sem usuário.');
+
+    const merchant = await this.prisma.merchant.findUnique({
+      where: { userId },
+      select: { id: true },
+    });
+
+    if (!merchant) {
+      return { ok: false, message: 'Perfil de lojista não encontrado.' };
+    }
+
+    const id = String(productId ?? '').trim();
+    if (!id) return { ok: false, message: 'productId inválido.' };
+
+    // garante que o produto é do lojista logado
+    const existing = await this.prisma.product.findFirst({
+      where: { id, merchantId: merchant.id },
+      select: { id: true, active: true },
+    });
+
+    if (!existing) {
+      return { ok: false, message: 'Produto não encontrado.' };
+    }
+
+    // só vamos suportar "active" por enquanto
+    if (typeof body?.active !== 'boolean') {
+      return { ok: false, message: 'Campo active deve ser boolean.' };
+    }
+
+    const updated = await this.prisma.product.update({
+      where: { id },
+      data: { active: body.active },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        priceCents: true,
+        active: true,
+        updatedAt: true,
+      },
+    });
+
+    return { ok: true, updated };
+  }
 }

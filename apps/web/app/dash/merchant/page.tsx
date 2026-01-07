@@ -447,8 +447,18 @@ export default function MerchantDash() {
               </div>
             </div>
 
-            <div className="rounded-2xl border px-4 py-2 text-sm font-semibold text-zinc-700">
-              {productsLoading ? 'Carregando…' : `${products.length} produto(s)`}
+            {/* ✅ CONTADOR + LINK (caminho oficial) */}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="rounded-2xl border px-4 py-2 text-sm font-semibold text-zinc-700">
+                {productsLoading ? 'Carregando…' : `${products.length} produto(s)`}
+              </div>
+
+              <a
+                href="/dash/merchant/products"
+                className="rounded-2xl border px-4 py-2 text-sm font-semibold text-zinc-700 hover:bg-zinc-50"
+              >
+                Gerenciar todos →
+              </a>
             </div>
           </div>
 
