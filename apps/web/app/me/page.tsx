@@ -12,7 +12,7 @@ function getToken() {
 
 type MeResponse = {
   email?: string;
-  home?: 'consumer' | 'merchant' | 'service_provider' | 'representative';
+  home?: 'consumer' | 'merchant' | 'service_provider' | 'representative' | 'factory';
   user?: {
     id?: string;
     name?: string | null;
@@ -55,6 +55,14 @@ function initialsFromName(name: string) {
   return (a + b).toUpperCase();
 }
 
+function dashFromHome(home?: string) {
+  if (home === 'factory') return '/dash/factory';
+  if (home === 'merchant') return '/dash/merchant';
+  if (home === 'service_provider') return '/dash/provider';
+  if (home === 'representative') return '/dash/representative';
+  return '/dash/consumer';
+}
+
 export default function MyPublicProfile() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
@@ -86,7 +94,6 @@ export default function MyPublicProfile() {
 
         setMe(data);
 
-        // ✅ agora é data.profile.*
         const backendDisplayName = String(data?.profile?.displayName ?? '').trim();
         const backendBio = String(data?.profile?.bio ?? '').trim();
         const backendAvatarUrl = String(data?.profile?.avatarUrl ?? '').trim();
@@ -116,13 +123,15 @@ export default function MyPublicProfile() {
 
   // badge baseado em home (fonte da verdade)
   const badge =
-    me?.home === 'merchant'
-      ? 'Negócio'
-      : me?.home === 'service_provider'
-        ? 'Prestador'
-        : me?.home === 'representative'
-          ? 'Representante'
-          : 'Consumidor';
+    me?.home === 'factory'
+      ? 'Fabricante'
+      : me?.home === 'merchant'
+        ? 'Negócio'
+        : me?.home === 'service_provider'
+          ? 'Prestador'
+          : me?.home === 'representative'
+            ? 'Representante'
+            : 'Consumidor';
 
   const rep = useMemo(() => {
     return {
@@ -179,7 +188,7 @@ export default function MyPublicProfile() {
 
   return (
     <main className="relative min-h-screen overflow-x-hidden bg-zinc-950 text-white">
-      {/* fundo (grid + glows) — igual /dash/consumer */}
+      {/* fundo (grid + glows) */}
       <div
         className="pointer-events-none absolute inset-0 opacity-15"
         style={{
@@ -277,18 +286,10 @@ export default function MyPublicProfile() {
             {/* Ações */}
             <div className="flex flex-wrap gap-2">
               <Link
-                href={
-                  me?.home === 'merchant'
-                    ? '/dash/merchant'
-                    : me?.home === 'service_provider'
-                      ? '/dash/provider'
-                      : me?.home === 'representative'
-                        ? '/dash/representative'
-                        : '/dash/consumer'
-                }
+                href={dashFromHome(me?.home)}
                 className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90"
               >
-                Ir pro dashboard
+                Voltar ao painel
               </Link>
 
               <Link
@@ -384,9 +385,7 @@ export default function MyPublicProfile() {
               <div className="text-4xl font-bold">{rep.avg}</div>
               <div className="text-sm text-white/60">/ 5</div>
             </div>
-            <div className="mt-2 text-sm text-white/60">
-              {rep.count} avaliações registradas
-            </div>
+            <div className="mt-2 text-sm text-white/60">{rep.count} avaliações registradas</div>
             <div className="mt-6 rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-white/70 ring-1 ring-white/5">
               Em breve: reputação calculada a partir de avaliações vinculadas a ações reais.
             </div>
@@ -407,11 +406,7 @@ export default function MyPublicProfile() {
             </div>
 
             <div className="mt-6 grid gap-3">
-              <TimelineItem
-                title="Perfil criado"
-                meta="Conta • agora"
-                desc="Sua reputação começa aqui."
-              />
+              <TimelineItem title="Perfil criado" meta="Conta • agora" desc="Sua reputação começa aqui." />
               <TimelineItem
                 title="Próxima ação"
                 meta="Fluxo • recomendado"
@@ -451,15 +446,7 @@ export default function MyPublicProfile() {
   );
 }
 
-function TimelineItem({
-  title,
-  meta,
-  desc,
-}: {
-  title: string;
-  meta: string;
-  desc: string;
-}) {
+function TimelineItem({ title, meta, desc }: { title: string; meta: string; desc: string }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
       <div className="flex items-center justify-between gap-3">

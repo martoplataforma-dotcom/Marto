@@ -1,5 +1,6 @@
 'use client';
 
+import Image from 'next/image';
 import { useEffect, useMemo, useState } from 'react';
 import { fetchJSON, type ApiError } from '../../../src/lib/api';
 
@@ -39,6 +40,7 @@ type ProductItem = {
   description?: string | null;
   priceCents: number;
   active: boolean;
+  images?: string[] | null;
   createdAt?: string;
 };
 
@@ -47,7 +49,6 @@ type ProductsResponse = {
   items: ProductItem[];
 };
 
-// ✅ sem any
 type CreateProductResponse =
   | { ok: true; created: ProductItem }
   | { ok: false; message: string };
@@ -82,6 +83,25 @@ function StatusChip({ label, value }: { label: string; value: string }) {
   );
 }
 
+function toRelativeUploadsPath(urlOrPath: string) {
+  if (!urlOrPath) return null;
+
+  // Se já vier relativo (/uploads/...), mantém
+  if (urlOrPath.startsWith('/uploads/')) return urlOrPath;
+
+  // Se vier absoluto, converte para pathname
+  if (/^https?:\/\//i.test(urlOrPath)) {
+    try {
+      const u = new URL(urlOrPath);
+      return u.pathname.startsWith('/uploads/') ? u.pathname : null;
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 export default function MerchantDash() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -101,6 +121,15 @@ export default function MerchantDash() {
   const [pTitle, setPTitle] = useState('');
   const [pPrice, setPPrice] = useState('');
   const [pSaving, setPSaving] = useState(false);
+
+  // ✅ NOVO: foto do produto (upload)
+  const [pFile, setPFile] = useState<File | null>(null);
+  const [pUploading, setPUploading] = useState(false);
+
+  // ✅ NOVO: lightbox
+  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
+  const [lightboxAlt, setLightboxAlt] = useState<string>('');
 
   const canSave = useMemo(() => {
     if (!tradeName.trim()) return false;
@@ -163,6 +192,24 @@ export default function MerchantDash() {
     })();
   }, []);
 
+  // ✅ NOVO: fecha com ESC
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        setLightboxOpen(false);
+        setLightboxSrc(null);
+        setLightboxAlt('');
+      }
+    }
+
+    if (lightboxOpen) {
+      window.addEventListener('keydown', onKeyDown);
+      return () => window.removeEventListener('keydown', onKeyDown);
+    }
+
+    return undefined;
+  }, [lightboxOpen]);
+
   async function onSave() {
     setMsg('');
     const token = getToken();
@@ -206,6 +253,43 @@ export default function MerchantDash() {
     }
   }
 
+  // ✅ NOVO: faz upload e devolve pathname "/uploads/arquivo.ext"
+  async function uploadProductImage(file: File): Promise<string | null> {
+    setProductsMsg('');
+    setPUploading(true);
+
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+
+      // ✅ usa rewrite do Next: /api -> http://localhost:3001/api
+      const resp = await fetch('/api/uploads', {
+        method: 'POST',
+        body: fd,
+      });
+
+      const json = (await resp.json()) as { ok?: boolean; url?: string };
+
+      if (!resp.ok || !json?.ok || !json?.url) {
+        setProductsMsg('Upload falhou. Tente outra imagem.');
+        return null;
+      }
+
+      const rel = toRelativeUploadsPath(json.url);
+      if (!rel) {
+        setProductsMsg('Upload retornou URL inválida.');
+        return null;
+      }
+
+      return rel;
+    } catch {
+      setProductsMsg('Erro ao enviar imagem.');
+      return null;
+    } finally {
+      setPUploading(false);
+    }
+  }
+
   async function createProductQuick() {
     setMsg('');
     setProductsMsg('');
@@ -232,18 +316,33 @@ export default function MerchantDash() {
 
     setPSaving(true);
     try {
-      const res = await fetchJSON<CreateProductResponse>('/merchants/me/products', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
+      // ✅ Se tiver arquivo, sobe primeiro e salva em images[]
+      let images: string[] | undefined;
+
+      if (pFile) {
+        const rel = await uploadProductImage(pFile);
+        if (!rel) {
+          return; // productsMsg já foi setado no upload
+        }
+        images = [rel];
+      }
+
+      const res = await fetchJSON<CreateProductResponse>(
+        '/merchants/me/products',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            title,
+            description: null,
+            priceCents,
+            images: images ?? null,
+          }),
         },
-        body: JSON.stringify({
-          title,
-          description: null,
-          priceCents,
-        }),
-      });
+      );
 
       if (!res?.ok) {
         setProductsMsg(res?.message ?? 'Não foi possível criar o produto.');
@@ -252,6 +351,7 @@ export default function MerchantDash() {
 
       setPTitle('');
       setPPrice('');
+      setPFile(null);
 
       setProductsLoading(true);
       const pr = await fetchJSON<ProductsResponse>('/merchants/me/products', {
@@ -447,10 +547,11 @@ export default function MerchantDash() {
               </div>
             </div>
 
-            {/* ✅ CONTADOR + LINK (caminho oficial) */}
             <div className="flex flex-wrap items-center gap-2">
               <div className="rounded-2xl border px-4 py-2 text-sm font-semibold text-zinc-700">
-                {productsLoading ? 'Carregando…' : `${products.length} produto(s)`}
+                {productsLoading
+                  ? 'Carregando…'
+                  : `${products.length} produto(s)`}
               </div>
 
               <a
@@ -469,36 +570,51 @@ export default function MerchantDash() {
           ) : null}
 
           <div className="mt-5 grid gap-3 sm:grid-cols-12">
-            <label className="sm:col-span-6">
+            <label className="sm:col-span-5">
               <span className="text-sm font-semibold">Nome do produto</span>
               <input
                 value={pTitle}
                 onChange={(e) => setPTitle(e.target.value)}
                 placeholder="Ex: Cadeira Madeira"
                 className="mt-2 w-full rounded-2xl border px-4 py-3 outline-none focus:border-black"
-                disabled={productsLoading || pSaving}
+                disabled={productsLoading || pSaving || pUploading}
               />
             </label>
 
-            <label className="sm:col-span-4">
+            <label className="sm:col-span-3">
               <span className="text-sm font-semibold">Preço (R$)</span>
               <input
                 value={pPrice}
                 onChange={(e) => setPPrice(e.target.value)}
                 placeholder="Ex: 299.90"
                 className="mt-2 w-full rounded-2xl border px-4 py-3 outline-none focus:border-black"
-                disabled={productsLoading || pSaving}
+                disabled={productsLoading || pSaving || pUploading}
                 inputMode="decimal"
               />
             </label>
 
-            <div className="sm:col-span-2 flex items-end">
+            {/* ✅ NOVO: foto */}
+            <label className="sm:col-span-3">
+              <span className="text-sm font-semibold">Foto (opcional)</span>
+              <input
+                type="file"
+                accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null;
+                  setPFile(f);
+                }}
+                className="mt-2 w-full rounded-2xl border px-4 py-[10px] text-sm outline-none"
+                disabled={productsLoading || pSaving || pUploading}
+              />
+            </label>
+
+            <div className="sm:col-span-1 flex items-end">
               <button
                 onClick={createProductQuick}
-                disabled={productsLoading || pSaving}
+                disabled={productsLoading || pSaving || pUploading}
                 className="w-full rounded-2xl bg-black px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
               >
-                {pSaving ? 'Criando…' : 'Adicionar'}
+                {pUploading ? 'Enviando…' : pSaving ? 'Criando…' : 'Adicionar'}
               </button>
             </div>
           </div>
@@ -514,22 +630,54 @@ export default function MerchantDash() {
               </div>
             ) : (
               products.slice(0, 3).map((p) => (
-                <div
-                  key={p.id}
-                  className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-white px-4 py-3"
-                >
-                  <div>
-                    <div className="text-sm font-semibold text-zinc-900">
-                      {p.title}
-                    </div>
-                    <div className="mt-1 text-xs text-zinc-600">
-                      {p.active ? 'Ativo' : 'Inativo'} • R${' '}
-                      {(p.priceCents / 100).toFixed(2)}
-                    </div>
-                  </div>
+                <div key={p.id} className="rounded-2xl border bg-white px-4 py-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="flex items-start gap-3">
+                        {Array.isArray(p.images) && p.images.length > 0 ? (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setLightboxSrc(`http://localhost:3001${p.images![0]}`);
+                              setLightboxAlt(p.title);
+                              setLightboxOpen(true);
+                            }}
+                            className="shrink-0"
+                            title="Ampliar imagem"
+                          >
+                            <Image
+                              src={`http://localhost:3001${p.images[0]}`}
+                              unoptimized
+                              alt={p.title}
+                              width={56}
+                              height={56}
+                              className="h-14 w-14 rounded-xl border object-cover hover:opacity-90"
+                            />
+                          </button>
+                        ) : (
+                          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-zinc-200 bg-zinc-900/5">
+                            <span className="text-[10px] font-semibold text-zinc-500">
+                              Sem foto
+                            </span>
+                          </div>
+                        )}
 
-                  <div className="text-xs font-semibold text-zinc-600">
-                    Ver detalhes → (em breve)
+                        <div>
+                          <div className="text-sm font-semibold text-zinc-900">
+                            {p.title}
+                          </div>
+
+                          <div className="mt-1 text-xs text-zinc-600">
+                            {p.active ? 'Ativo' : 'Inativo'} • R${' '}
+                            {(p.priceCents / 100).toFixed(2)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="text-xs font-semibold text-zinc-600">
+                      Ver detalhes → (em breve)
+                    </div>
                   </div>
                 </div>
               ))
@@ -624,6 +772,55 @@ export default function MerchantDash() {
           </div>
         </div>
       </div>
+
+      {lightboxOpen && lightboxSrc ? (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+          onClick={() => {
+            setLightboxOpen(false);
+            setLightboxSrc(null);
+            setLightboxAlt('');
+          }}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="relative w-full max-w-4xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                setLightboxOpen(false);
+                setLightboxSrc(null);
+                setLightboxAlt('');
+              }}
+              className="absolute right-2 top-2 rounded-xl bg-black/60 px-3 py-2 text-xs font-semibold text-white hover:bg-black/70"
+              aria-label="Fechar"
+            >
+              ✕
+            </button>
+
+            <div className="overflow-hidden rounded-3xl border border-white/10 bg-black">
+              <div className="relative aspect-[16/10] w-full">
+                <Image
+                  src={lightboxSrc}
+                  unoptimized
+                  alt={lightboxAlt || 'Imagem do produto'}
+                  fill
+                  className="object-contain"
+                />
+              </div>
+
+              {lightboxAlt ? (
+                <div className="border-t border-white/10 bg-black px-4 py-3 text-sm font-semibold text-white/90">
+                  {lightboxAlt}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

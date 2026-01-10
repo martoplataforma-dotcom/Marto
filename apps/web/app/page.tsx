@@ -8,7 +8,7 @@ import { useRouter } from 'next/navigation';
 type MeResponse = {
   roles?: unknown;
   needsRoleChoice?: boolean;
-  home?: 'consumer' | 'merchant' | 'service_provider' | 'representative';
+  home?: 'consumer' | 'merchant' | 'service_provider' | 'representative' | 'factory';
 };
 
 function getToken() {
@@ -48,7 +48,9 @@ export default function Home() {
           return;
         }
 
-        if (me.home === 'merchant') {
+        if (me.home === 'factory') {
+          router.replace('/dash/factory');
+        } else if (me.home === 'merchant') {
           router.replace('/dash/merchant');
         } else if (me.home === 'service_provider') {
           router.replace('/dash/provider');
@@ -168,7 +170,8 @@ export default function Home() {
               <p className="mt-5 max-w-xl text-base leading-relaxed text-white/75">
                 Compra e serviço não viram conversa.
                 <br />
-                Viram <span className="font-semibold text-white/90">histórico</span>.
+                Viram{' '}
+                <span className="font-semibold text-white/90">histórico</span>.
               </p>
 
               <p className="mt-3 text-sm text-white/60">

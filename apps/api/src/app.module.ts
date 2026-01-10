@@ -23,6 +23,12 @@ import { RepresentativesModule } from './modules/representatives/representatives
 // ✅ NOVO
 import { PublicModule } from './modules/public/public.module';
 
+// ✅ NOVO (pedido)
+import { UploadsController } from './common/uploads/uploads.controller';
+
+// ✅ NOVO (transportadores)
+import { TransportModule } from './modules/transport/transport.module';
+
 @Module({
   imports: [
     ConfigModule.forRoot({
@@ -48,8 +54,11 @@ import { PublicModule } from './modules/public/public.module';
     ConsumersModule,
     RepresentativesModule,
 
-    // ✅ NOVO
+    // ✅ adicionado aqui
+    TransportModule,
+
     PublicModule,
   ],
+  controllers: [UploadsController],
 })
 export class AppModule {}

@@ -1,25 +1,117 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { useEffect, useMemo, useState } from 'react';
 import { fetchJSON, type ApiError } from '../../../src/lib/api';
+
+type Transporter = {
+  id: string;
+  name: string;
+  type: string;
+  active: boolean;
+  city: string | null;
+  state: string | null;
+  serviceArea: unknown | null;
+  serviceProviderId: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+type ServiceProviderKind = 'GENERIC' | 'TRANSPORTER';
 
 type ServiceProvider = {
   cpf: string;
   city?: string | null;
   cepPrefix?: string | null;
   status: string;
+  kind?: ServiceProviderKind;
+  transporter?: Transporter | null;
 };
 
-export default function ProviderDash() {
+function Card({
+  title,
+  desc,
+  href,
+  badge,
+}: {
+  title: string;
+  desc: string;
+  href: string;
+  badge?: string;
+}) {
+  return (
+    <Link
+      href={href}
+      className="group block rounded-2xl border bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
+    >
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="text-base font-semibold text-neutral-900">{title}</div>
+        {badge ? (
+          <span className="rounded-full border bg-neutral-50 px-2 py-1 text-xs text-neutral-700">
+            {badge}
+          </span>
+        ) : null}
+      </div>
+
+      <p className="text-sm text-neutral-600">{desc}</p>
+
+      <div className="mt-4 text-sm font-medium text-neutral-900">
+        Abrir <span className="inline-block transition group-hover:translate-x-0.5">→</span>
+      </div>
+    </Link>
+  );
+}
+
+function ChoiceButton({
+  title,
+  desc,
+  active,
+  onClick,
+  disabled,
+}: {
+  title: string;
+  desc: string;
+  active: boolean;
+  onClick: () => void;
+  disabled: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={[
+        'text-left rounded-2xl border bg-white p-5 shadow-sm transition',
+        'hover:-translate-y-0.5 hover:shadow-md disabled:opacity-60 disabled:hover:translate-y-0',
+        active ? 'border-neutral-900' : '',
+      ].join(' ')}
+    >
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div className="text-base font-semibold text-neutral-900">{title}</div>
+        <span className="rounded-full border bg-neutral-50 px-2 py-1 text-xs text-neutral-700">
+          {active ? 'Ativo' : 'Selecionar'}
+        </span>
+      </div>
+      <p className="text-sm text-neutral-600">{desc}</p>
+    </button>
+  );
+}
+
+export default function ProviderHubPage() {
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-
+  const [switching, setSwitching] = useState(false);
   const [msg, setMsg] = useState('');
-  const [data, setData] = useState<ServiceProvider | null>(null);
+  const [me, setMe] = useState<ServiceProvider | null>(null);
 
-  const [cpf, setCpf] = useState('');
-  const [city, setCity] = useState('');
-  const [cepPrefix, setCepPrefix] = useState('');
+  const kind: ServiceProviderKind = useMemo(() => {
+    if (me?.kind === 'TRANSPORTER') return 'TRANSPORTER';
+    return 'GENERIC';
+  }, [me?.kind]);
+
+  const headline = useMemo(() => {
+    if (kind === 'TRANSPORTER') return 'Painel Marto • Transportadora';
+    return 'Painel Marto • Prestador';
+  }, [kind]);
 
   async function load() {
     try {
@@ -27,11 +119,7 @@ export default function ProviderDash() {
       setMsg('');
 
       const sp = await fetchJSON<ServiceProvider | null>('/service-providers/me');
-      setData(sp);
-
-      setCpf(sp?.cpf ?? '');
-      setCity(sp?.city ?? '');
-      setCepPrefix(sp?.cepPrefix ?? '');
+      setMe(sp);
     } catch (e) {
       const a = e as ApiError;
       setMsg(`${a.status} - ${a.message}`);
@@ -40,104 +128,146 @@ export default function ProviderDash() {
     }
   }
 
-  async function save() {
+  async function setKind(nextKind: ServiceProviderKind) {
+    if (!me) return;
+
+    const cpf = String(me.cpf ?? '').trim();
+    if (!cpf) {
+      setMsg('Para escolher seu tipo, primeiro preencha seu CPF no “Meu perfil”.');
+      return;
+    }
+
     try {
-      setSaving(true);
+      setSwitching(true);
       setMsg('');
 
       const saved = await fetchJSON<ServiceProvider>('/service-providers/me', {
         method: 'PUT',
         body: JSON.stringify({
-          cpf: cpf.trim(),
-          city: city.trim() || undefined,
-          cepPrefix: cepPrefix.trim() || undefined,
+          cpf,
+          city: me.city ?? undefined,
+          cepPrefix: me.cepPrefix ?? undefined,
+          kind: nextKind,
         }),
       });
 
-      setData(saved);
-      setMsg('✅ Perfil salvo com sucesso');
+      setMe(saved);
+      setMsg(nextKind === 'TRANSPORTER' ? '✅ Modo transportadora ativado.' : '✅ Modo prestador ativado.');
     } catch (e) {
       const a = e as ApiError;
       setMsg(`${a.status} - ${a.message}`);
     } finally {
-      setSaving(false);
+      setSwitching(false);
     }
   }
 
   useEffect(() => {
-    load();
+    void load();
   }, []);
 
   return (
-    <main className="mx-auto max-w-xl p-6">
-      <h1 className="text-xl font-semibold">Dashboard Prestador (A3.5)</h1>
-      <p className="mt-2 text-sm text-red-600">A3.5 FRONT — PERFIL PRESTADOR (editar + salvar)</p>
+    <main className="mx-auto max-w-5xl p-6">
+      <header className="mb-6">
+        <h1 className="text-2xl font-semibold">{headline}</h1>
+        <p className="mt-2 text-sm text-neutral-600">
+          Escolha seu tipo. Depois você completa seus dados e ativa sua operação.
+        </p>
 
-      {msg && <p className="mt-4 text-sm text-red-600">{msg}</p>}
+        {msg ? <p className="mt-3 text-sm text-red-600">{msg}</p> : null}
+      </header>
 
-      <div className="mt-6 rounded-xl border p-4 text-sm">
+      <section className="mb-6">
+        <div className="mb-3 text-sm font-semibold text-neutral-900">Qual é o seu modo?</div>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          <ChoiceButton
+            title="Prestador de serviço"
+            desc="Montagem, instalação, manutenção e outros serviços. Ideal para quem atende pedidos."
+            active={kind === 'GENERIC'}
+            disabled={loading || switching || !me}
+            onClick={() => void setKind('GENERIC')}
+          />
+
+          <ChoiceButton
+            title="Transportadora"
+            desc="Operação de entregas, rotas e comprovantes. Ideal para logística local/regional."
+            active={kind === 'TRANSPORTER'}
+            disabled={loading || switching || !me}
+            onClick={() => void setKind('TRANSPORTER')}
+          />
+        </div>
+
+        <div className="mt-3 text-sm text-neutral-600">
+          Não achou seu tipo? Por enquanto temos esses 2. Depois a gente expande (montador, técnico, etc.).
+        </div>
+      </section>
+
+      <section className="grid gap-4 sm:grid-cols-2">
+        <Card
+          title="Meu perfil"
+          desc="Dados básicos e identidade. Obrigatório para reputação e ativação."
+          href="/dash/provider/profile"
+          badge={me?.status ? `Status: ${me.status}` : undefined}
+        />
+
+        <Card
+          title="Minha operação"
+          desc={
+            kind === 'TRANSPORTER'
+              ? 'Sua transportadora pode operar entregas. Configure nome/área e depois criaremos rotas.'
+              : 'Sua operação de serviços será configurada aqui (agenda, raio, categorias) em breve.'
+          }
+          href="/dash/provider/profile"
+          badge={kind === 'TRANSPORTER' ? 'Logística' : 'Serviços'}
+        />
+      </section>
+
+      <section className="mt-6 rounded-2xl border bg-white p-5 shadow-sm">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="text-sm font-semibold text-neutral-900">Resumo</div>
+          <button
+            onClick={() => void load()}
+            disabled={loading || switching}
+            className="rounded-xl border px-3 py-1.5 text-sm font-medium disabled:opacity-50"
+          >
+            {loading ? 'Atualizando…' : 'Atualizar'}
+          </button>
+        </div>
+
         {loading ? (
-          <p>Carregando...</p>
-        ) : (
-          <>
-            <label className="block">
-              <span className="text-xs opacity-80">CPF</span>
-              <input
-                className="mt-1 w-full rounded-lg border p-2"
-                value={cpf}
-                onChange={(e) => setCpf(e.target.value)}
-                placeholder="12345678900"
-              />
-            </label>
-
-            <label className="mt-3 block">
-              <span className="text-xs opacity-80">Cidade</span>
-              <input
-                className="mt-1 w-full rounded-lg border p-2"
-                value={city}
-                onChange={(e) => setCity(e.target.value)}
-                placeholder="Ubá"
-              />
-            </label>
-
-            <label className="mt-3 block">
-              <span className="text-xs opacity-80">CEP Prefixo</span>
-              <input
-                className="mt-1 w-full rounded-lg border p-2"
-                value={cepPrefix}
-                onChange={(e) => setCepPrefix(e.target.value)}
-                placeholder="36500"
-              />
-            </label>
-
-            <div className="mt-4 flex gap-2">
-              <button
-                onClick={save}
-                disabled={saving || !cpf.trim()}
-                className="rounded-lg border bg-black px-3 py-2 text-white disabled:opacity-50"
-              >
-                {saving ? 'Salvando...' : 'Salvar'}
-              </button>
-
-              <button
-                onClick={load}
-                disabled={loading || saving}
-                className="rounded-lg border px-3 py-2 disabled:opacity-50"
-              >
-                Recarregar
-              </button>
+          <p className="text-sm text-neutral-600">Carregando…</p>
+        ) : me ? (
+          <div className="grid gap-2 text-sm text-neutral-700 sm:grid-cols-2">
+            <div>
+              <span className="text-neutral-500">Cidade:</span>{' '}
+              <span className="font-medium text-neutral-900">{me.city ?? '—'}</span>
             </div>
 
-            {data && (
-              <div className="mt-4 text-xs opacity-80">
-                <div>
-                  <b>Status:</b> {data.status}
-                </div>
-              </div>
-            )}
-          </>
+            <div>
+              <span className="text-neutral-500">CEP Prefixo:</span>{' '}
+              <span className="font-medium text-neutral-900">{me.cepPrefix ?? '—'}</span>
+            </div>
+
+            <div>
+              <span className="text-neutral-500">Modo:</span>{' '}
+              <span className="font-medium text-neutral-900">
+                {kind === 'TRANSPORTER' ? 'Transportadora' : 'Prestador'}
+              </span>
+            </div>
+
+            <div>
+              <span className="text-neutral-500">Transportadora:</span>{' '}
+              <span className="font-medium text-neutral-900">
+                {me.transporter?.name ?? '—'}
+              </span>
+            </div>
+          </div>
+        ) : (
+          <p className="text-sm text-neutral-600">
+            Não encontrei seu perfil de prestador. Abra “Meu perfil” para concluir o cadastro.
+          </p>
         )}
-      </div>
+      </section>
     </main>
   );
 }

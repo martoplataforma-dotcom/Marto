@@ -41,11 +41,11 @@ export type AddRoleBody =
   | {
       role: 'FACTORY';
       factory: {
-        legalName: string;
-        cnpj: string;
-        categories: unknown;
+        tradeName: string;
+        legalName?: string;
+        document: string;
         city?: string;
-        commercialContact?: string;
+        state?: string;
       };
     }
   | {
@@ -93,7 +93,17 @@ export class MeService {
       homeFromDb = null;
     }
 
-    const home = homeFromDb ?? pickHome(roles);
+    // ✅ regra local de home baseada nas roles (FACTORY primeiro)
+    let home = 'consumer';
+
+    if (roles.includes('FACTORY')) home = 'factory';
+    else if (roles.includes('MERCHANT')) home = 'merchant';
+    else if (roles.includes('SERVICE_PROVIDER')) home = 'service_provider';
+    else if (roles.includes('REPRESENTATIVE')) home = 'representative';
+
+    const computedHome = home;
+
+    const finalHome = homeFromDb ?? computedHome;
 
     // ✅ perfil público — não pode derrubar /me
     let profile: {
@@ -134,7 +144,7 @@ export class MeService {
         phone: null,
         status: 'ACTIVE',
       },
-      profile, // ✅ NOVO
+      profile,
       roles: roles.map((r) => ({ role: r })),
       onboarding: {
         CONSUMER: roles.includes('CONSUMER'),
@@ -144,7 +154,7 @@ export class MeService {
         FACTORY: roles.includes('FACTORY'),
         CARRIER: roles.includes('CARRIER'),
       },
-      home,
+      home: finalHome,
       needsRoleChoice: roles.length === 0 && !homeFromDb,
     };
   }
@@ -175,9 +185,53 @@ export class MeService {
       throw new BadRequestException(`role inválida: ${roleStr}`);
     }
 
-    const role = roleStr as PrismaRoleCode;
+    // ✅ NOVO BLOCO — FACTORY (pedido)
+    if (body.role === 'FACTORY') {
+      const f = body.factory;
 
-    console.log('[ME:addRole] userId=', userId, 'role=', role);
+      const tradeName = String(f?.tradeName ?? '').trim();
+      const document = String(f?.document ?? '')
+        .replace(/\D/g, '')
+        .trim();
+
+      if (!tradeName) {
+        throw new BadRequestException('factory.tradeName é obrigatório.');
+      }
+
+      if (!document) {
+        throw new BadRequestException('factory.document (CNPJ) é obrigatório.');
+      }
+
+      await this.prisma.userRole.create({
+        data: {
+          userId,
+          role: 'FACTORY',
+        },
+      });
+
+      await this.prisma.factory.upsert({
+        where: { userId },
+        create: {
+          userId,
+          tradeName,
+          legalName: f.legalName ?? null,
+          document,
+          city: f.city ?? null,
+          state: f.state ?? null,
+        },
+        update: {
+          tradeName,
+          legalName: f.legalName ?? null,
+          document,
+          city: f.city ?? null,
+          state: f.state ?? null,
+        },
+      });
+
+      return { ok: true, created: { role: 'FACTORY' } };
+    }
+
+    const role = roleStr as PrismaRoleCode;
 
     await this.prisma.userRole.upsert({
       where: {
@@ -212,8 +266,9 @@ export class MeService {
         data: { home } as any,
       });
     } catch {
-      // MVP: se campo home não existir ou update falhar, não derruba
+      /* MVP: se campo home não existir ou update falhar, não derruba */
     }
+
     if (role === 'MERCHANT') {
       const merchant = (body as any).merchant;
       if (!merchant) throw new BadRequestException('merchant é obrigatório');
@@ -381,14 +436,4 @@ export class MeService {
 
     return { ok: true, profile };
   }
-}
-
-function pickHome(roles: PrismaRoleCode[]) {
-  if (roles.includes('ADMIN')) return 'admin';
-  if (roles.includes('MERCHANT')) return 'merchant';
-  if (roles.includes('FACTORY')) return 'factory';
-  if (roles.includes('CARRIER')) return 'carrier';
-  if (roles.includes('SERVICE_PROVIDER')) return 'service_provider';
-  if (roles.includes('REPRESENTATIVE')) return 'representative';
-  return 'consumer';
 }

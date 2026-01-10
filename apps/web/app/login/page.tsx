@@ -5,6 +5,30 @@ import Image from 'next/image';
 import { useRouter } from 'next/navigation';
 import { useState } from 'react';
 import { login } from '../../src/lib/auth';
+import { fetchJSON, type ApiError } from '../../src/lib/api';
+
+type MeResponse = {
+  home?: 'consumer' | 'merchant' | 'service_provider' | 'representative' | 'factory';
+  needsRoleChoice?: boolean;
+};
+
+function dashFromHome(home?: MeResponse['home'] | null) {
+  switch (home) {
+    case 'consumer':
+      return '/dash/consumer';
+    case 'merchant':
+      return '/dash/merchant';
+    case 'service_provider':
+      return '/dash/service-provider';
+    case 'representative':
+      return '/dash/representative';
+    case 'factory':
+      return '/dash/factory';
+    default:
+      // ✅ fallback seguro: nunca mandar pra factory por padrão
+      return '/dash/consumer';
+  }
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -33,13 +57,34 @@ export default function LoginPage() {
         return;
       }
 
+      // 1) faz login e salva token (como seu auth.ts já faz)
       await login({ email: e2, password });
 
-      router.replace('/');
+      // 2) fonte da verdade: /me
+      const me = await fetchJSON<MeResponse>('/me', { method: 'GET' });
+
+      // 3) (se existir no seu fluxo) escolha de papel
+      if (me?.needsRoleChoice) {
+        // opcional: você pode querer limpar a home aqui
+        localStorage.removeItem('marto_home');
+        router.replace('/choose-role');
+        router.refresh();
+        return;
+      }
+
+      // 4) salva home e manda pro dashboard correto
+      const home = me?.home ?? 'consumer';
+      localStorage.setItem('marto_home', home);
+
+      router.replace(dashFromHome(home));
+      router.refresh();
     } catch (err: unknown) {
+      const a = err as ApiError;
+
       // mantém simples e legível
       const text =
-        err instanceof Error ? err.message : String(err ?? 'Erro ao entrar.');
+        a?.message ||
+        (err instanceof Error ? err.message : String(err ?? 'Erro ao entrar.'));
       setMsg(text);
     } finally {
       setLoading(false);

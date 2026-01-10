@@ -34,9 +34,15 @@ model Transporter {
   city        String?
   state       String?
   serviceArea Json?
-  createdAt   DateTime        @default(now())
-  updatedAt   DateTime        @updatedAt
-  shipments   Shipment[]
+
+  // ✅ vínculo com prestador
+  serviceProviderId String          @unique
+  serviceProvider   ServiceProvider @relation(fields: [serviceProviderId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  shipments Shipment[]
 }
 
 model Shipment {
@@ -440,23 +446,20 @@ model User {
   email        String @unique
   passwordHash String
 
-  // ✅ novo: identificador público (rota /u/:handle)
-  // ✅ COMEÇA opcional pra não quebrar a linha existente
   handle String? @unique
 
-  // ✅ público (MVP)
   displayName String?
   bio         String?
   avatarUrl   String?
 
   createdAt DateTime @default(now())
-  // ✅ precisa de default pra preencher a linha existente
   updatedAt DateTime @default(now()) @updatedAt
 
   merchant        Merchant?
   serviceProvider ServiceProvider?
   consumer        Consumer?
   representative  Representative?
+  factory         Factory?
 
   roles UserRole[]
 }
@@ -487,7 +490,6 @@ model Merchant {
   createdAt DateTime       @default(now())
   user      User           @relation(fields: [userId], references: [id])
 
-  // ✅ ADICIONADO: produtos do lojista
   products Product[]
 }
 
@@ -500,15 +502,18 @@ model Product {
   description String?
   priceCents  Int
   active      Boolean @default(true)
-
-  // opcional agora (pra não travar): fotos, variações etc depois
-  images Json?
+  images      Json?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([merchantId])
   @@index([active])
+}
+
+enum ServiceProviderKind {
+  GENERIC
+  TRANSPORTER
 }
 
 model ServiceProvider {
@@ -518,8 +523,14 @@ model ServiceProvider {
   city      String?
   cepPrefix String?
   status    ServiceProviderStatus @default(ACTIVE)
-  createdAt DateTime              @default(now())
-  user      User                  @relation(fields: [userId], references: [id])
+
+  // ✅ novo: tipo do prestador (ex: prestador comum vs transportadora)
+  kind ServiceProviderKind @default(GENERIC)
+
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
+
+  transporter Transporter?
 }
 
 model Consumer {
@@ -737,4 +748,28 @@ enum RoleCode {
   FACTORY
   REPRESENTATIVE
   ADMIN
+}
+
+model Factory {
+  id     String @id @default(uuid())
+  userId String @unique
+
+  tradeName String
+  legalName String?
+  document  String
+  city      String?
+  state     String?
+
+  status FactoryStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user User @relation(fields: [userId], references: [id])
+}
+
+enum FactoryStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
 }

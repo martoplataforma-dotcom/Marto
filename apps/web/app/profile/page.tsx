@@ -22,6 +22,26 @@ type ViaCepResponse = {
   uf?: string;
 };
 
+type MeResponse = {
+  home?: 'consumer' | 'merchant' | 'service_provider' | 'representative' | 'factory';
+};
+
+function dashboardFromHome(home?: MeResponse['home'] | null) {
+  switch (home) {
+    case 'merchant':
+      return '/dash/merchant';
+    case 'factory':
+      return '/dash/factory';
+    case 'service_provider':
+      return '/dash/service-provider';
+    case 'representative':
+      return '/dash/representative';
+    case 'consumer':
+    default:
+      return '/dash/consumer';
+  }
+}
+
 export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -41,11 +61,10 @@ export default function ProfilePage() {
     uf: string;
   } | null>(null);
 
-  // ✅ guarda o "home" pra não precisar buscar toda hora (mas ainda refazemos no save por segurança)
-  const [home, setHome] = useState<string | null>(null);
+  // ✅ guarda o "home"
+  const [home, setHome] = useState<MeResponse['home'] | null>(null);
 
   const canSave = useMemo(() => {
-    // seu backend hoje aceita 5 dígitos (prefixo). Mantemos a validação.
     if (cepPrefix && !/^\d{5}$/.test(cepPrefix)) return false;
     return true;
   }, [cepPrefix]);
@@ -61,31 +80,45 @@ export default function ProfilePage() {
       }
 
       try {
-        // ✅ A) Primeiro: buscar o home via /api/me
-        const me = await fetch('http://localhost:3001/api/me', {
-          method: 'GET',
-          headers: { Authorization: `Bearer ${token}` },
-        }).then((r) => r.json() as Promise<{ home?: string }>);
+        // ✅ A) Primeiro: buscar o home via /me (pela rewrite /api)
+        const me = await fetchJSON<MeResponse>('/me', { method: 'GET' });
+        const h =
+          me?.home === 'consumer' ||
+          me?.home === 'merchant' ||
+          me?.home === 'service_provider' ||
+          me?.home === 'representative' ||
+          me?.home === 'factory'
+            ? me.home
+            : null;
 
-        setHome(typeof me.home === 'string' ? me.home : null);
+        setHome(h);
 
-        // ✅ B) Depois, escolher endpoint baseado em home
-        const isMerchant = me.home === 'merchant';
-
-        const data = await fetchJSON<Consumer>(
-          isMerchant ? '/merchants/me' : '/consumers/me',
-          {
+        // ✅ B) Buscar preferências somente quando fizer sentido
+        // Por enquanto, este /profile é “Preferências do consumidor/lojista”.
+        if (h === 'merchant') {
+          const data = await fetchJSON<Consumer>('/merchants/me', {
             method: 'GET',
             headers: { Authorization: `Bearer ${token}` },
-          },
-        );
+          });
 
-        setCity(data.city ?? '');
-        setCepPrefix(data.cepPrefix ?? '');
+          setCity(data.city ?? '');
+          setCepPrefix(data.cepPrefix ?? '');
+          if (data.cepPrefix) setCep(String(data.cepPrefix));
+        } else if (h === 'consumer' || !h) {
+          const data = await fetchJSON<Consumer>('/consumers/me', {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${token}` },
+          });
 
-        // UX: se já tiver cepPrefix salvo, preenche como base no campo CEP (opcional)
-        // (não dá pra recuperar o CEP completo, então a gente só sugere os 5 dígitos)
-        if (data.cepPrefix) setCep(String(data.cepPrefix));
+          setCity(data.city ?? '');
+          setCepPrefix(data.cepPrefix ?? '');
+          if (data.cepPrefix) setCep(String(data.cepPrefix));
+        } else {
+          // factory / rep / service_provider
+          setMsg(
+            'Configurações de localização ainda não existem para este papel. (Por enquanto, só consumidor/lojista.)',
+          );
+        }
       } catch (e: unknown) {
         const err = e as ApiError;
         setMsg(err?.message ?? 'Não foi possível carregar suas configurações.');
@@ -100,18 +133,15 @@ export default function ProfilePage() {
     const clean = value.replace(/\D/g, '').slice(0, 8);
     setCep(clean);
 
-    // enquanto digita, se ainda não tem 8 dígitos, limpa endereço
     if (clean.length !== 8) {
       setAddr(null);
 
-      // e atualiza cepPrefix conforme os primeiros 5 dígitos se já tiver
       if (clean.length >= 5) setCepPrefix(clean.slice(0, 5));
       else setCepPrefix('');
 
       return;
     }
 
-    // já temos 8 dígitos -> busca no ViaCEP
     setCepLoading(true);
     try {
       const r = await fetch(`https://viacep.com.br/ws/${clean}/json/`, {
@@ -137,10 +167,7 @@ export default function ProfilePage() {
         uf: foundUf,
       });
 
-      // Atualiza prefixo persistido (5 dígitos)
       setCepPrefix(clean.slice(0, 5));
-
-      // Se cidade estiver vazia, preenche automaticamente
       if (!city.trim() && foundCity) setCity(foundCity);
     } catch {
       setAddr(null);
@@ -163,35 +190,42 @@ export default function ProfilePage() {
       return;
     }
 
+    // ✅ por enquanto só consumidor/lojista salvam localização
+    if (home && home !== 'consumer' && home !== 'merchant') {
+      setMsg('Salvar preferências ainda não existe para este papel.');
+      return;
+    }
+
     setSaving(true);
     try {
-      // ✅ C) No onSave, recupera home e escolhe endpoint no PUT
-      const me = await fetch('http://localhost:3001/api/me', {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
-      }).then((r) => r.json() as Promise<{ home?: string }>);
-
-      const isMerchant = me.home === 'merchant';
-
-      await fetchJSON(isMerchant ? '/merchants/me' : '/consumers/me', {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          city: city.trim() || null,
-          cepPrefix: cepPrefix.trim() || null,
-        }),
-      });
-
-      setHome(typeof me.home === 'string' ? me.home : home);
+      if (home === 'merchant') {
+        await fetchJSON('/merchants/me', {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            city: city.trim() || null,
+            cepPrefix: cepPrefix.trim() || null,
+          }),
+        });
+      } else {
+        await fetchJSON('/consumers/me', {
+          method: 'PUT',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            city: city.trim() || null,
+            cepPrefix: cepPrefix.trim() || null,
+          }),
+        });
+      }
 
       setMsg('Configurações salvas.');
-
-      setTimeout(() => {
-        setMsg('');
-      }, 2500);
+      setTimeout(() => setMsg(''), 2500);
     } catch (e: unknown) {
       const err = e as ApiError;
       setMsg(err?.message ?? 'Não foi possível salvar.');
@@ -233,17 +267,19 @@ export default function ProfilePage() {
 
             <div className="flex flex-wrap gap-2">
               <Link
-                href={home === 'merchant' ? '/dash/merchant' : '/dash/consumer'}
+                href={dashboardFromHome(home)}
                 className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
               >
                 Voltar ao dashboard
               </Link>
+
               <Link
                 href="/me"
                 className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90"
               >
                 Ver meu perfil público
               </Link>
+
               <button
                 onClick={onSave}
                 disabled={loading || saving || !canSave}
@@ -315,12 +351,19 @@ export default function ProfilePage() {
                 </div>
 
                 <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/70">
-                  {home === 'merchant' ? 'Lojista' : 'Consumidor'}
-              </span>
+                  {home === 'merchant'
+                    ? 'Lojista'
+                    : home === 'factory'
+                      ? 'Fabricante'
+                      : home === 'service_provider'
+                        ? 'Prestador'
+                        : home === 'representative'
+                          ? 'Representante'
+                          : 'Consumidor'}
+                </span>
               </div>
 
               <div className="mt-6 grid gap-4">
-                {/* CEP completo */}
                 <label className="grid gap-2">
                   <span className="text-sm font-semibold text-white/90">
                     CEP (8 dígitos)
@@ -331,16 +374,17 @@ export default function ProfilePage() {
                     placeholder="Ex: 36500000"
                     className="rounded-2xl border border-white/10 bg-zinc-950/30 px-4 py-3 text-white outline-none placeholder:text-white/35 focus:border-white/30"
                     inputMode="numeric"
-                    disabled={loading}
+                    disabled={loading || (home !== null && home !== 'consumer' && home !== 'merchant')}
                   />
                   <span className="text-xs text-white/55">
-                    {cepLoading
-                      ? 'Buscando endereço…'
-                      : 'Ao completar 8 dígitos, buscamos automaticamente.'}
+                    {home !== null && home !== 'consumer' && home !== 'merchant'
+                      ? 'Preferências de localização ainda não existem para este papel.'
+                      : cepLoading
+                        ? 'Buscando endereço…'
+                        : 'Ao completar 8 dígitos, buscamos automaticamente.'}
                   </span>
                 </label>
 
-                {/* Endereço encontrado */}
                 {addr ? (
                   <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
                     <div className="text-sm font-semibold text-white">
@@ -360,7 +404,6 @@ export default function ProfilePage() {
                   </div>
                 ) : null}
 
-                {/* Cidade persistida */}
                 <div className="grid gap-4 sm:grid-cols-2">
                   <label className="grid gap-2">
                     <span className="text-sm font-semibold text-white/90">
@@ -371,7 +414,7 @@ export default function ProfilePage() {
                       onChange={(e) => setCity(e.target.value)}
                       placeholder="Ex: Ubá"
                       className="rounded-2xl border border-white/10 bg-zinc-950/30 px-4 py-3 text-white outline-none placeholder:text-white/35 focus:border-white/30"
-                      disabled={loading}
+                      disabled={loading || (home !== null && home !== 'consumer' && home !== 'merchant')}
                     />
 
                     <div className="text-xs text-white/55">
@@ -384,7 +427,12 @@ export default function ProfilePage() {
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button
                     onClick={onSave}
-                    disabled={loading || saving || !canSave}
+                    disabled={
+                      loading ||
+                      saving ||
+                      !canSave ||
+                      (home !== null && home !== 'consumer' && home !== 'merchant')
+                    }
                     className="rounded-2xl bg-white px-5 py-2 text-sm font-semibold text-black disabled:opacity-60"
                   >
                     {saving ? 'Salvando…' : 'Salvar preferências'}
