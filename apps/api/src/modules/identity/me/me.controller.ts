@@ -108,6 +108,7 @@ export class MeController {
     @Req() req: Request,
     @Body()
     body: {
+      handle?: string;
       displayName?: string;
       bio?: string;
       avatarUrl?: string;

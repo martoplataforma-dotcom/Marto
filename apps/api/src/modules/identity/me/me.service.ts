@@ -59,6 +59,21 @@ export type AddRoleBody =
       };
     };
 
+function redirectFromHome(home: string | null | undefined): string {
+  const h = String(home ?? '').trim();
+
+  // ✅ Aqui é onde garantimos o “direto para onde deve”
+  if (h === 'service_provider') return '/dash/provider/services';
+
+  if (h === 'merchant') return '/dash/merchant';
+  if (h === 'factory') return '/dash/factory';
+  if (h === 'representative') return '/dash/representative';
+  if (h === 'carrier') return '/dash/carrier';
+
+  // default (consumer / desconhecido)
+  return '/dash/consumer';
+}
+
 @Injectable()
 export class MeService {
   constructor(private readonly prisma: PrismaService) {}
@@ -100,10 +115,24 @@ export class MeService {
     else if (roles.includes('MERCHANT')) home = 'merchant';
     else if (roles.includes('SERVICE_PROVIDER')) home = 'service_provider';
     else if (roles.includes('REPRESENTATIVE')) home = 'representative';
+    else if (roles.includes('CARRIER')) home = 'carrier';
 
     const computedHome = home;
 
     const finalHome = homeFromDb ?? computedHome;
+
+    // ✅ Auto-heal: se ainda não tem home no DB, tenta persistir o computedHome
+    // (não pode derrubar /me)
+    if (!homeFromDb && roles.length > 0) {
+      try {
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: { home: computedHome } as any,
+        });
+      } catch {
+        /* MVP: não derruba */
+      }
+    }
 
     // ✅ perfil público — não pode derrubar /me
     let profile: {
@@ -136,6 +165,8 @@ export class MeService {
       profile = null;
     }
 
+    const redirectTo = redirectFromHome(finalHome);
+
     return {
       user: {
         id: userId,
@@ -155,6 +186,7 @@ export class MeService {
         CARRIER: roles.includes('CARRIER'),
       },
       home: finalHome,
+      redirectTo, // ✅ chave nova: frontend só obedece
       needsRoleChoice: roles.length === 0 && !homeFromDb,
     };
   }
@@ -185,7 +217,7 @@ export class MeService {
       throw new BadRequestException(`role inválida: ${roleStr}`);
     }
 
-    // ✅ NOVO BLOCO — FACTORY (pedido)
+    // ✅ BLOCO — FACTORY (corrigido: agora também persiste home)
     if (body.role === 'FACTORY') {
       const f = body.factory;
 
@@ -228,7 +260,20 @@ export class MeService {
         },
       });
 
-      return { ok: true, created: { role: 'FACTORY' } };
+      try {
+        await this.prisma.user.update({
+          where: { id: userId },
+          data: { home: 'factory' } as any,
+        });
+      } catch {
+        /* MVP: não derruba */
+      }
+
+      return {
+        ok: true,
+        created: { role: 'FACTORY' },
+        homePersisted: 'factory',
+      };
     }
 
     const role = roleStr as PrismaRoleCode;
@@ -410,12 +455,35 @@ export class MeService {
         ? String(body.avatarUrl).trim() || null
         : undefined;
 
+    // ✅ 1) Leia e normalize o handle (logo depois de avatarUrl)
+    const handle =
+      (body as any).handle !== undefined
+        ? String((body as any).handle)
+            .toLowerCase()
+            .trim()
+            .replace(/[^a-z0-9._-]/g, '')
+            .slice(0, 24) || null
+        : undefined;
+
+    // ✅ 2) Se o handle já existir em outro usuário, bloquear
+    if (handle !== undefined && handle !== null) {
+      const taken = await this.prisma.user.findFirst({
+        where: { handle, NOT: { id: userId } },
+        select: { id: true },
+      });
+
+      if (taken) {
+        throw new BadRequestException('Esse @handle já está em uso.');
+      }
+    }
+
     const res = await this.prisma.user.updateMany({
       where: { id: userId },
       data: {
         ...(displayName !== undefined ? { displayName } : {}),
         ...(bio !== undefined ? { bio } : {}),
         ...(avatarUrl !== undefined ? { avatarUrl } : {}),
+        ...(handle !== undefined ? { handle } : {}),
       },
     });
 

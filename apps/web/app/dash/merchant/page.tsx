@@ -1,6 +1,7 @@
 'use client';
 
 import Image from 'next/image';
+import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
 import { fetchJSON, type ApiError } from '../../../src/lib/api';
 
@@ -63,18 +64,18 @@ function statusLabel(status?: string | null) {
 
 function Chip({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3">
-      <div className="text-[11px] font-semibold uppercase tracking-wide text-white/60">
+    <div className="rounded-2xl border border-white/15 bg-neutral-950/75 px-4 py-3 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-white/70">
         {label}
       </div>
-      <div className="mt-1 text-sm font-semibold text-white">{value}</div>
+      <div className="mt-1 text-sm font-semibold text-white/90">{value}</div>
     </div>
   );
 }
 
 function StatusChip({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-2xl border bg-white px-4 py-3">
+    <div className="rounded-2xl border border-white/15 bg-white px-4 py-3">
       <div className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">
         {label}
       </div>
@@ -122,11 +123,11 @@ export default function MerchantDash() {
   const [pPrice, setPPrice] = useState('');
   const [pSaving, setPSaving] = useState(false);
 
-  // ✅ NOVO: foto do produto (upload)
+  // ✅ foto do produto (upload)
   const [pFile, setPFile] = useState<File | null>(null);
   const [pUploading, setPUploading] = useState(false);
 
-  // ✅ NOVO: lightbox
+  // ✅ lightbox
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
   const [lightboxAlt, setLightboxAlt] = useState<string>('');
@@ -192,7 +193,7 @@ export default function MerchantDash() {
     })();
   }, []);
 
-  // ✅ NOVO: fecha com ESC
+  // ✅ fecha com ESC
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (e.key === 'Escape') {
@@ -253,7 +254,7 @@ export default function MerchantDash() {
     }
   }
 
-  // ✅ NOVO: faz upload e devolve pathname "/uploads/arquivo.ext"
+  // ✅ faz upload e devolve pathname "/uploads/arquivo.ext"
   async function uploadProductImage(file: File): Promise<string | null> {
     setProductsMsg('');
     setPUploading(true);
@@ -321,9 +322,7 @@ export default function MerchantDash() {
 
       if (pFile) {
         const rel = await uploadProductImage(pFile);
-        if (!rel) {
-          return; // productsMsg já foi setado no upload
-        }
+        if (!rel) return; // productsMsg já foi setado no upload
         images = [rel];
       }
 
@@ -378,24 +377,28 @@ export default function MerchantDash() {
   const showCep = (cepPrefix.trim() || data?.cepPrefix || '—') as string;
 
   return (
-    <main className="min-h-screen bg-white">
-      <div className="w-full px-6 py-8">
+    <main className="relative min-h-screen overflow-x-hidden bg-neutral-950 text-white">
+      {/* fundo Marto (radial gradients) */}
+      <div className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(900px_520px_at_20%_10%,rgba(255,255,255,0.06),transparent_55%),radial-gradient(900px_520px_at_80%_0%,rgba(255,255,255,0.04),transparent_60%),linear-gradient(to_bottom,rgba(0,0,0,0.0),rgba(0,0,0,0.55))]" />
+
+      <div className="mx-auto max-w-6xl p-6">
+        {/* Topbar */}
         <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-          <div className="text-sm font-semibold text-zinc-500">
+          <div className="text-sm font-semibold text-white/80">
             Lojista • Marto
           </div>
 
           <div className="flex flex-wrap gap-2">
             <a
               href="/dash/merchant#perfil-loja"
-              className="rounded-xl border px-4 py-2 text-sm font-semibold hover:bg-zinc-50"
+              className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
             >
               Meu perfil
             </a>
 
             <a
               href="/profile"
-              className="rounded-xl border px-4 py-2 text-sm font-semibold hover:bg-zinc-50"
+              className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
             >
               Configurações
             </a>
@@ -405,20 +408,21 @@ export default function MerchantDash() {
                 localStorage.removeItem('marto_access');
                 window.location.href = '/login';
               }}
-              className="rounded-xl border px-4 py-2 text-sm font-semibold hover:bg-zinc-50"
+              className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
             >
               Sair
             </button>
           </div>
         </div>
 
-        <div className="rounded-3xl bg-zinc-950 p-8 text-white">
+        {/* Hero */}
+        <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-8 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
           <div className="flex flex-col gap-6 lg:flex-row lg:items-end lg:justify-between">
             <div>
-              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-semibold text-white/85">
                 {showName}
-                <span className="opacity-60">•</span>
-                reputação vira venda
+                <span className="text-white/65">•</span>
+                <span className="text-white/75">reputação vira venda</span>
               </div>
 
               <h1 className="mt-4 text-3xl font-bold tracking-tight sm:text-4xl">
@@ -443,30 +447,30 @@ export default function MerchantDash() {
                   Editar perfil da loja
                 </button>
 
-                <a
-                  href="/demo/catalog"
-                  className="rounded-2xl border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold text-white hover:bg-white/10"
+                <Link
+                  href="/dash/merchant/orders"
+                  className="rounded-2xl border border-white/15 bg-white/10 px-6 py-3 text-sm font-semibold text-white hover:bg-white/15"
                 >
-                  Ver catálogo (demo)
-                </a>
+                  Ver vendas
+                </Link>
 
                 <a
                   href="/review"
-                  className="rounded-2xl border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold text-white hover:bg-white/10"
+                  className="rounded-2xl border border-white/15 bg-white/10 px-6 py-3 text-sm font-semibold text-white hover:bg-white/15"
                 >
                   Ver avaliações (MVP)
                 </a>
 
                 <a
                   href="/choose-role"
-                  className="rounded-2xl border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold text-white hover:bg-white/10"
+                  className="rounded-2xl border border-white/15 bg-white/10 px-6 py-3 text-sm font-semibold text-white hover:bg-white/15"
                 >
                   Adicionar outro papel
                 </a>
               </div>
 
               {msg ? (
-                <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/90">
+                <div className="mt-6 rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm text-white/85 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
                   {msg}
                 </div>
               ) : null}
@@ -481,11 +485,14 @@ export default function MerchantDash() {
           </div>
         </div>
 
-        <div className="mt-6 rounded-3xl border bg-white p-6">
+        {/* Status da loja */}
+        <div className="mt-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <div className="text-lg font-semibold">Status da loja</div>
-              <div className="mt-1 text-sm text-zinc-600">
+              <div className="text-lg font-semibold text-white/90">
+                Status da loja
+              </div>
+              <div className="mt-1 text-sm text-white/75">
                 No MVP, alguns módulos são demo. O foco agora é preparar o
                 perfil e registrar as primeiras experiências.
               </div>
@@ -500,25 +507,28 @@ export default function MerchantDash() {
           </div>
         </div>
 
+        {/* Prioridade + Ações */}
         <div className="mt-6 grid gap-4 lg:grid-cols-12">
           <a
             href="/review"
-            className="rounded-3xl border bg-white p-7 transition hover:bg-zinc-50 lg:col-span-7"
+            className="rounded-3xl border border-white/15 bg-neutral-950/75 p-7 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur transition hover:bg-neutral-950/80 lg:col-span-7"
           >
-            <div className="text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            <div className="text-xs font-semibold uppercase tracking-wide text-white/70">
               Prioridade do Marto
             </div>
-            <div className="mt-2 text-2xl font-bold">Reputação</div>
-            <div className="mt-2 text-sm text-zinc-600">
+            <div className="mt-2 text-2xl font-bold text-white/95">
+              Reputação
+            </div>
+            <div className="mt-2 text-sm text-white/75">
               Avaliações e histórico real. Aqui é onde confiança vira venda.
             </div>
 
-            <div className="mt-6 rounded-2xl border bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
+            <div className="mt-6 rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm text-white/80">
               Você está no início. Quando acontecerem as primeiras interações
               reais, sua reputação começa a se formar.
             </div>
 
-            <div className="mt-6 text-xs font-semibold text-zinc-700">
+            <div className="mt-6 text-xs font-semibold text-white/80">
               Abrir →
             </div>
           </a>
@@ -526,29 +536,33 @@ export default function MerchantDash() {
           <div className="grid gap-4 lg:col-span-5">
             <ActionCard
               title="Produtos"
-              desc="No MVP, usamos catálogo demo. Depois vira catálogo real da sua loja."
-              href="/demo/catalog"
+              desc="No MVP, você já cadastra itens e evolui para gestão completa."
+              href="/dash/merchant/products"
             />
             <ActionCard
-              title="Pedidos"
-              desc="Simular fluxo de pedido e acompanhar status."
-              href="/demo"
+              title="Vendas"
+              desc="Acompanhe pedidos recebidos, timeline e ações do lojista."
+              href="/dash/merchant/orders"
             />
           </div>
         </div>
 
-        <div id="produtos" className="mt-6 rounded-3xl border bg-white p-6">
+        {/* Produtos */}
+        <div
+          id="produtos"
+          className="mt-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+        >
           <div className="flex items-start justify-between gap-4">
             <div>
-              <div className="text-lg font-semibold">Produtos</div>
-              <div className="mt-1 text-sm text-zinc-600">
+              <div className="text-lg font-semibold text-white/90">Produtos</div>
+              <div className="mt-1 text-sm text-white/75">
                 Comece simples: cadastre os primeiros itens e depois a gente
                 evolui para gestão completa.
               </div>
             </div>
 
             <div className="flex flex-wrap items-center gap-2">
-              <div className="rounded-2xl border px-4 py-2 text-sm font-semibold text-zinc-700">
+              <div className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white/85">
                 {productsLoading
                   ? 'Carregando…'
                   : `${products.length} produto(s)`}
@@ -556,7 +570,7 @@ export default function MerchantDash() {
 
               <a
                 href="/dash/merchant/products"
-                className="rounded-2xl border px-4 py-2 text-sm font-semibold text-zinc-700 hover:bg-zinc-50"
+                className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
               >
                 Gerenciar todos →
               </a>
@@ -564,38 +578,44 @@ export default function MerchantDash() {
           </div>
 
           {productsMsg ? (
-            <div className="mt-4 rounded-2xl border bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
+            <div className="mt-4 rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm text-white/85 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
               {productsMsg}
             </div>
           ) : null}
 
           <div className="mt-5 grid gap-3 sm:grid-cols-12">
             <label className="sm:col-span-5">
-              <span className="text-sm font-semibold">Nome do produto</span>
+              <span className="text-sm font-semibold text-white/85">
+                Nome do produto
+              </span>
               <input
                 value={pTitle}
                 onChange={(e) => setPTitle(e.target.value)}
                 placeholder="Ex: Cadeira Madeira"
-                className="mt-2 w-full rounded-2xl border px-4 py-3 outline-none focus:border-black"
+                className="mt-2 w-full rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white outline-none placeholder:text-white/65 focus:border-white/25 focus:ring-2 focus:ring-white/10"
                 disabled={productsLoading || pSaving || pUploading}
               />
             </label>
 
             <label className="sm:col-span-3">
-              <span className="text-sm font-semibold">Preço (R$)</span>
+              <span className="text-sm font-semibold text-white/85">
+                Preço (R$)
+              </span>
               <input
                 value={pPrice}
                 onChange={(e) => setPPrice(e.target.value)}
                 placeholder="Ex: 299.90"
-                className="mt-2 w-full rounded-2xl border px-4 py-3 outline-none focus:border-black"
+                className="mt-2 w-full rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white outline-none placeholder:text-white/65 focus:border-white/25 focus:ring-2 focus:ring-white/10"
                 disabled={productsLoading || pSaving || pUploading}
                 inputMode="decimal"
               />
             </label>
 
-            {/* ✅ NOVO: foto */}
+            {/* Foto */}
             <label className="sm:col-span-3">
-              <span className="text-sm font-semibold">Foto (opcional)</span>
+              <span className="text-sm font-semibold text-white/85">
+                Foto (opcional)
+              </span>
               <input
                 type="file"
                 accept="image/png,image/jpeg,image/jpg,image/webp,image/gif"
@@ -603,7 +623,7 @@ export default function MerchantDash() {
                   const f = e.target.files?.[0] ?? null;
                   setPFile(f);
                 }}
-                className="mt-2 w-full rounded-2xl border px-4 py-[10px] text-sm outline-none"
+                className="mt-2 w-full rounded-2xl border border-white/15 bg-black/80 px-4 py-[10px] text-sm text-white outline-none file:mr-3 file:rounded-lg file:border-0 file:bg-white/10 file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-white hover:file:bg-white/15"
                 disabled={productsLoading || pSaving || pUploading}
               />
             </label>
@@ -612,7 +632,7 @@ export default function MerchantDash() {
               <button
                 onClick={createProductQuick}
                 disabled={productsLoading || pSaving || pUploading}
-                className="w-full rounded-2xl bg-black px-4 py-3 text-sm font-semibold text-white disabled:opacity-60"
+                className="w-full rounded-2xl bg-white px-4 py-3 text-sm font-semibold text-black disabled:opacity-60"
               >
                 {pUploading ? 'Enviando…' : pSaving ? 'Criando…' : 'Adicionar'}
               </button>
@@ -621,16 +641,19 @@ export default function MerchantDash() {
 
           <div className="mt-5 grid gap-3">
             {productsLoading ? (
-              <div className="rounded-2xl border bg-zinc-50 px-4 py-3 text-sm text-zinc-600">
+              <div className="rounded-2xl border border-white/15 bg-neutral-950/75 px-4 py-3 text-sm text-white/80 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
                 Buscando seus produtos…
               </div>
             ) : products.length === 0 ? (
-              <div className="rounded-2xl border bg-zinc-50 px-4 py-3 text-sm text-zinc-700">
+              <div className="rounded-2xl border border-white/15 bg-neutral-950/75 px-4 py-3 text-sm text-white/80 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
                 Você ainda não tem produtos cadastrados.
               </div>
             ) : (
               products.slice(0, 3).map((p) => (
-                <div key={p.id} className="rounded-2xl border bg-white px-4 py-3">
+                <div
+                  key={p.id}
+                  className="rounded-2xl border border-white/15 bg-neutral-950/75 px-4 py-3 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+                >
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
                       <div className="flex items-start gap-3">
@@ -638,7 +661,9 @@ export default function MerchantDash() {
                           <button
                             type="button"
                             onClick={() => {
-                              setLightboxSrc(`http://localhost:3001${p.images![0]}`);
+                              setLightboxSrc(
+                                `http://localhost:3001${p.images![0]}`,
+                              );
                               setLightboxAlt(p.title);
                               setLightboxOpen(true);
                             }}
@@ -651,23 +676,23 @@ export default function MerchantDash() {
                               alt={p.title}
                               width={56}
                               height={56}
-                              className="h-14 w-14 rounded-xl border object-cover hover:opacity-90"
+                              className="h-14 w-14 rounded-xl border border-white/15 object-cover hover:opacity-90"
                             />
                           </button>
                         ) : (
-                          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-zinc-200 bg-zinc-900/5">
-                            <span className="text-[10px] font-semibold text-zinc-500">
+                          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-xl border border-white/15 bg-white/5">
+                            <span className="text-[10px] font-semibold text-white/70">
                               Sem foto
                             </span>
                           </div>
                         )}
 
                         <div>
-                          <div className="text-sm font-semibold text-zinc-900">
+                          <div className="text-sm font-semibold text-white/90">
                             {p.title}
                           </div>
 
-                          <div className="mt-1 text-xs text-zinc-600">
+                          <div className="mt-1 text-xs text-white/75">
                             {p.active ? 'Ativo' : 'Inativo'} • R${' '}
                             {(p.priceCents / 100).toFixed(2)}
                           </div>
@@ -675,7 +700,7 @@ export default function MerchantDash() {
                       </div>
                     </div>
 
-                    <div className="text-xs font-semibold text-zinc-600">
+                    <div className="text-xs font-semibold text-white/75">
                       Ver detalhes → (em breve)
                     </div>
                   </div>
@@ -685,17 +710,23 @@ export default function MerchantDash() {
           </div>
 
           {!productsLoading && products.length > 3 ? (
-            <div className="mt-4 text-sm text-zinc-600">
+            <div className="mt-4 text-sm text-white/75">
               Mostrando 3 mais recentes. Gestão completa em breve.
             </div>
           ) : null}
         </div>
 
-        <div id="perfil-loja" className="mt-6 rounded-3xl border bg-white p-6">
+        {/* Perfil da loja */}
+        <div
+          id="perfil-loja"
+          className="mt-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+        >
           <div className="flex items-start justify-between gap-4">
             <div>
-              <div className="text-lg font-semibold">Perfil da loja</div>
-              <div className="mt-1 text-sm text-zinc-600">
+              <div className="text-lg font-semibold text-white/90">
+                Perfil da loja
+              </div>
+              <div className="mt-1 text-sm text-white/75">
                 Essas informações definem como sua loja aparece para clientes no
                 Marto.
               </div>
@@ -704,7 +735,7 @@ export default function MerchantDash() {
             <button
               onClick={onSave}
               disabled={loading || saving || !canSave}
-              className="rounded-2xl bg-black px-5 py-2 text-sm font-semibold text-white disabled:opacity-60"
+              className="rounded-2xl bg-white px-5 py-2 text-sm font-semibold text-black disabled:opacity-60"
             >
               {saving ? 'Salvando…' : 'Salvar'}
             </button>
@@ -712,18 +743,20 @@ export default function MerchantDash() {
 
           <div className="mt-6 grid gap-4 sm:grid-cols-2">
             <label className="grid gap-2">
-              <span className="text-sm font-semibold">Nome da loja</span>
+              <span className="text-sm font-semibold text-white/85">
+                Nome da loja
+              </span>
               <input
                 value={tradeName}
                 onChange={(e) => setTradeName(e.target.value)}
                 placeholder="Ex: Loja Marto"
-                className="rounded-2xl border px-4 py-3 outline-none focus:border-black"
+                className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white outline-none placeholder:text-white/65 focus:border-white/25 focus:ring-2 focus:ring-white/10"
                 disabled={loading}
               />
             </label>
 
             <label className="grid gap-2">
-              <span className="text-sm font-semibold">CNPJ</span>
+              <span className="text-sm font-semibold text-white/85">CNPJ</span>
               <input
                 value={formatCnpjDigits(docNumber)}
                 onChange={(e) => {
@@ -731,28 +764,30 @@ export default function MerchantDash() {
                   setDocNumber(digits);
                 }}
                 placeholder="00.000.000/0000-00"
-                className="rounded-2xl border px-4 py-3 outline-none focus:border-black"
+                className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white outline-none placeholder:text-white/65 focus:border-white/25 focus:ring-2 focus:ring-white/10"
                 disabled={loading}
                 inputMode="numeric"
               />
-              <span className="text-xs text-zinc-500">
+              <span className="text-xs text-white/70">
                 O Marto exige CNPJ para vender produtos e emitir nota fiscal.
               </span>
             </label>
 
             <label className="grid gap-2">
-              <span className="text-sm font-semibold">Cidade (opcional)</span>
+              <span className="text-sm font-semibold text-white/85">
+                Cidade (opcional)
+              </span>
               <input
                 value={city}
                 onChange={(e) => setCity(e.target.value)}
                 placeholder="Ex: Ubá"
-                className="rounded-2xl border px-4 py-3 outline-none focus:border-black"
+                className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white outline-none placeholder:text-white/65 focus:border-white/25 focus:ring-2 focus:ring-white/10"
                 disabled={loading}
               />
             </label>
 
             <label className="grid gap-2">
-              <span className="text-sm font-semibold">
+              <span className="text-sm font-semibold text-white/85">
                 CEP (prefixo) — opcional
               </span>
               <input
@@ -761,11 +796,11 @@ export default function MerchantDash() {
                   setCepPrefix(e.target.value.replace(/\D/g, '').slice(0, 5))
                 }
                 placeholder="Ex: 36500"
-                className="rounded-2xl border px-4 py-3 outline-none focus:border-black"
+                className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white outline-none placeholder:text-white/65 focus:border-white/25 focus:ring-2 focus:ring-white/10"
                 disabled={loading}
                 inputMode="numeric"
               />
-              <span className="text-xs text-zinc-500">
+              <span className="text-xs text-white/70">
                 Se não souber, deixe em branco.
               </span>
             </label>
@@ -773,6 +808,7 @@ export default function MerchantDash() {
         </div>
       </div>
 
+      {/* Lightbox */}
       {lightboxOpen && lightboxSrc ? (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
@@ -795,13 +831,13 @@ export default function MerchantDash() {
                 setLightboxSrc(null);
                 setLightboxAlt('');
               }}
-              className="absolute right-2 top-2 rounded-xl bg-black/60 px-3 py-2 text-xs font-semibold text-white hover:bg-black/70"
+              className="absolute right-2 top-2 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15"
               aria-label="Fechar"
             >
               ✕
             </button>
 
-            <div className="overflow-hidden rounded-3xl border border-white/10 bg-black">
+            <div className="overflow-hidden rounded-3xl border border-white/15 bg-black shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
               <div className="relative aspect-[16/10] w-full">
                 <Image
                   src={lightboxSrc}
@@ -813,7 +849,7 @@ export default function MerchantDash() {
               </div>
 
               {lightboxAlt ? (
-                <div className="border-t border-white/10 bg-black px-4 py-3 text-sm font-semibold text-white/90">
+                <div className="border-t border-white/15 bg-black px-4 py-3 text-sm font-semibold text-white/85">
                   {lightboxAlt}
                 </div>
               ) : null}
@@ -835,13 +871,13 @@ function ActionCard({
   href: string;
 }) {
   return (
-    <a
+    <Link
       href={href}
-      className="rounded-3xl border bg-white p-6 transition hover:bg-zinc-50"
+      className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur transition hover:bg-neutral-950/80"
     >
-      <div className="text-base font-semibold">{title}</div>
-      <div className="mt-2 text-sm text-zinc-600">{desc}</div>
-      <div className="mt-6 text-xs font-semibold text-zinc-700">Abrir →</div>
-    </a>
+      <div className="text-base font-semibold text-white/90">{title}</div>
+      <div className="mt-2 text-sm text-white/75">{desc}</div>
+      <div className="mt-6 text-xs font-semibold text-white/80">Abrir →</div>
+    </Link>
   );
 }

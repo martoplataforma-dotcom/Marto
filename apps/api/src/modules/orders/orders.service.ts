@@ -1,6 +1,90 @@
-import { Injectable } from '@nestjs/common';
+// apps/api/src/modules/orders/orders.service.ts
+import {
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { OrderEventType, OrderStatus, Prisma } from '@prisma/client';
+
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
+
+function toJsonValue(value: unknown): Prisma.InputJsonValue | undefined {
+  if (value === undefined || value === null) return undefined;
+
+  if (
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return value;
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((v) => {
+      const j = toJsonValue(v);
+      return j === undefined ? null : j;
+    }) as Prisma.InputJsonArray;
+  }
+
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const out: Record<string, Prisma.InputJsonValue> = {};
+
+    for (const [k, v] of Object.entries(obj)) {
+      const j = toJsonValue(v);
+      if (j !== undefined) out[k] = j;
+    }
+
+    return out as Prisma.InputJsonObject;
+  }
+
+  return undefined;
+}
+
+type ActorRole = 'buyer' | 'seller';
+
+function roleLabel(role: ActorRole) {
+  return role; // string pro OrderEvent (MVP)
+}
+
+const ALLOWED: Record<
+  ActorRole,
+  Partial<
+    Record<
+      import('@prisma/client').OrderStatus,
+      import('@prisma/client').OrderStatus[]
+    >
+  >
+> = {
+  buyer: {
+    // criação/pagamento
+    CREATED: ['PAID', 'CANCELLED'] as any,
+    PAID: ['CANCELLED', 'RETURN_REQUESTED', 'DISPUTE'] as any,
+
+    // pós-entrega
+    DELIVERED: ['RETURN_REQUESTED', 'DISPUTE'] as any,
+    COMPLETED: ['RETURN_REQUESTED', 'DISPUTE'] as any,
+
+    // em devolução (buyer pode abrir disputa a qualquer momento)
+    RETURN_REQUESTED: ['DISPUTE'] as any,
+    RETURN_IN_TRANSIT: ['DISPUTE'] as any,
+    RETURNED: ['DISPUTE'] as any,
+  },
+  seller: {
+    // vendas
+    PAID: ['CONFIRMED_BY_SELLER', 'CANCELLED'] as any,
+    CONFIRMED_BY_SELLER: ['READY_FOR_PICKUP', 'CANCELLED'] as any,
+    READY_FOR_PICKUP: ['IN_TRANSIT'] as any,
+    IN_TRANSIT: ['DELIVERED'] as any,
+    DELIVERED: ['COMPLETED'] as any,
+
+    // devolução (seller opera a logística reversa)
+    RETURN_REQUESTED: ['RETURN_IN_TRANSIT', 'DISPUTE'] as any,
+    RETURN_IN_TRANSIT: ['RETURNED', 'DISPUTE'] as any,
+    RETURNED: ['DISPUTE'] as any,
+  },
+};
 
 @Injectable()
 export class OrdersService {
@@ -27,19 +111,15 @@ export class OrdersService {
   }) {
     const order = await this.prisma.order.create({
       data: {
-        // ✅ defaults pra não ficar undefined
         userId: params.userId ?? 'user_test',
         city: params.city ?? 'SAO_PAULO',
         state: params.state ?? 'SP',
-
-        // ✅ obrigatório no seu schema
         merchantId: params.merchantId ?? 'merchant_test',
 
         items: {
           create: params.items.map((it) => ({
             productId: it.productId,
             quantity: it.quantity,
-            // ✅ unitPrice não pode ser undefined
             unitPrice: it.unitPrice ?? '100.00',
           })),
         },
@@ -49,7 +129,6 @@ export class OrdersService {
       },
     });
 
-    // ✅ cria HOLD somente se houver userId (comprador identificado)
     if (params.userId) {
       const total = order.items.reduce((acc, item) => {
         return acc + Number(item.unitPrice) * item.quantity;
@@ -83,5 +162,211 @@ export class OrdersService {
     });
 
     return order;
+  }
+
+  /**
+   * 🔁 Transiciona o status do pedido e cria um OrderEvent (timeline/auditoria)
+   * MVP: apenas troca status (sem regras complexas ainda)
+   *
+   * ✅ Também seta timestamps por status (MVP)
+   */
+  async transitionStatus(params: {
+    orderId: string;
+    toStatus: OrderStatus;
+    actorUserId?: string;
+    actorRole?: string; // 'buyer' | 'seller' | 'system' | etc
+    message?: string;
+    meta?: unknown;
+  }) {
+    const order = await this.prisma.order.findUnique({
+      where: { id: params.orderId },
+      select: { id: true, status: true, userId: true, merchantId: true },
+    });
+
+    if (!order) throw new NotFoundException('Order not found');
+
+    if (!params.actorUserId) {
+      throw new Error('actorUserId is required for status transition');
+    }
+
+    const actorUserId = String(params.actorUserId);
+
+    // buyer = order.userId
+    const isBuyer = order.userId && String(order.userId) === actorUserId;
+
+    // seller = merchant.userId (dono do merchant)
+    const merchant = await this.prisma.merchant.findUnique({
+      where: { id: order.merchantId },
+      select: { userId: true },
+    });
+
+    const isSeller =
+      merchant?.userId && String(merchant.userId) === actorUserId;
+
+    let role: ActorRole | null = null;
+    if (isBuyer) role = 'buyer';
+    if (isSeller) role = 'seller';
+
+    if (!role) {
+      // MVP: só buyer ou seller pode trocar status
+      throw new ForbiddenException(
+        'Only buyer or seller can transition this order',
+      );
+    }
+
+    const from = order.status;
+    const to = params.toStatus;
+
+    // valida matriz
+    const allowedTargets = (ALLOWED[role]?.[from] ?? []) as any[];
+
+    if (!allowedTargets.includes(to)) {
+      throw new ForbiddenException(
+        `${role} cannot transition from ${String(from)} to ${String(to)}`,
+      );
+    }
+
+    const fromStatus = order.status;
+
+    // ✅ garante enum real (mesmo se vier string)
+    const statusEnum =
+      OrderStatus[params.toStatus as unknown as keyof typeof OrderStatus];
+
+    const meta = toJsonValue(params.meta);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const now = new Date();
+
+      const data: Prisma.OrderUpdateInput = {
+        status: statusEnum,
+      };
+
+      // timestamps automáticos por status (MVP)
+      if (statusEnum === OrderStatus.PAID) {
+        data.paidAt = now;
+      }
+
+      if (statusEnum === OrderStatus.CONFIRMED_BY_SELLER) {
+        data.confirmedAt = now;
+      }
+
+      if (statusEnum === OrderStatus.READY_FOR_PICKUP) {
+        data.readyForPickupAt = now;
+      }
+
+      if (statusEnum === OrderStatus.IN_TRANSIT) {
+        data.inTransitAt = now;
+      }
+
+      if (statusEnum === OrderStatus.DELIVERED) {
+        data.deliveredAt = now;
+      }
+
+      if (statusEnum === OrderStatus.COMPLETED) {
+        data.completedAt = now;
+      }
+
+      if (statusEnum === OrderStatus.CANCELLED) {
+        data.cancelledAt = now;
+      }
+
+      if (statusEnum === OrderStatus.RETURN_REQUESTED) {
+        data.returnRequestedAt = now;
+      }
+
+      if (statusEnum === OrderStatus.RETURN_IN_TRANSIT) {
+        data.returnInTransitAt = now;
+      }
+
+      if (statusEnum === OrderStatus.RETURNED) {
+        data.returnedAt = now;
+      }
+
+      if (statusEnum === OrderStatus.DISPUTE) {
+        data.disputeAt = now;
+      }
+
+      const saved = await tx.order.update({
+        where: { id: params.orderId },
+        data,
+      });
+
+      await tx.orderEvent.create({
+        data: {
+          orderId: params.orderId,
+          type: OrderEventType.STATUS_CHANGED,
+          actorUserId: params.actorUserId ?? null,
+          actorRole: roleLabel(role),
+          fromStatus,
+          toStatus: statusEnum,
+          message: params.message ?? null,
+          meta,
+        },
+      });
+
+      return saved;
+    });
+
+    return { ok: true, order: updated };
+  }
+
+  /**
+   * 📦 Lista pedidos do comprador logado (buyer)
+   */
+  async listMyOrders(params: { userId: string }) {
+    const userId = String(params.userId ?? '').trim();
+    if (!userId) {
+      return { ok: false, items: [] as any[] };
+    }
+
+    const items = await this.prisma.order.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        items: true,
+        events: {
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+        },
+      },
+    });
+
+    return { ok: true, items };
+  }
+
+  /**
+   * 🧾 Lista vendas do lojista logado (seller)
+   * Como o model Order não tem relation "merchant" no Prisma,
+   * buscamos os merchants do user e filtramos por merchantId.
+   */
+  async listMySales(params: { userId: string }) {
+    const userId = String(params.userId ?? '').trim();
+    if (!userId) {
+      return { ok: false, items: [] as any[] };
+    }
+
+    const merchants = await this.prisma.merchant.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const merchantIds = merchants.map((m) => m.id);
+    if (merchantIds.length === 0) {
+      return { ok: true, items: [] as any[] };
+    }
+
+    const items = await this.prisma.order.findMany({
+      where: { merchantId: { in: merchantIds } },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        items: true,
+        events: {
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+        },
+      },
+    });
+
+    return { ok: true, items };
   }
 }

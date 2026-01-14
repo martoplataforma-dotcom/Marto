@@ -8,8 +8,17 @@ import { login } from '../../src/lib/auth';
 import { fetchJSON, type ApiError } from '../../src/lib/api';
 
 type MeResponse = {
-  home?: 'consumer' | 'merchant' | 'service_provider' | 'representative' | 'factory';
+  home?:
+    | 'consumer'
+    | 'merchant'
+    | 'service_provider'
+    | 'representative'
+    | 'factory';
   needsRoleChoice?: boolean;
+};
+
+type ServiceProviderMeResponse = {
+  kind?: 'GENERIC' | 'TRANSPORTER' | null;
 };
 
 function dashFromHome(home?: MeResponse['home'] | null) {
@@ -19,13 +28,12 @@ function dashFromHome(home?: MeResponse['home'] | null) {
     case 'merchant':
       return '/dash/merchant';
     case 'service_provider':
-      return '/dash/service-provider';
+      return '/dash/provider/services';
     case 'representative':
       return '/dash/representative';
     case 'factory':
       return '/dash/factory';
     default:
-      // ✅ fallback seguro: nunca mandar pra factory por padrão
       return '/dash/consumer';
   }
 }
@@ -33,7 +41,6 @@ function dashFromHome(home?: MeResponse['home'] | null) {
 export default function LoginPage() {
   const router = useRouter();
 
-  // ✅ se quiser manter pra DEV, você pode voltar esses defaults
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
@@ -57,31 +64,42 @@ export default function LoginPage() {
         return;
       }
 
-      // 1) faz login e salva token (como seu auth.ts já faz)
       await login({ email: e2, password });
 
-      // 2) fonte da verdade: /me
       const me = await fetchJSON<MeResponse>('/me', { method: 'GET' });
 
-      // 3) (se existir no seu fluxo) escolha de papel
       if (me?.needsRoleChoice) {
-        // opcional: você pode querer limpar a home aqui
         localStorage.removeItem('marto_home');
         router.replace('/choose-role');
         router.refresh();
         return;
       }
 
-      // 4) salva home e manda pro dashboard correto
       const home = me?.home ?? 'consumer';
       localStorage.setItem('marto_home', home);
+
+      if (home === 'service_provider') {
+        const sp = await fetchJSON<ServiceProviderMeResponse>(
+          '/service-providers/me',
+          { method: 'GET' },
+        );
+
+        if (sp?.kind === 'TRANSPORTER') {
+          router.replace('/dash/provider/transporter');
+          router.refresh();
+          return;
+        }
+
+        // ✅ provider normal: direto na central de serviços
+        router.replace('/dash/provider/services');
+        router.refresh();
+        return;
+      }
 
       router.replace(dashFromHome(home));
       router.refresh();
     } catch (err: unknown) {
       const a = err as ApiError;
-
-      // mantém simples e legível
       const text =
         a?.message ||
         (err instanceof Error ? err.message : String(err ?? 'Erro ao entrar.'));
@@ -92,13 +110,12 @@ export default function LoginPage() {
   }
 
   function onGoogle() {
-    // ✅ Só UI por enquanto (sem OAuth)
     setMsg('Em breve: continuar com Google para acessar seu histórico.');
   }
 
   return (
     <main className="relative min-h-screen bg-zinc-950 text-white">
-      {/* fundo com grid sutil */}
+      {/* fundo com grid */}
       <div
         className="pointer-events-none absolute inset-0 opacity-15"
         style={{
@@ -168,7 +185,7 @@ export default function LoginPage() {
             </div>
 
             <div className="mt-8 grid gap-3">
-              {/* Google (UI) */}
+              {/* Google */}
               <button
                 type="button"
                 onClick={onGoogle}
@@ -180,7 +197,6 @@ export default function LoginPage() {
                 Continuar com Google
               </button>
 
-              {/* divisor */}
               <div className="my-1 flex items-center gap-3">
                 <div className="h-px flex-1 bg-white/10" />
                 <div className="text-xs text-white/45">ou</div>
@@ -202,6 +218,7 @@ export default function LoginPage() {
 
                 <label className="grid gap-1 text-sm">
                   <span className="font-medium text-white/85">Senha</span>
+
                   <input
                     className="rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-white outline-none placeholder:text-white/35 focus:border-white/30"
                     type="password"
@@ -225,6 +242,15 @@ export default function LoginPage() {
                 >
                   {loading ? 'Entrando…' : 'Entrar'}
                 </button>
+
+                <div className="text-center">
+                  <Link
+                    href="/forgot-password"
+                    className="text-xs font-semibold text-white/60 hover:text-white/90 underline underline-offset-4"
+                  >
+                    Recuperar acesso
+                  </Link>
+                </div>
 
                 <div className="text-center text-sm text-white/65">
                   Não tem conta?{' '}

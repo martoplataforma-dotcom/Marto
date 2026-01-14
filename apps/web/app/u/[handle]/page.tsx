@@ -2,12 +2,19 @@
 
 import Image from 'next/image';
 import Link from 'next/link';
-import { use, useEffect, useState } from 'react';
+import { use, useEffect, useMemo, useState } from 'react';
 
 type Props = {
   // ✅ Next pode entregar params como Promise em Client Components
   params: Promise<{ handle: string }>;
 };
+
+type Home =
+  | 'consumer'
+  | 'merchant'
+  | 'service_provider'
+  | 'representative'
+  | 'factory';
 
 type PublicEvent = {
   id?: string;
@@ -17,8 +24,26 @@ type PublicEvent = {
   verified: boolean;
 };
 
+type PublicProviderSnapshot = {
+  // opcional (quando o backend passar)
+  kind?: 'GENERIC' | 'TRANSPORTER' | null;
+  city?: string | null;
+  uf?: string | null;
+
+  // resumo público (MVP)
+  specialtiesLabel?: string | null; // "Entregador" | "Prestador"
+  types?: { key: string; title: string }[]; // ex: express, agendada
+  sla?: { pickupMinutes?: number; deliveryMinutes?: number; bias?: string };
+  agendaSummary?: string | null; // ex: "Seg–Sex 09:00–18:00"
+  regionSummary?: string | null; // ex: "Ubá/MG • raio 15 km"
+};
+
 type PublicUserResponse = {
   ok: boolean;
+
+  // ✅ novo: home do usuário (pra montar o perfil por tipo)
+  home?: Home;
+
   user: {
     handle: string;
     name: string;
@@ -26,10 +51,15 @@ type PublicUserResponse = {
     avatarUrl: string | null;
     since: string;
   };
+
+  // ✅ opcional: dados públicos do prestador (quando backend mandar)
+  provider?: PublicProviderSnapshot | null;
+
   stats: {
     verifiedCount: number;
     linksCount: number;
   };
+
   events: PublicEvent[];
 };
 
@@ -43,11 +73,10 @@ function titleFromHandle(handle: string) {
   return nice || 'Usuário';
 }
 
-// ✅ NEW: formata "since" para algo bonito (ano)
 function formatSince(iso: string) {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
-  return d.getFullYear().toString(); // ex: 2026
+  return d.getFullYear().toString();
 }
 
 function getErrorMessage(err: unknown) {
@@ -56,23 +85,88 @@ function getErrorMessage(err: unknown) {
   return 'Erro ao carregar perfil';
 }
 
-const HEADER_LINKS = {
-  actions: '/dash/consumer',
-  settings: '/me',
-} as const;
+// ✅ mesma regra do /me
+function dashFromHome(home?: Home | null) {
+  if (home === 'factory') return '/dash/factory';
+  if (home === 'merchant') return '/dash/merchant';
+  if (home === 'service_provider') return '/dash/provider/services';
+  if (home === 'representative') return '/dash/representative';
+  return '/dash/consumer';
+}
+
+/**
+ * ✅ Badge do perfil público NÃO pode depender de `home` (histórico).
+ * Regra:
+ * 1) provider.kind === TRANSPORTER -> Transportadora
+ * 2) provider.specialtiesLabel (ex: "Entregador") -> respeita
+ * 3) fallback -> usa home
+ */
+function badgeFromPublic(data: PublicUserResponse | null) {
+  const kind = data?.provider?.kind ?? null;
+  const specialties = (data?.provider?.specialtiesLabel ?? '').trim();
+
+  if (kind === 'TRANSPORTER') return 'Transportadora';
+
+  if (specialties) {
+    const s = specialties.toLowerCase();
+    if (s.includes('entreg')) return 'Entregador';
+    if (s.includes('transport')) return 'Transportadora';
+    if (s.includes('prest')) return 'Prestador';
+    return specialties;
+  }
+
+  const home = data?.home ?? null;
+  return home === 'factory'
+    ? 'Fabricante'
+    : home === 'merchant'
+      ? 'Negócio'
+      : home === 'service_provider'
+        ? 'Prestador'
+        : home === 'representative'
+          ? 'Representante'
+          : 'Consumidor';
+}
 
 export default function PublicUserProfilePage({ params }: Props) {
-  // ✅ unwrap do params Promise (Next/React 19)
   const resolved = use(params);
   const handle = String(resolved?.handle ?? '').trim().toLowerCase();
 
-  // ✅ hooks SEMPRE no topo (antes de qualquer return)
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string>('');
   const [data, setData] = useState<PublicUserResponse | null>(null);
 
-  // avatar sempre existe e troca quando data muda
   const [avatarSrc, setAvatarSrc] = useState<string>('/marto-m.svg');
+
+  // ✅ links dinâmicos (baseado no home do usuário logado, não do perfil público)
+  const [myHome, setMyHome] = useState<Home | null>(null);
+
+  useEffect(() => {
+    try {
+      const h = localStorage.getItem('marto_home') as Home | null;
+      if (
+        h === 'consumer' ||
+        h === 'merchant' ||
+        h === 'service_provider' ||
+        h === 'representative' ||
+        h === 'factory'
+      ) {
+        setMyHome(h);
+      } else {
+        setMyHome(null);
+      }
+    } catch {
+      setMyHome(null);
+    }
+  }, []);
+
+  const headerLinks = useMemo(() => {
+    return {
+      actions: dashFromHome(myHome),
+      // agora que você alinhou: configurações do prestador é /dash/provider/profile,
+      // mas “Minha conta” continua sendo /me (perfil do dono logado)
+      settings: '/me',
+    } as const;
+  }, [myHome]);
 
   useEffect(() => {
     if (!handle) {
@@ -90,8 +184,9 @@ export default function PublicUserProfilePage({ params }: Props) {
         setError('');
         setData(null);
 
+        // ✅ IMPORTANTÍSSIMO: usa a rewrite do Next (/api -> backend)
         const res = await fetch(
-          `http://localhost:3001/api/public/users/${encodeURIComponent(handle)}`,
+          `/api/public/users/${encodeURIComponent(handle)}`,
           { signal: controller.signal },
         );
 
@@ -112,13 +207,11 @@ export default function PublicUserProfilePage({ params }: Props) {
     return () => controller.abort();
   }, [handle]);
 
-  // sempre que data mudar, atualiza avatar
   useEffect(() => {
     const next = data?.user?.avatarUrl || '/marto-m.svg';
     setAvatarSrc(next);
   }, [data?.user?.avatarUrl]);
 
-  // ✅ agora sim: returns podem ficar aqui
   if (loading) {
     return (
       <main className="flex min-h-screen items-center justify-center bg-zinc-950 text-white">
@@ -137,8 +230,15 @@ export default function PublicUserProfilePage({ params }: Props) {
 
   const profile = data.user;
   const events = data.events ?? [];
-
   const safeName = profile.name || titleFromHandle(profile.handle);
+
+  const publicBadge = badgeFromPublic(data);
+
+
+  // ✅ heurística “entregador vs prestador” (se backend não mandar)
+  const providerLabel =
+    data?.provider?.specialtiesLabel ??
+    (data?.provider?.kind === 'TRANSPORTER' ? 'Transportadora' : 'Prestador');
 
   return (
     <main className="relative min-h-screen overflow-x-hidden bg-zinc-950 text-white">
@@ -156,14 +256,19 @@ export default function PublicUserProfilePage({ params }: Props) {
       <div className="pointer-events-none absolute top-[22rem] -right-40 h-[26rem] w-[26rem] rounded-full bg-white/5 blur-3xl" />
 
       <div className="relative mx-auto max-w-6xl px-6 py-10">
-        {/* Canvas (agora dark glass) */}
         <div className="overflow-hidden rounded-[32px] border border-white/10 bg-white/5 shadow-sm backdrop-blur">
-          {/* Header do perfil (público) */}
+          {/* Header */}
           <div className="border-b border-white/10 px-8 py-6">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 <div className="grid h-10 w-10 place-items-center rounded-2xl bg-black/60 ring-1 ring-white/10">
-                  <Image src="/marto-m.svg" alt="Marto" width={20} height={20} priority />
+                  <Image
+                    src="/marto-m.svg"
+                    alt="Marto"
+                    width={20}
+                    height={20}
+                    priority
+                  />
                 </div>
                 <div className="leading-tight">
                   <div className="text-sm font-semibold text-white">Marto</div>
@@ -182,14 +287,14 @@ export default function PublicUserProfilePage({ params }: Props) {
                 </Link>
 
                 <Link
-                  href={HEADER_LINKS.actions}
+                  href={headerLinks.actions}
                   className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
                 >
                   Minha central
                 </Link>
 
                 <Link
-                  href={HEADER_LINKS.settings}
+                  href={headerLinks.settings}
                   className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
                 >
                   Minha conta
@@ -198,7 +303,7 @@ export default function PublicUserProfilePage({ params }: Props) {
             </div>
           </div>
 
-          {/* HERO do perfil */}
+          {/* HERO */}
           <div className="relative overflow-hidden border-b border-white/10 bg-black/25 px-8 py-10 text-white">
             <div className="pointer-events-none absolute inset-0 opacity-20">
               <div
@@ -225,8 +330,18 @@ export default function PublicUserProfilePage({ params }: Props) {
                 </div>
 
                 <div>
-                  <div className="text-2xl font-bold tracking-tight">{safeName}</div>
-                  <div className="mt-1 text-sm text-white/70">@{profile.handle}</div>
+                  <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
+                    {publicBadge}
+                    <span className="opacity-60">•</span>
+                    Porque reputação importa
+                  </div>
+
+                  <div className="mt-3 text-2xl font-bold tracking-tight">
+                    {safeName}
+                  </div>
+                  <div className="mt-1 text-sm text-white/70">
+                    @{profile.handle}
+                  </div>
 
                   <p className="mt-3 max-w-xl text-sm leading-relaxed text-white/75">
                     {profile.bio ?? '—'}
@@ -266,18 +381,69 @@ export default function PublicUserProfilePage({ params }: Props) {
                   <Stat label="Estado" value="Ativo" />
                 </div>
 
-                <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
-                  “O social do Marto é consequência do que aconteceu.”
-                </div>
+                {/* ✅ extra: se backend mandar provider, mostra “Operação” (mesmo que home esteja consumer) */}
+                {data.provider ? (
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
+                    <div className="text-sm font-semibold text-white">
+                      Operação ({providerLabel})
+                    </div>
+                    <div className="mt-2 text-sm text-white/70">
+                      {data.provider?.regionSummary ??
+                        (data.provider?.city || data.provider?.uf
+                          ? `${data.provider?.city ?? '—'}/${data.provider?.uf ?? '—'}`
+                          : 'Dados de operação serão exibidos quando o prestador ativar o perfil público.')}
+                    </div>
+
+                    {data.provider?.agendaSummary ? (
+                      <div className="mt-2 text-xs text-white/60">
+                        Agenda:{' '}
+                        <span className="text-white/80">
+                          {data.provider.agendaSummary}
+                        </span>
+                      </div>
+                    ) : null}
+
+                    {data.provider?.sla?.pickupMinutes ||
+                    data.provider?.sla?.deliveryMinutes ? (
+                      <div className="mt-2 text-xs text-white/60">
+                        SLA:{' '}
+                        <span className="text-white/80">
+                          iniciar {String(data.provider?.sla?.pickupMinutes ?? '—')} min • concluir{' '}
+                          {String(data.provider?.sla?.deliveryMinutes ?? '—')} min
+                        </span>
+                      </div>
+                    ) : null}
+
+                    {Array.isArray(data.provider?.types) &&
+                    data.provider!.types!.length ? (
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        {data.provider!.types!.slice(0, 6).map((t) => (
+                          <span
+                            key={t.key}
+                            className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs text-white/75"
+                          >
+                            {t.title}
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
+                    “O social do Marto é consequência do que aconteceu.”
+                  </div>
+                )}
               </div>
             </div>
           </div>
 
-          {/* Conteúdo do perfil (público) */}
+          {/* Conteúdo */}
           <div className="px-8 py-10">
             <div className="flex flex-wrap items-end justify-between gap-3">
               <div>
-                <div className="text-lg font-semibold text-white">Atividade pública</div>
+                <div className="text-lg font-semibold text-white">
+                  Atividade pública
+                </div>
                 <div className="mt-1 text-sm text-white/60">
                   Registros que podem ser compartilhados. Sem feed infinito.
                 </div>
@@ -308,13 +474,14 @@ export default function PublicUserProfilePage({ params }: Props) {
               ) : null}
             </div>
 
-            {/* Rodapé do canvas */}
             <div className="mt-10 rounded-3xl border border-white/10 bg-white/5 p-6 text-white/80">
-              <div className="text-sm font-semibold text-white">O que vem depois</div>
+              <div className="text-sm font-semibold text-white">
+                O que vem depois
+              </div>
               <div className="mt-2 text-sm text-white/70">
-                Quando o Marto estiver com dados reais, este perfil vai mostrar: experiências
-                vinculadas, marcações verificadas e vínculos com lojas/prestadores — sem virar rede
-                social genérica.
+                Quando o Marto estiver com dados reais, este perfil vai mostrar:
+                experiências vinculadas, marcações verificadas e vínculos com
+                lojas/prestadores — sem virar rede social genérica.
               </div>
             </div>
           </div>
@@ -346,7 +513,9 @@ function PublicEventCard({ ev }: { ev: PublicEvent }) {
 
         <div
           className={`rounded-full px-3 py-1 text-xs font-semibold ${
-            ev.verified ? 'bg-emerald-500/15 text-emerald-200' : 'bg-white/10 text-white/70'
+            ev.verified
+              ? 'bg-emerald-500/15 text-emerald-200'
+              : 'bg-white/10 text-white/70'
           }`}
         >
           {badge}

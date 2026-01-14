@@ -27,36 +27,32 @@ model OutboxEvent {
 }
 
 model Transporter {
-  id          String          @id @default(uuid())
-  name        String
-  type        TransporterType
-  active      Boolean         @default(true)
-  city        String?
-  state       String?
-  serviceArea Json?
-
-  // ✅ vínculo com prestador
+  id                String          @id @default(uuid())
+  name              String
+  type              TransporterType
+  active            Boolean         @default(true)
+  city              String?
+  state             String?
+  serviceArea       Json?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
   serviceProviderId String          @unique
+  shipments         Shipment[]
   serviceProvider   ServiceProvider @relation(fields: [serviceProviderId], references: [id], onDelete: Cascade)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  shipments Shipment[]
 }
 
 model Shipment {
-  id            String             @id @default(uuid())
+  id            String         @id @default(uuid())
   orderId       String
   transporterId String?
-  status        ShipmentStatus     @default(CREATED)
+  status        ShipmentStatus @default(CREATED)
   quotedPrice   Int?
   estimatedDays Int?
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
   proofs        DeliveryProof[]
   review        LogisticsReview?
-  transporter   Transporter?       @relation(fields: [transporterId], references: [id])
+  transporter   Transporter?   @relation(fields: [transporterId], references: [id])
   events        ShipmentEvent[]
   incidents     ShipmentIncident[]
 
@@ -298,14 +294,49 @@ model Order {
   merchantId String
   userId     String?
   status     OrderStatus @default(CREATED)
-  city       String?
-  state      String?
-  createdAt  DateTime    @default(now())
-  updatedAt  DateTime    @updatedAt
-  items      OrderItem[]
+
+  // Timestamps de lifecycle (MVP)
+  paidAt           DateTime?
+  confirmedAt      DateTime?
+  readyForPickupAt DateTime?
+  inTransitAt      DateTime?
+  deliveredAt      DateTime?
+  completedAt      DateTime?
+  cancelledAt      DateTime?
+
+  // Pós-venda (MVP)
+  returnRequestedAt DateTime?
+  returnInTransitAt DateTime?
+  returnedAt        DateTime?
+  disputeAt         DateTime?
+
+  city      String?
+  state     String?
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  events    OrderEvent[]
+  items     OrderItem[]
 
   @@index([merchantId, createdAt])
   @@index([status])
+}
+
+model OrderEvent {
+  id          String         @id @default(uuid())
+  orderId     String
+  type        OrderEventType @default(STATUS_CHANGED)
+  actorUserId String?
+  actorRole   String?
+  fromStatus  OrderStatus?
+  toStatus    OrderStatus?
+  message     String?
+  meta        Json?
+  createdAt   DateTime       @default(now())
+  order       Order          @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@index([type, createdAt])
+  @@index([toStatus, createdAt])
 }
 
 model OrderItem {
@@ -442,122 +473,151 @@ model PixCharge {
 }
 
 model User {
-  id           String @id @default(uuid())
-  email        String @unique
-  passwordHash String
+  id                   String               @id @default(uuid())
+  email                String               @unique
+  createdAt            DateTime             @default(now())
+  passwordHash         String
+  avatarUrl            String?
+  bio                  String?
+  displayName          String?
+  handle               String?              @unique
+  updatedAt            DateTime             @default(now()) @updatedAt
+  consumer             Consumer?
+  factory              Factory?
+  merchant             Merchant?
+  representative       Representative?
+  serviceProvider      ServiceProvider?
+  roles                UserRole[]
+  passwordResetTokens  PasswordResetToken[]
+}
 
-  handle String? @unique
-
-  displayName String?
-  bio         String?
-  avatarUrl   String?
-
+model PasswordResetToken {
+  id        String   @id @default(uuid())
+  userId    String
+  tokenHash String
+  expiresAt DateTime
+  usedAt    DateTime?
   createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
 
-  merchant        Merchant?
-  serviceProvider ServiceProvider?
-  consumer        Consumer?
-  representative  Representative?
-  factory         Factory?
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  roles UserRole[]
+  @@index([userId])
+  @@index([expiresAt])
 }
 
 model UserRole {
-  id     String   @id @default(uuid())
-  userId String
-  role   RoleCode
-
-  user User @relation(fields: [userId], references: [id])
-
+  id        String   @id @default(uuid())
+  userId    String
+  role      RoleCode
   createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id])
 
   @@unique([userId, role])
   @@index([userId])
 }
 
 model Merchant {
-  id        String @id @default(uuid())
-  userId    String @unique
+  id        String         @id @default(uuid())
+  userId    String         @unique
   tradeName String
   document  String
-
-  city      String?
-  cepPrefix String?
-
   status    MerchantStatus @default(ACTIVE)
   createdAt DateTime       @default(now())
+  cepPrefix String?
+  city      String?
   user      User           @relation(fields: [userId], references: [id])
-
-  products Product[]
+  products  Product[]
 }
 
 model Product {
-  id         String   @id @default(uuid())
-  merchantId String
-  merchant   Merchant @relation(fields: [merchantId], references: [id])
-
+  id          String   @id @default(uuid())
+  merchantId  String
   title       String
   description String?
   priceCents  Int
-  active      Boolean @default(true)
+  active      Boolean  @default(true)
   images      Json?
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  merchant    Merchant @relation(fields: [merchantId], references: [id])
 
   @@index([merchantId])
   @@index([active])
 }
 
-enum ServiceProviderKind {
-  GENERIC
-  TRANSPORTER
-}
-
 model ServiceProvider {
-  id        String                @id @default(uuid())
-  userId    String                @unique
-  cpf       String
-  city      String?
-  cepPrefix String?
-  status    ServiceProviderStatus @default(ACTIVE)
+  id           String                @id @default(uuid())
+  userId       String                @unique
+  cpf          String
+  city         String?
+  cepPrefix    String?
+  status       ServiceProviderStatus @default(ACTIVE)
+  createdAt    DateTime              @default(now())
+  kind         ServiceProviderKind   @default(GENERIC)
+  address      Json?
+  cep          String?
+  document     String?
+  documentType DocumentType?
+  user         User                  @relation(fields: [userId], references: [id])
+  transporter  Transporter?
 
-  // ✅ novo: tipo do prestador (ex: prestador comum vs transportadora)
-  kind ServiceProviderKind @default(GENERIC)
-
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id])
-
-  transporter Transporter?
+  specialties  String[]              @default([])
 }
 
 model Consumer {
-  id     String @id @default(uuid())
-  userId String @unique
-  user   User   @relation(fields: [userId], references: [id])
-
+  id        String         @id @default(uuid())
+  userId    String         @unique
   city      String?
   cepPrefix String?
-
-  status ConsumerStatus @default(ACTIVE)
-
-  createdAt DateTime @default(now())
+  status    ConsumerStatus @default(ACTIVE)
+  createdAt DateTime       @default(now())
+  user      User           @relation(fields: [userId], references: [id])
 }
 
 model Representative {
-  id     String @id @default(uuid())
-  userId String @unique
-  user   User   @relation(fields: [userId], references: [id])
-
+  id         String               @id @default(uuid())
+  userId     String               @unique
   region     String
   inviteCode String?
+  status     RepresentativeStatus @default(ACTIVE)
+  createdAt  DateTime             @default(now())
+  updatedAt  DateTime             @updatedAt
+  user       User                 @relation(fields: [userId], references: [id])
+}
 
-  status RepresentativeStatus @default(ACTIVE)
+model Factory {
+  id        String        @id @default(uuid())
+  userId    String        @unique
+  tradeName String
+  legalName String?
+  document  String
+  city      String?
+  state     String?
+  status    FactoryStatus @default(ACTIVE)
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+  user      User          @relation(fields: [userId], references: [id])
+}
 
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+enum OrderEventType {
+  STATUS_CHANGED
+  NOTE
+  FREIGHT_QUOTED
+  FREIGHT_SELECTED
+  PICKUP_REQUESTED
+  PICKUP_CONFIRMED
+  DELIVERED_CONFIRMED
+  RETURN_REQUESTED
+  RETURN_APPROVED
+  RETURN_REJECTED
+  DISPUTE_OPENED
+  DISPUTE_RESOLVED
+}
+
+enum ServiceProviderKind {
+  GENERIC
+  DELIVERY
+  TRANSPORTER
 }
 
 enum OutboxStatus {
@@ -660,9 +720,19 @@ enum RelationshipStatus {
 enum OrderStatus {
   CREATED
   PAID
+  CONFIRMED_BY_SELLER
+  READY_FOR_PICKUP
+  IN_TRANSIT
   SHIPPED
   DELIVERED
+  COMPLETED
   CANCELLED
+
+  RETURN_REQUESTED
+  RETURN_IN_TRANSIT
+  RETURNED
+
+  DISPUTE
 }
 
 enum ExportFormat {
@@ -723,6 +793,11 @@ enum MerchantStatus {
   BLOCKED
 }
 
+enum DocumentType {
+  CPF
+  CNPJ
+}
+
 enum ServiceProviderStatus {
   ACTIVE
   REVIEW
@@ -748,24 +823,6 @@ enum RoleCode {
   FACTORY
   REPRESENTATIVE
   ADMIN
-}
-
-model Factory {
-  id     String @id @default(uuid())
-  userId String @unique
-
-  tradeName String
-  legalName String?
-  document  String
-  city      String?
-  state     String?
-
-  status FactoryStatus @default(ACTIVE)
-
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-
-  user User @relation(fields: [userId], references: [id])
 }
 
 enum FactoryStatus {

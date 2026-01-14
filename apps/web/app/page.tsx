@@ -53,7 +53,7 @@ export default function Home() {
         } else if (me.home === 'merchant') {
           router.replace('/dash/merchant');
         } else if (me.home === 'service_provider') {
-          router.replace('/dash/provider');
+          router.replace('/dash/provider/services'); // ✅ AQUI
         } else if (me.home === 'representative') {
           router.replace('/dash/representative');
         } else {

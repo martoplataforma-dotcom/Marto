@@ -12,7 +12,12 @@ function getToken() {
 
 type MeResponse = {
   email?: string;
-  home?: 'consumer' | 'merchant' | 'service_provider' | 'representative' | 'factory';
+  home?:
+    | 'consumer'
+    | 'merchant'
+    | 'service_provider'
+    | 'representative'
+    | 'factory';
   user?: {
     id?: string;
     name?: string | null;
@@ -58,9 +63,17 @@ function initialsFromName(name: string) {
 function dashFromHome(home?: string) {
   if (home === 'factory') return '/dash/factory';
   if (home === 'merchant') return '/dash/merchant';
-  if (home === 'service_provider') return '/dash/provider';
+  if (home === 'service_provider') return '/dash/provider/services';
   if (home === 'representative') return '/dash/representative';
   return '/dash/consumer';
+}
+
+function sanitizeHandle(v: string) {
+  return String(v ?? '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9._-]/g, '')
+    .slice(0, 24);
 }
 
 export default function MyPublicProfile() {
@@ -72,8 +85,12 @@ export default function MyPublicProfile() {
   const [displayName, setDisplayName] = useState('');
   const [bio, setBio] = useState('');
   const [avatarUrl, setAvatarUrl] = useState('');
-  const [savingProfile, setSavingProfile] = useState(false);
 
+  // ✅ @handle
+  const [handle, setHandle] = useState('');
+  const [savingHandle, setSavingHandle] = useState(false);
+
+  const [savingProfile, setSavingProfile] = useState(false);
   const [editingBio, setEditingBio] = useState(false);
 
   useEffect(() => {
@@ -94,9 +111,14 @@ export default function MyPublicProfile() {
 
         setMe(data);
 
-        const backendDisplayName = String(data?.profile?.displayName ?? '').trim();
+        const backendDisplayName = String(
+          data?.profile?.displayName ?? '',
+        ).trim();
         const backendBio = String(data?.profile?.bio ?? '').trim();
         const backendAvatarUrl = String(data?.profile?.avatarUrl ?? '').trim();
+
+        const backendHandle = String(data?.profile?.handle ?? '').trim();
+        setHandle(backendHandle);
 
         const email = String(data?.email ?? '').trim();
         const fallbackName = displayNameFromEmail(email);
@@ -141,12 +163,13 @@ export default function MyPublicProfile() {
     };
   }, []);
 
-  const handle = String(me?.profile?.handle ?? '').trim();
-  const publicUrl = handle ? `/u/${handle}` : '/u/teste';
+  const effectiveHandle = sanitizeHandle(handle);
+  const publicUrl = effectiveHandle ? `/u/${effectiveHandle}` : '/u/teste';
 
   async function onSaveProfile() {
     try {
       setSavingProfile(true);
+      setSavingHandle(true);
       setMsg('');
 
       const token = getToken();
@@ -162,6 +185,7 @@ export default function MyPublicProfile() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
+          handle: sanitizeHandle(handle),
           displayName: displayName.trim(),
           bio: bio.trim(),
           avatarUrl: avatarUrl.trim(),
@@ -170,6 +194,7 @@ export default function MyPublicProfile() {
 
       setMsg('Perfil público salvo.');
 
+      setHandle(res.profile.handle ?? '');
       setDisplayName(res.profile.displayName ?? '');
       setBio(res.profile.bio ?? '');
       setAvatarUrl(res.profile.avatarUrl ?? '');
@@ -183,6 +208,7 @@ export default function MyPublicProfile() {
       setMsg(err?.message ?? 'Não foi possível salvar o perfil.');
     } finally {
       setSavingProfile(false);
+      setSavingHandle(false);
     }
   }
 
@@ -252,7 +278,7 @@ export default function MyPublicProfile() {
                         <button
                           className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90 disabled:opacity-60"
                           onClick={onSaveProfile}
-                          disabled={savingProfile}
+                          disabled={savingProfile || savingHandle}
                         >
                           {savingProfile ? 'Salvando…' : 'Salvar bio'}
                         </button>
@@ -260,8 +286,11 @@ export default function MyPublicProfile() {
                           className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
                           onClick={() => {
                             setEditingBio(false);
-                            const stored = localStorage.getItem('marto_bio') ?? '';
-                            const backendBio = String(me?.profile?.bio ?? '').trim();
+                            const stored =
+                              localStorage.getItem('marto_bio') ?? '';
+                            const backendBio = String(
+                              me?.profile?.bio ?? '',
+                            ).trim();
                             setBio(backendBio || stored);
                           }}
                         >
@@ -292,8 +321,17 @@ export default function MyPublicProfile() {
                 Voltar ao painel
               </Link>
 
+              {effectiveHandle ? (
+                <Link
+                  href={`/u/${effectiveHandle}`}
+                  className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                >
+                  Ver perfil público
+                </Link>
+              ) : null}
+
               <Link
-                href="/profile"
+                href="/dash/provider/profile"
                 className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
               >
                 Configurações
@@ -327,6 +365,31 @@ export default function MyPublicProfile() {
           </p>
 
           <div className="mt-4 grid gap-4">
+            {/* ✅ @handle */}
+            <label className="grid gap-2">
+              <span className="text-sm font-semibold">
+                Seu @handle (URL do perfil público)
+              </span>
+
+              <div className="flex items-center gap-2 rounded-2xl border border-white/15 bg-white/5 px-4 py-3">
+                <span className="text-sm text-white/50">@</span>
+                <input
+                  value={handle}
+                  onChange={(e) => setHandle(sanitizeHandle(e.target.value))}
+                  className="w-full bg-transparent text-white outline-none placeholder:text-white/35"
+                  placeholder="ex: entregador.uba"
+                  autoComplete="off"
+                />
+              </div>
+
+              <span className="text-xs text-white/55">
+                Aparece como:{' '}
+                <span className="font-semibold text-white">
+                  /u/{effectiveHandle || 'seu_handle'}
+                </span>
+              </span>
+            </label>
+
             <label className="grid gap-2">
               <span className="text-sm font-semibold">Nome público</span>
               <input
@@ -348,20 +411,24 @@ export default function MyPublicProfile() {
             </label>
 
             <label className="grid gap-2">
-              <span className="text-sm font-semibold">Avatar URL (opcional)</span>
+              <span className="text-sm font-semibold">
+                Avatar URL (opcional)
+              </span>
               <input
                 value={avatarUrl}
                 onChange={(e) => setAvatarUrl(e.target.value)}
                 className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none placeholder:text-white/40 focus:border-white/40"
                 placeholder="https://..."
               />
-              <span className="text-xs text-white/55">Upload de imagem vem depois.</span>
+              <span className="text-xs text-white/55">
+                Upload de imagem vem depois.
+              </span>
             </label>
 
             <div className="flex flex-wrap gap-3">
               <button
                 onClick={onSaveProfile}
-                disabled={savingProfile}
+                disabled={savingProfile || savingHandle}
                 className="rounded-2xl bg-white px-6 py-3 text-sm font-semibold text-black disabled:opacity-60"
               >
                 {savingProfile ? 'Salvando…' : 'Salvar perfil'}
@@ -385,16 +452,21 @@ export default function MyPublicProfile() {
               <div className="text-4xl font-bold">{rep.avg}</div>
               <div className="text-sm text-white/60">/ 5</div>
             </div>
-            <div className="mt-2 text-sm text-white/60">{rep.count} avaliações registradas</div>
+            <div className="mt-2 text-sm text-white/60">
+              {rep.count} avaliações registradas
+            </div>
             <div className="mt-6 rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-white/70 ring-1 ring-white/5">
-              Em breve: reputação calculada a partir de avaliações vinculadas a ações reais.
+              Em breve: reputação calculada a partir de avaliações vinculadas a
+              ações reais.
             </div>
           </section>
 
           <section className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-sm backdrop-blur md:col-span-2">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <div className="text-sm font-semibold">Histórico (social do Marto)</div>
+                <div className="text-sm font-semibold">
+                  Histórico (social do Marto)
+                </div>
                 <div className="mt-1 text-sm text-white/60">
                   Aqui aparece o rastro real: compras, serviços e avaliações.
                 </div>
@@ -406,7 +478,11 @@ export default function MyPublicProfile() {
             </div>
 
             <div className="mt-6 grid gap-3">
-              <TimelineItem title="Perfil criado" meta="Conta • agora" desc="Sua reputação começa aqui." />
+              <TimelineItem
+                title="Perfil criado"
+                meta="Conta • agora"
+                desc="Sua reputação começa aqui."
+              />
               <TimelineItem
                 title="Próxima ação"
                 meta="Fluxo • recomendado"
@@ -446,7 +522,15 @@ export default function MyPublicProfile() {
   );
 }
 
-function TimelineItem({ title, meta, desc }: { title: string; meta: string; desc: string }) {
+function TimelineItem({
+  title,
+  meta,
+  desc,
+}: {
+  title: string;
+  meta: string;
+  desc: string;
+}) {
   return (
     <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
       <div className="flex items-center justify-between gap-3">

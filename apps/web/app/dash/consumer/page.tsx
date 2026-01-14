@@ -253,6 +253,13 @@ export default function ConsumerDash() {
               />
               <BlockCard
                 eyebrow="Consolidar"
+                title="Meus pedidos"
+                desc="Acompanhe seus pedidos e abra a timeline completa."
+                href="/dash/consumer/orders"
+                cta="Ver pedidos →"
+              />
+              <BlockCard
+                eyebrow="Consolidar"
                 title="Avaliar pendências"
                 desc="Registre avaliações pendentes (MVP mock)."
                 href="/review"

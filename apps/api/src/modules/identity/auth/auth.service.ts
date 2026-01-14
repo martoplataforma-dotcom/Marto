@@ -1,10 +1,13 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import * as crypto from 'crypto';
+
 import { PrismaService } from '../../../common/prisma/prisma.service';
 
 @Injectable()
@@ -26,11 +29,14 @@ export class AuthService {
     return normalizedEmail;
   }
 
-  private async signAccessToken(user: { id: string; email: string }) {
+  private async signAccessToken(
+    user: { id: string; email: string },
+    roles: string[],
+  ) {
     const payload = {
       sub: user.id,
       email: user.email,
-      roles: ['USER'],
+      roles,
     };
 
     const accessToken = await this.jwtService.signAsync(payload, {
@@ -39,6 +45,10 @@ export class AuthService {
     });
 
     return { accessToken };
+  }
+
+  private hashToken(token: string) {
+    return crypto.createHash('sha256').update(token).digest('hex');
   }
 
   async register(email: string, password: string) {
@@ -67,7 +77,7 @@ export class AuthService {
       select: { id: true, email: true },
     });
 
-    return this.signAccessToken(user);
+    return this.signAccessToken(user, ['USER']);
   }
 
   async login(email: string, password: string) {
@@ -88,7 +98,7 @@ export class AuthService {
       throw new UnauthorizedException('Credenciais inválidas.');
     }
 
-    return this.signAccessToken({ id: user.id, email: user.email });
+    return this.signAccessToken({ id: user.id, email: user.email }, ['USER']);
   }
 
   async refresh(refreshToken: string) {
@@ -140,17 +150,77 @@ export class AuthService {
       select: { id: true, email: true },
     });
 
-    const payload = {
-      sub: user.id,
-      email: user.email,
-      roles: ['MERCHANT'],
-    };
+    return this.signAccessToken(user, ['MERCHANT']);
+  }
 
-    const accessToken = await this.jwtService.signAsync(payload, {
-      secret: process.env.JWT_SECRET ?? 'dev-secret',
-      expiresIn: 60 * 60 * 24 * 7,
+  /**
+   * POST /auth/forgot-password
+   * - Sempre retorna { ok: true } (não vaza se email existe)
+   * - Gera token, salva apenas hash no banco, expira em 30 min
+   * - DEV: imprime link no console (depois troca por email real)
+   */
+  async forgotPassword(emailRaw: string) {
+    const email = this.normalizeEmail(emailRaw);
+
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      select: { id: true, email: true },
     });
 
-    return { accessToken };
+    // ⚠️ resposta neutra (não revela se o email existe)
+    if (!user) return { ok: true };
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const tokenHash = this.hashToken(token);
+    const expiresAt = new Date(Date.now() + 30 * 60 * 1000); // 30 min
+
+    await this.prisma.passwordResetToken.create({
+      data: { userId: user.id, tokenHash, expiresAt },
+    });
+
+    // DEV: imprime o link no console
+    const link = `http://localhost:3000/reset-password?token=${token}`;
+    console.log('[RESET PASSWORD]', user.email);
+    console.log('[RESET PASSWORD] LINK:', link);
+
+    return { ok: true };
+  }
+
+  /**
+   * POST /auth/reset-password
+   * - Valida token (hash), expiração e se já foi usado
+   * - Atualiza passwordHash
+   * - Marca usedAt
+   */
+  async resetPassword(token: string, newPassword: string) {
+    const tokenHash = this.hashToken(String(token ?? '').trim());
+
+    const row = await this.prisma.passwordResetToken.findFirst({
+      where: {
+        tokenHash,
+        usedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      select: { id: true, userId: true },
+    });
+
+    if (!row) {
+      throw new ForbiddenException('Token inválido ou expirado.');
+    }
+
+    const passwordHash = await bcrypt.hash(String(newPassword ?? ''), 10);
+
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: row.userId },
+        data: { passwordHash },
+      }),
+      this.prisma.passwordResetToken.update({
+        where: { id: row.id },
+        data: { usedAt: new Date() },
+      }),
+    ]);
+
+    return { ok: true };
   }
 }

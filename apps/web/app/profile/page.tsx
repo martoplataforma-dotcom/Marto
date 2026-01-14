@@ -33,7 +33,7 @@ function dashboardFromHome(home?: MeResponse['home'] | null) {
     case 'factory':
       return '/dash/factory';
     case 'service_provider':
-      return '/dash/service-provider';
+      return '/dash/provider/services'; // ✅ FIX: rota correta
     case 'representative':
       return '/dash/representative';
     case 'consumer':
@@ -374,7 +374,10 @@ export default function ProfilePage() {
                     placeholder="Ex: 36500000"
                     className="rounded-2xl border border-white/10 bg-zinc-950/30 px-4 py-3 text-white outline-none placeholder:text-white/35 focus:border-white/30"
                     inputMode="numeric"
-                    disabled={loading || (home !== null && home !== 'consumer' && home !== 'merchant')}
+                    disabled={
+                      loading ||
+                      (home !== null && home !== 'consumer' && home !== 'merchant')
+                    }
                   />
                   <span className="text-xs text-white/55">
                     {home !== null && home !== 'consumer' && home !== 'merchant'
@@ -414,7 +417,12 @@ export default function ProfilePage() {
                       onChange={(e) => setCity(e.target.value)}
                       placeholder="Ex: Ubá"
                       className="rounded-2xl border border-white/10 bg-zinc-950/30 px-4 py-3 text-white outline-none placeholder:text-white/35 focus:border-white/30"
-                      disabled={loading || (home !== null && home !== 'consumer' && home !== 'merchant')}
+                      disabled={
+                        loading ||
+                        (home !== null &&
+                          home !== 'consumer' &&
+                          home !== 'merchant')
+                      }
                     />
 
                     <div className="text-xs text-white/55">
