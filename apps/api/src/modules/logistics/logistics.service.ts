@@ -1,6 +1,8 @@
+// apps/api/src/modules/logistics/logistics.service.ts
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import type { UpdateShipmentStatusDto } from './dto/update-shipment-status.dto';
+import { OrderEventType } from '@prisma/client';
 
 @Injectable()
 export class LogisticsService {
@@ -10,6 +12,20 @@ export class LogisticsService {
     return this.prisma.shipment.create({
       data: { orderId },
     });
+  }
+
+  async getShipmentByOrderId(orderId: string) {
+    const shipment = await this.prisma.shipment.findFirst({
+      where: { orderId },
+      include: {
+        events: true,
+        incidents: true,
+        transporter: true,
+        review: true,
+      },
+    });
+
+    return { ok: true, shipment };
   }
 
   getShipment(id: string) {
@@ -25,18 +41,22 @@ export class LogisticsService {
   }
 
   async updateShipmentStatus(shipmentId: string, dto: UpdateShipmentStatusDto) {
-    const shipment = await this.prisma.shipment.findUnique({
+    // ✅ pega o estado anterior + orderId para poder refletir no Order + criar OrderEvent
+    const existing = await this.prisma.shipment.findUnique({
       where: { id: shipmentId },
-      select: { id: true },
+      select: { id: true, status: true, orderId: true },
     });
 
-    if (!shipment) throw new NotFoundException('Shipment not found');
+    if (!existing) throw new NotFoundException('Shipment not found');
 
-    await this.prisma.shipment.update({
+    // ✅ atualiza shipment e já retorna status final + orderId
+    const updated = await this.prisma.shipment.update({
       where: { id: shipmentId },
       data: { status: dto.status as any },
+      select: { id: true, status: true, orderId: true },
     });
 
+    // ✅ evento do shipment (como já era)
     await this.prisma.shipmentEvent.create({
       data: {
         shipmentId,
@@ -45,6 +65,7 @@ export class LogisticsService {
       },
     });
 
+    // ✅ incidente (como já era)
     if (dto.incidentType) {
       await this.prisma.shipmentIncident.create({
         data: {
@@ -55,7 +76,34 @@ export class LogisticsService {
       });
     }
 
-    return { ok: true };
+    // ✅ NOVO: se marcou DELIVERED, o pedido acompanha + cria OrderEvent
+    if (String(updated.status).toUpperCase() === 'DELIVERED') {
+      // ✅ Mudança única: pega o status atual do pedido ANTES de atualizar,
+      // para o OrderEvent ter fromStatus correto.
+      const currentOrder = await this.prisma.order.findUnique({
+        where: { id: updated.orderId },
+        select: { status: true },
+      });
+      const fromStatus = currentOrder?.status ?? null;
+
+      await this.prisma.order.update({
+        where: { id: updated.orderId },
+        data: { status: 'DELIVERED' as any },
+      });
+
+      await this.prisma.orderEvent.create({
+        data: {
+          orderId: updated.orderId,
+          type: OrderEventType.STATUS_CHANGED, // equivalente a 'STATUS_CHANGED'
+          fromStatus: fromStatus as any,
+          toStatus: 'DELIVERED' as any,
+          actorRole: 'TRANSPORTER' as any,
+          message: 'Entrega marcada como DELIVERED pela transportadora.',
+        },
+      });
+    }
+
+    return { ok: true, shipmentId: updated.id };
   }
 
   async confirmDelivery(shipmentId: string, code: string) {
@@ -113,9 +161,15 @@ export class LogisticsService {
       throw new Error('Shipment not delivered yet');
     }
 
-    return this.prisma.logisticsReview.create({
-      data: {
-        shipmentId,
+    // ✅ upsert: se já existe, atualiza (melhor UX)
+    return this.prisma.logisticsReview.upsert({
+      where: { shipmentId: shipmentId },
+      create: {
+        shipmentId: shipmentId,
+        rating: rating as any,
+        comment,
+      },
+      update: {
         rating: rating as any,
         comment,
       },

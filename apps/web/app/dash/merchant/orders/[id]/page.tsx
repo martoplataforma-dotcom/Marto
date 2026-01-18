@@ -46,7 +46,7 @@ type SalesOk = { ok: true; items: Order[] };
 type SalesFail = { ok: false; message?: string; items?: Order[] };
 type SalesResponse = SalesOk | SalesFail;
 
-type SetStatusOk = { ok: true; order: unknown };
+type SetStatusOk = { ok: true; order: { id: string; status: string } };
 type SetStatusFail = { ok: false; message?: string };
 type SetStatusResponse = SetStatusOk | SetStatusFail;
 
@@ -88,6 +88,14 @@ function errorMessageFromRes(res: unknown): string {
     : 'Falha ao carregar pedidos';
 }
 
+function isSetStatusOk(res: unknown): res is SetStatusOk {
+  if (!res || typeof res !== 'object') return false;
+  const r = res as Record<string, unknown>;
+  if (r.ok !== true) return false;
+  const ord = r.order as Record<string, unknown> | undefined;
+  return !!ord && typeof ord.id === 'string' && typeof ord.status === 'string';
+}
+
 function parseBRNumber(raw: unknown): number | null {
   if (raw === null || raw === undefined) return null;
   const s = String(raw).trim();
@@ -112,11 +120,6 @@ function totalLabel(order: Order) {
 function sellerActionsForStatus(statusRaw: string) {
   const status = String(statusRaw ?? '').toUpperCase();
 
-  // alinhado com ALLOWED no service
-  // seller:
-  // PAID -> CONFIRMED_BY_SELLER | CANCELLED
-  // CONFIRMED_BY_SELLER -> READY_FOR_PICKUP | CANCELLED
-  // READY_FOR_PICKUP -> IN_TRANSIT
   const actions: Array<{
     key: string;
     toStatus: string;
@@ -169,6 +172,17 @@ function sellerActionsForStatus(statusRaw: string) {
     });
   }
 
+  // ✅ ADICIONADO: ação quando estiver em trânsito
+  if (status === 'IN_TRANSIT') {
+    actions.push({
+      key: 'delivered',
+      toStatus: 'DELIVERED',
+      title: 'Marcar como entregue',
+      desc: 'Entrega concluída ao cliente.',
+      tone: 'primary',
+    });
+  }
+
   return actions;
 }
 
@@ -186,7 +200,6 @@ function Btn({
   title?: string;
 }) {
   const base = 'rounded-xl px-3 py-2 text-sm font-semibold transition border';
-
   const styles =
     tone === 'primary'
       ? 'border-white/15 bg-white text-black hover:opacity-90'
@@ -279,23 +292,36 @@ export default function MerchantOrderDetailsPage({
     setToast('');
 
     try {
-      await fetchJSON<SetStatusResponse>(`/orders/${orderId}/status`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
+      const res = await fetchJSON<SetStatusResponse>(
+        `/orders/${orderId}/status`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            toStatus,
+            message: message || undefined,
+          }),
         },
-        body: JSON.stringify({
-          toStatus,
-          message: message || undefined,
-        }),
-      });
+      );
 
-      setToast(`Status atualizado → ${toStatus}`);
-      await load(); // refetch
+      // ✅ se o backend responder 200 com ok:false, agora a gente mostra.
+      if (!isSetStatusOk(res)) {
+        const msg =
+          res && typeof res === 'object'
+            ? String((res as Record<string, unknown>).message ?? '')
+            : '';
+        throw new Error(msg || 'Falha ao atualizar status.');
+      }
+
+      setToast(`Status atualizado → ${res.order.status}`);
+      await load();
     } catch (e) {
       const ae = e as ApiError;
-      setToast(ae?.message || 'Falha ao atualizar status.');
+      const msg = ae?.message || (e instanceof Error ? e.message : '');
+      setToast(msg || 'Falha ao atualizar status.');
     } finally {
       setActing(false);
     }
@@ -307,7 +333,7 @@ export default function MerchantOrderDetailsPage({
 
   return (
     <main className="min-h-screen bg-neutral-950 text-white">
-      {/* fundo Marto (radial gradients) */}
+      {/* fundo Marto (sutil) */}
       <div className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(900px_520px_at_20%_10%,rgba(255,255,255,0.06),transparent_55%),radial-gradient(900px_520px_at_80%_0%,rgba(255,255,255,0.04),transparent_60%),linear-gradient(to_bottom,rgba(0,0,0,0.0),rgba(0,0,0,0.55))]" />
 
       <div className="mx-auto max-w-6xl p-6">
@@ -323,10 +349,10 @@ export default function MerchantOrderDetailsPage({
 
           <div className="flex gap-2">
             <Link
-              href="/dash/merchant"
-              className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15"
+              href="/dash/merchant/orders"
+              className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-semibold text-white hover:bg-white/15"
             >
-              Voltar ao dashboard
+              Voltar
             </Link>
           </div>
         </header>
@@ -404,21 +430,21 @@ export default function MerchantOrderDetailsPage({
 
                 <div className="mt-3 grid gap-2">
                   {actions.length === 0 ? (
-                    <div className="rounded-xl border border-white/15 bg-black/80 p-3 text-xs text-white/75">
+                    <div className="rounded-xl border border-white/15 bg-neutral-950/75 p-3 text-xs text-white/70 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
                       Nenhuma ação disponível agora.
                     </div>
                   ) : (
                     actions.map((a) => (
                       <div
                         key={a.key}
-                        className="rounded-2xl border border-white/15 bg-black/80 p-3"
+                        className="rounded-2xl border border-white/15 bg-neutral-950/75 p-3 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
                       >
                         <div className="flex items-center justify-between gap-2">
                           <div className="min-w-0">
                             <div className="text-sm font-semibold text-white/90">
                               {a.title}
                             </div>
-                            <div className="mt-1 text-xs text-white/75">
+                            <div className="mt-1 text-xs text-white/70">
                               {a.desc}
                             </div>
                           </div>
@@ -443,7 +469,7 @@ export default function MerchantOrderDetailsPage({
                               void doSetStatus(a.toStatus);
                             }}
                           >
-                            {acting ? '...' : 'Executar'}
+                            {acting ? 'Executando…' : 'Executar'}
                           </Btn>
                         </div>
                       </div>
@@ -457,9 +483,7 @@ export default function MerchantOrderDetailsPage({
             <div className="rounded-2xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur lg:col-span-2">
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-sm font-semibold text-white/90">
-                    Timeline
-                  </div>
+                  <div className="text-sm font-semibold text-white">Timeline</div>
                   <div className="mt-1 text-xs text-white/70">
                     Cada mudança vira um evento — reputação e verdade.
                   </div>
@@ -467,7 +491,7 @@ export default function MerchantOrderDetailsPage({
               </div>
 
               {events.length === 0 ? (
-                <div className="rounded-xl border border-white/15 bg-black/80 p-4 text-sm text-white/75">
+                <div className="rounded-xl border border-white/15 bg-neutral-950/75 p-4 text-sm text-white/75 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
                   Sem eventos ainda.
                 </div>
               ) : (
@@ -475,7 +499,7 @@ export default function MerchantOrderDetailsPage({
                   {events.map((ev) => (
                     <div
                       key={ev.id}
-                      className="rounded-2xl border border-white/15 bg-black/80 p-4"
+                      className="rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="text-sm font-semibold text-white/90">
@@ -486,7 +510,7 @@ export default function MerchantOrderDetailsPage({
                         </div>
                       </div>
 
-                      <div className="mt-2 text-xs text-white/80">
+                      <div className="mt-2 text-xs text-white/75">
                         {ev.message ? (
                           <span>{ev.message}</span>
                         ) : (

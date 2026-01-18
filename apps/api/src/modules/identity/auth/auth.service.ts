@@ -1,3 +1,4 @@
+// apps/api/src/modules/identity/auth/auth.service.ts
 import {
   ConflictException,
   ForbiddenException,
@@ -85,7 +86,12 @@ export class AuthService {
 
     const user = await this.prisma.user.findUnique({
       where: { email: normalizedEmail },
-      select: { id: true, email: true, passwordHash: true },
+      select: {
+        id: true,
+        email: true,
+        passwordHash: true,
+        roles: { select: { role: true } }, // ✅ pega UserRole
+      },
     });
 
     if (!user) {
@@ -98,7 +104,12 @@ export class AuthService {
       throw new UnauthorizedException('Credenciais inválidas.');
     }
 
-    return this.signAccessToken({ id: user.id, email: user.email }, ['USER']);
+    const roles = (user.roles ?? []).map((r) => String(r.role)).filter(Boolean);
+
+    return this.signAccessToken(
+      { id: user.id, email: user.email },
+      roles.length ? roles : ['USER'],
+    );
   }
 
   async refresh(refreshToken: string) {

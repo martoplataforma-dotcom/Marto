@@ -42,48 +42,76 @@ function toJsonValue(value: unknown): Prisma.InputJsonValue | undefined {
   return undefined;
 }
 
-type ActorRole = 'buyer' | 'seller';
+type ActorRole = 'buyer' | 'seller' | 'system';
+
+type OrderWithItems = Prisma.OrderGetPayload<{
+  include: { items: true; events: true };
+}>;
 
 function roleLabel(role: ActorRole) {
-  return role; // string pro OrderEvent (MVP)
+  if (role === 'buyer') return 'buyer';
+  if (role === 'seller') return 'seller';
+  return 'system';
 }
 
-const ALLOWED: Record<
-  ActorRole,
-  Partial<
-    Record<
-      import('@prisma/client').OrderStatus,
-      import('@prisma/client').OrderStatus[]
-    >
-  >
-> = {
+// ✅ matriz de transição por papel
+const ALLOWED: Record<string, Record<string, OrderStatus[]>> = {
   buyer: {
     // criação/pagamento
-    CREATED: ['PAID', 'CANCELLED'] as any,
-    PAID: ['CANCELLED', 'RETURN_REQUESTED', 'DISPUTE'] as any,
+    CREATED: [OrderStatus.PAID, OrderStatus.CANCELLED] as any,
 
-    // pós-entrega
-    DELIVERED: ['RETURN_REQUESTED', 'DISPUTE'] as any,
-    COMPLETED: ['RETURN_REQUESTED', 'DISPUTE'] as any,
+    PAID: [
+      OrderStatus.CANCELLED,
+      OrderStatus.RETURN_REQUESTED,
+      OrderStatus.DISPUTE,
+    ] as any,
+
+    // ✅ pós-entrega
+    // ✅ buyer pode confirmar recebimento (COMPLETED) ou pedir devolução
+    DELIVERED: [
+      OrderStatus.COMPLETED,
+      OrderStatus.RETURN_REQUESTED,
+      OrderStatus.DISPUTE,
+    ] as any,
+
+    COMPLETED: [OrderStatus.RETURN_REQUESTED, OrderStatus.DISPUTE] as any,
 
     // em devolução (buyer pode abrir disputa a qualquer momento)
-    RETURN_REQUESTED: ['DISPUTE'] as any,
-    RETURN_IN_TRANSIT: ['DISPUTE'] as any,
-    RETURNED: ['DISPUTE'] as any,
-  },
+    RETURN_REQUESTED: [OrderStatus.DISPUTE] as any,
+    RETURN_IN_TRANSIT: [OrderStatus.DISPUTE] as any,
+    RETURNED: [OrderStatus.DISPUTE] as any,
+  } as any,
+
   seller: {
     // vendas
-    PAID: ['CONFIRMED_BY_SELLER', 'CANCELLED'] as any,
-    CONFIRMED_BY_SELLER: ['READY_FOR_PICKUP', 'CANCELLED'] as any,
-    READY_FOR_PICKUP: ['IN_TRANSIT'] as any,
-    IN_TRANSIT: ['DELIVERED'] as any,
-    DELIVERED: ['COMPLETED'] as any,
+    PAID: [OrderStatus.CONFIRMED_BY_SELLER, OrderStatus.CANCELLED] as any,
+
+    CONFIRMED_BY_SELLER: [
+      OrderStatus.READY_FOR_PICKUP,
+      OrderStatus.CANCELLED,
+    ] as any,
+
+    READY_FOR_PICKUP: [OrderStatus.IN_TRANSIT] as any,
+
+    // ✅ GARANTIA: seller pode marcar entregue quando estiver em trânsito
+    IN_TRANSIT: [OrderStatus.DELIVERED] as any,
+
+    DELIVERED: [OrderStatus.COMPLETED] as any,
 
     // devolução (seller opera a logística reversa)
-    RETURN_REQUESTED: ['RETURN_IN_TRANSIT', 'DISPUTE'] as any,
-    RETURN_IN_TRANSIT: ['RETURNED', 'DISPUTE'] as any,
-    RETURNED: ['DISPUTE'] as any,
-  },
+    RETURN_REQUESTED: [
+      OrderStatus.RETURN_IN_TRANSIT,
+      OrderStatus.DISPUTE,
+    ] as any,
+
+    RETURN_IN_TRANSIT: [OrderStatus.RETURNED, OrderStatus.DISPUTE] as any,
+    RETURNED: [OrderStatus.DISPUTE] as any,
+  } as any,
+
+  // ✅ NOVO: sistema (gateway/pagamento)
+  system: {
+    CREATED: [OrderStatus.PAID] as any,
+  } as any,
 };
 
 @Injectable()
@@ -153,12 +181,19 @@ export class OrdersService {
   }
 
   /**
-   * 🔎 Busca pedido por ID (com itens)
+   * 🔎 Busca pedido por ID (com itens + events)
    */
-  async getOrderById(orderId: string) {
+  async getOrderById(orderId: string): Promise<OrderWithItems | null> {
+    const id = String(orderId ?? '').trim();
+    if (!id) return null;
+
+    // ✅ usa await pra não disparar lint (require-await)
     const order = await this.prisma.order.findUnique({
-      where: { id: orderId },
-      include: { items: true },
+      where: { id },
+      include: {
+        items: true,
+        events: { orderBy: { createdAt: 'asc' } },
+      },
     });
 
     return order;
@@ -203,9 +238,11 @@ export class OrdersService {
     const isSeller =
       merchant?.userId && String(merchant.userId) === actorUserId;
 
+    // ✅ prioridade: se é buyer e seller ao mesmo tempo,
+    // tratamos como BUYER (principalmente para pagamento).
     let role: ActorRole | null = null;
     if (isBuyer) role = 'buyer';
-    if (isSeller) role = 'seller';
+    else if (isSeller) role = 'seller';
 
     if (!role) {
       // MVP: só buyer ou seller pode trocar status
@@ -368,5 +405,23 @@ export class OrdersService {
     });
 
     return { ok: true, items };
+  }
+
+  // ✅ seller vê pedidos do merchant dele (helper p/ controller)
+  async canSellerAccessOrder(params: { orderId: string; actorUserId: string }) {
+    const { orderId, actorUserId } = params;
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { merchantId: true },
+    });
+    if (!order) return false;
+
+    const merchant = await this.prisma.merchant.findFirst({
+      where: { id: order.merchantId, userId: actorUserId },
+      select: { id: true },
+    });
+
+    return !!merchant;
   }
 }

@@ -1,8 +1,16 @@
-import { Body, Controller, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import type { Request } from 'express';
+
 import { JwtAuthGuard } from '../identity/auth/jwt-auth.guard';
 import { PixService } from './pix.service';
 import { SettlementService } from '../wallet/settlement.service';
 import { OrdersService } from '../orders/orders.service';
+import { OrderStatus } from '@prisma/client';
+
+function getUserId(req: Request): string {
+  const u = req.user as { id?: string; sub?: string } | undefined;
+  return String(u?.id ?? u?.sub ?? '').trim();
+}
 
 @Controller('payments')
 export class PaymentsController {
@@ -43,17 +51,40 @@ export class PaymentsController {
 
   /**
    * ✅ POST /api/payments/mock
-   * Mock simples para o fluxo do checkout (front está chamando esse endpoint)
+   * Mock do checkout: marca o pedido como PAID + cria OrderEvent
+   *
+   * ✅ trava: só o comprador pode pagar (neste mock)
+   * (explica na cara quando o token está “no usuário errado”)
    */
+  @UseGuards(JwtAuthGuard)
   @Post('mock')
-  async mock(@Body() body: { orderId: string }) {
-    await Promise.resolve();
+  async mock(@Req() req: Request, @Body() body: { orderId: string }) {
+    const actorUserId = getUserId(req);
+    const orderId = String(body?.orderId ?? '').trim();
 
-    return {
-      ok: true,
-      orderId: body.orderId,
-      status: 'PAID',
-    };
+    if (!actorUserId) return { ok: false, message: 'Sem actorUserId no token' };
+    if (!orderId) return { ok: false, message: 'orderId não informado' };
+
+    const order = await this.orders.getOrderById(orderId);
+    if (!order) return { ok: false, message: 'Pedido não encontrado' };
+
+    // ✅ trava: só o comprador pode pagar (neste mock)
+    if (!order.userId || String(order.userId) !== actorUserId) {
+      return {
+        ok: false,
+        message: 'Somente o comprador pode pagar este pedido.',
+      };
+    }
+
+    await this.orders.transitionStatus({
+      orderId,
+      toStatus: OrderStatus.PAID,
+      actorUserId,
+      message: 'pagou',
+      meta: { provider: 'mock', at: new Date().toISOString() },
+    });
+
+    return { ok: true, orderId, status: 'PAID' };
   }
 
   /**

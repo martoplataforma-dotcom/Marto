@@ -3,6 +3,7 @@
 
 import Link from 'next/link';
 import { useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { fetchJSON, type ApiError } from '../../../../src/lib/api';
 
 function getToken() {
@@ -74,6 +75,9 @@ function parseTime(value?: string | null) {
 }
 
 export default function MerchantOrdersListPage() {
+  const sp = useSearchParams();
+  const debug = sp.get('debug') === '1';
+
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState<Order[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -81,6 +85,12 @@ export default function MerchantOrdersListPage() {
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('ALL');
   const [range, setRange] = useState<RangeKey>('ALL');
+
+  function resetFilters() {
+    setQ('');
+    setStatus('ALL');
+    setRange('ALL');
+  }
 
   useEffect(() => {
     let alive = true;
@@ -117,6 +127,14 @@ export default function MerchantOrdersListPage() {
         }
 
         setItems(res.items);
+
+                // ✅ debug no console sempre ajuda a não “ficar no escuro”
+        // (não quebra nada em produção)
+        console.log('[merchant/orders] sales:', {
+          count: res.items.length,
+          ids: res.items.map((x) => x.id),
+        });
+
       } catch (e) {
         if (!alive) return;
         const err = e as ApiError;
@@ -141,6 +159,15 @@ export default function MerchantOrdersListPage() {
     }
     return ['ALL', ...Array.from(s).sort((a, b) => a.localeCompare(b))];
   }, [items]);
+
+  // ✅ Se o status selecionado não existir mais (p.ex. depois de reload),
+  // volta pra ALL pra não “sumir” tudo.
+  useEffect(() => {
+    if (status !== 'ALL' && !statuses.includes(status)) {
+      setStatus('ALL');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statuses.join('|')]);
 
   const filtered = useMemo(() => {
     const qq = q.trim().toLowerCase();
@@ -177,7 +204,7 @@ export default function MerchantOrdersListPage() {
 
   return (
     <main className="min-h-screen bg-neutral-950 text-white">
-      {/* fundo Marto (sutil) */}
+      {/* fundo Marto */}
       <div className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(900px_520px_at_20%_10%,rgba(255,255,255,0.06),transparent_55%),radial-gradient(900px_520px_at_80%_0%,rgba(255,255,255,0.04),transparent_60%),linear-gradient(to_bottom,rgba(0,0,0,0.0),rgba(0,0,0,0.55))]" />
 
       <div className="mx-auto max-w-6xl p-6">
@@ -273,10 +300,33 @@ export default function MerchantOrdersListPage() {
             </div>
           </div>
 
-          <div className="mt-3 text-xs text-white/70">
-            Mostrando <span className="text-white/85">{sorted.length}</span> de{' '}
-            <span className="text-white/85">{items.length}</span>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-white/70">
+            <div>
+              Recebidos:{' '}
+              <span className="text-white/85 font-semibold">{items.length}</span>{' '}
+              • Após filtros:{' '}
+              <span className="text-white/85 font-semibold">
+                {sorted.length}
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/15"
+            >
+              Resetar filtros
+            </button>
           </div>
+
+          {debug ? (
+            <div className="mt-3 rounded-xl border border-white/15 bg-black/60 p-3 text-xs text-white/80">
+              <div className="font-semibold text-white/90">Debug</div>
+              <div className="mt-1 text-white/75">
+                IDs: {items.map((x) => x.id).join(', ') || '—'}
+              </div>
+            </div>
+          ) : null}
         </section>
 
         {loading ? (
@@ -290,12 +340,12 @@ export default function MerchantOrdersListPage() {
         ) : sorted.length === 0 ? (
           <div className="rounded-2xl border border-white/15 bg-neutral-950/75 p-6 text-sm text-white/80 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
             <div className="text-base font-semibold text-white/90">
-              Nenhuma venda encontrada.
+              Nenhuma venda encontrada (após filtros).
             </div>
+
             <div className="mt-2 text-white/70">
-              Isso normalmente significa que ainda não existe pedido apontando
-              para um <span className="text-white/85">merchantId</span> cujo dono
-              seja o usuário logado.
+              Se “Recebidos” for maior que 0, então algum filtro está escondendo
+              tudo. Clique em <span className="text-white/85">Resetar filtros</span>.
             </div>
           </div>
         ) : (

@@ -1,3 +1,4 @@
+// apps/web/app/dash/consumer/page.tsx
 'use client';
 
 import Link from 'next/link';
@@ -15,6 +16,10 @@ type Consumer = {
   cepPrefix?: string | null;
 };
 
+type MeResponse = {
+  profile?: { handle?: string | null };
+};
+
 export default function ConsumerDash() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -22,6 +27,14 @@ export default function ConsumerDash() {
 
   const [city, setCity] = useState('');
   const [cepPrefix, setCepPrefix] = useState('');
+
+  const [publicHandle, setPublicHandle] = useState<string | null>(null);
+
+  const [ordersCount, setOrdersCount] = useState<number | null>(null);
+  const [servicesCount, setServicesCount] = useState<number | null>(null);
+
+  // ✅ NOVO: avaliações reais (entregas avaliadas)
+  const [reviewsCount, setReviewsCount] = useState<number | null>(null);
 
   const canSave = useMemo(() => {
     if (cepPrefix && !/^\d{5}$/.test(cepPrefix)) return false;
@@ -46,6 +59,93 @@ export default function ConsumerDash() {
 
         setCity(data.city ?? '');
         setCepPrefix(data.cepPrefix ?? '');
+
+        // ✅ pedidos: aceita array direto OU { orders: [...] } OU { items: [...] }
+        const ordersRes = await fetchJSON<
+          unknown[] | { orders?: unknown[]; items?: unknown[] }
+        >('/orders/me', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        const list = Array.isArray(ordersRes)
+          ? ordersRes
+          : Array.isArray(ordersRes.orders)
+            ? ordersRes.orders
+            : Array.isArray(ordersRes.items)
+              ? ordersRes.items
+              : [];
+
+        setOrdersCount(list.length);
+
+        // ✅ serviços com entrega: shipmentId OU shipment.id (sem any)
+        const services = list.filter((o) => {
+          if (!o || typeof o !== 'object') return false;
+
+          const r = o as Record<string, unknown>;
+
+          if (r.shipmentId) return true;
+
+          const sh = r.shipment;
+          if (!sh || typeof sh !== 'object') return false;
+
+          const sr = sh as Record<string, unknown>;
+          return Boolean(sr.id);
+        }).length;
+
+        setServicesCount(services);
+
+        // ✅ NOVO: contar entregas avaliadas (reviews)
+        setReviewsCount(null);
+
+        const shipmentResults = await Promise.all(
+          list.map(async (o): Promise<unknown | null> => {
+            if (!o || typeof o !== 'object') return null;
+
+            const r = o as Record<string, unknown>;
+            const orderId =
+              typeof r.id === 'string' && r.id.trim() ? r.id.trim() : null;
+
+            if (!orderId) return null;
+
+            try {
+              return await fetchJSON<unknown>(
+                `/logistics/shipments/by-order/${orderId}`,
+                {
+                  method: 'GET',
+                  headers: { Authorization: `Bearer ${token}` },
+                },
+              );
+            } catch {
+              return null;
+            }
+          }),
+        );
+
+        // aceita formatos: shipment direto OU { shipment: ... }
+        const shipments = shipmentResults
+          .map((r) => {
+            if (!r || typeof r !== 'object') return null;
+            const rr = r as Record<string, unknown>;
+            return rr.shipment ? rr.shipment : r;
+          })
+          .filter(Boolean) as unknown[];
+
+        const reviewed = shipments.filter((s) => {
+          if (!s || typeof s !== 'object') return false;
+          const sr = s as Record<string, unknown>;
+          return Boolean(sr.review || sr.reviewedAt);
+        }).length;
+
+        setReviewsCount(reviewed);
+
+        // ✅ handle para link do perfil público
+        const me = await fetchJSON<MeResponse>('/me', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        setPublicHandle(me.profile?.handle ?? null);
       } catch (e: unknown) {
         const err = e as ApiError;
         setMsg(err?.message ?? 'Não foi possível carregar seu perfil.');
@@ -136,13 +236,14 @@ export default function ConsumerDash() {
               Configurações
             </Link>
 
-            {/* ✅ NOVO: Perfil público */}
-            <Link
-              href="/u/teste"
-              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
-            >
-              Perfil público
-            </Link>
+            {publicHandle ? (
+              <Link
+                href={`/u/${publicHandle}`}
+                className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+              >
+                Perfil público
+              </Link>
+            ) : null}
 
             <button
               onClick={() => {
@@ -176,17 +277,17 @@ export default function ConsumerDash() {
 
               <div className="mt-6 flex flex-wrap gap-3">
                 <Link
-                  href="/demo/catalog"
+                  href="/catalog"
                   className="rounded-2xl bg-white px-6 py-3 text-sm font-semibold text-black hover:opacity-90"
                 >
                   Explorar catálogo
                 </Link>
 
                 <Link
-                  href="/demo"
+                  href="/dash/consumer/orders"
                   className="rounded-2xl border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold text-white hover:bg-white/10"
                 >
-                  Comprar (demo)
+                  Meus pedidos
                 </Link>
 
                 <Link
@@ -198,14 +299,14 @@ export default function ConsumerDash() {
               </div>
             </div>
 
-            {/* direita: Painel Marto (operacional, sem “minha reputação”) */}
+            {/* direita: Painel Marto */}
             <div className="w-full max-w-xl">
               <div className="rounded-3xl border border-white/10 bg-black/30 p-5 ring-1 ring-white/5">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="text-sm font-semibold">Resumo</div>
                     <div className="mt-1 text-xs text-white/60">
-                      Visão rápida do seu uso recente (MVP).
+                      Visão rápida do seu uso recente.
                     </div>
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/80">
@@ -214,15 +315,36 @@ export default function ConsumerDash() {
                 </div>
 
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                  <Kpi label="Pedidos" value="1" hint="mock" />
-                  <Kpi label="Serviços" value="1" hint="mock" />
-                  <Kpi label="Avaliações" value="1" hint="mock" />
+                  <Kpi
+                    label="Pedidos"
+                    value={ordersCount === null ? '—' : String(ordersCount)}
+                    hint={ordersCount === null ? 'carregando…' : 'reais'}
+                  />
+
+                  <Kpi
+                    label="Serviços"
+                    value={servicesCount === null ? '—' : String(servicesCount)}
+                    hint={
+                      servicesCount === null ? 'carregando…' : 'com entrega'
+                    }
+                  />
+
+                  <Kpi
+                    label="Avaliações"
+                    value={reviewsCount === null ? '—' : String(reviewsCount)}
+                    hint={
+                      reviewsCount === null
+                        ? 'carregando…'
+                        : 'entregas avaliadas'
+                    }
+                  />
+
                   <Kpi label="Atividade" value="7" hint="registros no rastro" />
                 </div>
 
                 <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
                   <div className="text-xs text-white/70">
-                    Dica: comece por “Comprar (demo)” para ver o ciclo completo.
+                    Dica: comece por “Catálogo” para ver o ciclo completo.
                   </div>
                 </div>
               </div>
@@ -232,23 +354,26 @@ export default function ConsumerDash() {
           {/* AÇÕES RÁPIDAS */}
           <div className="mt-10">
             <div className="mb-3">
-              <div className="text-sm font-semibold text-white">Ações rápidas</div>
+              <div className="text-sm font-semibold text-white">
+                Ações rápidas
+              </div>
               <div className="mt-1 text-xs text-white/60">Comece por aqui.</div>
             </div>
 
             <div className="grid gap-4 lg:grid-cols-3">
               <BlockCard
-                eyebrow="Começar"
-                title="Comprar (demo)"
-                desc="Simule uma compra e veja o ciclo completo do Marto."
-                href="/demo"
+                eyebrow="Rastro"
+                title="Ver timeline"
+                desc="Abra a timeline do seu último pedido (MVP: escolha na lista)."
+                href="/dash/consumer/orders"
                 cta="Abrir →"
               />
+
               <BlockCard
                 eyebrow="Explorar"
                 title="Catálogo"
-                desc="Navegue por produtos mock e explore possibilidades."
-                href="/demo/catalog"
+                desc="Navegue por produtos e explore possibilidades."
+                href="/catalog"
                 cta="Ver produtos →"
               />
               <BlockCard
@@ -261,7 +386,7 @@ export default function ConsumerDash() {
               <BlockCard
                 eyebrow="Consolidar"
                 title="Avaliar pendências"
-                desc="Registre avaliações pendentes (MVP mock)."
+                desc="Registre avaliações pendentes."
                 href="/review"
                 cta="Avaliar →"
               />

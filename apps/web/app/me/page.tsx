@@ -259,6 +259,16 @@ export default function MyPublicProfile() {
 
                 <div className="mt-1 text-sm text-white/70">{email}</div>
 
+                {/* ✅ MUDANÇA ÚNICA: aviso quando não tiver handle */}
+                {!me?.profile?.handle ? (
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/80">
+                    <span className="font-semibold">Ative seu perfil público:</span>{' '}
+                    crie um <span className="font-semibold">@handle</span>. Ele é o
+                    seu link em{' '}
+                    <span className="font-semibold">/u/seu-handle</span>.
+                  </div>
+                ) : null}
+
                 <div className="mt-4">
                   {!editingBio ? (
                     <div className="text-sm text-white/80">

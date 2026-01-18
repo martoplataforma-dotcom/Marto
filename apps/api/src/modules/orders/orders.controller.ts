@@ -66,6 +66,30 @@ export class OrdersController {
     return this.ordersService.listMySales({ userId });
   }
 
+  @Get(':orderId')
+  async getOne(@Req() req: Request, @Param('orderId') orderId: string) {
+    const u = req.user as { id?: string; sub?: string } | undefined;
+    const userId = String(u?.id ?? u?.sub ?? '');
+
+    const order = await this.ordersService.getOrderById(orderId);
+    if (!order) return { ok: false, message: 'Pedido não encontrado' };
+
+    // ✅ regra simples: buyer vê o próprio pedido
+    if (String((order as any).userId ?? '') === userId) {
+      return { ok: true, order };
+    }
+
+    // ✅ seller vê pedidos do merchant dele
+    const canSellerSee = await this.ordersService.canSellerAccessOrder({
+      orderId: (order as any).id,
+      actorUserId: userId,
+    });
+
+    if (!canSellerSee) return { ok: false, message: 'Forbidden' };
+
+    return { ok: true, order };
+  }
+
   @Post(':orderId/status')
   async setStatus(
     @Req() req: Request,
