@@ -343,7 +343,7 @@ export default function MerchantOrderDetailsPage({
               Pedido (Seller)
             </h1>
             <p className="text-sm text-white/75">
-              Linha do tempo Marto • Visão do lojista
+              Histórico e andamento do pedido (visão da loja).
             </p>
           </div>
 
@@ -479,11 +479,13 @@ export default function MerchantOrderDetailsPage({
               </div>
             </div>
 
-            {/* timeline */}
+            {/* histórico */}
             <div className="rounded-2xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur lg:col-span-2">
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-sm font-semibold text-white">Timeline</div>
+                  <div className="text-sm font-semibold text-white">
+                    Histórico
+                  </div>
                   <div className="mt-1 text-xs text-white/70">
                     Cada mudança vira um evento — reputação e verdade.
                   </div>

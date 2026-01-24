@@ -38,6 +38,7 @@ export class MerchantsController {
    * Regras:
    * - tradeName obrigatório
    * - Lojista exige CNPJ (14 números)
+   * - handle opcional (sem @ no banco) | 3–30 chars | [a-z0-9._]
    * - city opcional
    * - cepPrefix opcional (5 números)
    */
@@ -52,6 +53,12 @@ export class MerchantsController {
     // 🔒 Lojista: CNPJ obrigatório (14 dígitos)
     const rawDoc = String(body?.document ?? '').trim();
     const document = rawDoc.replace(/\D/g, '');
+
+    // ✅ handle público (opcional) — salva sem "@"
+    const handleRaw = String(body?.handle ?? '').trim();
+    const handle = handleRaw
+      ? handleRaw.replace(/^@+/, '').toLowerCase()
+      : null;
 
     // cidade é opcional
     const cityRaw = String(body?.city ?? '').trim();
@@ -73,6 +80,15 @@ export class MerchantsController {
       throw new BadRequestException('CNPJ inválido. Informe 14 números.');
     }
 
+    if (handle) {
+      // letras, números, _ e . | 3 a 30 chars
+      if (!/^[a-z0-9._]{3,30}$/.test(handle)) {
+        throw new BadRequestException(
+          'Handle inválido. Use 3–30 caracteres: letras/números e . _ (sem espaços).',
+        );
+      }
+    }
+
     if (cepPrefix && !/^\d{5}$/.test(cepPrefix)) {
       throw new BadRequestException(
         'CEP (prefixo) deve ter 5 números (ex: 36500).',
@@ -88,12 +104,14 @@ export class MerchantsController {
         city,
         cepPrefix,
         status: 'ACTIVE',
+        handle, // ✅ NOVO
       },
       update: {
         tradeName,
         document,
         city,
         cepPrefix,
+        handle, // ✅ NOVO
       },
     });
   }

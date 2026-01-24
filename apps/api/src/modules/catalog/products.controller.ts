@@ -25,6 +25,7 @@ export class ProductsController {
         title: true,
         priceCents: true,
         merchantId: true,
+        images: true, // ✅ NOVO: inclui imagens na listagem
       },
     });
 
@@ -34,6 +35,7 @@ export class ProductsController {
       name: p.title,
       price: p.priceCents,
       merchantId: p.merchantId,
+      images: p.images ?? [], // ✅ NOVO
     }));
   }
 

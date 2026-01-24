@@ -32,6 +32,10 @@ type Order = {
   // backend usa "state" no detalhe; deixo os dois
   state?: string | null;
 
+  // ✅ NOVO: merchant no payload
+  merchantId?: string | null;
+  merchant?: { id: string; tradeName: string | null } | null;
+
   createdAt?: string | null;
   updatedAt?: string | null;
 
@@ -45,6 +49,12 @@ type MyOrdersResponse = {
   ok: boolean;
   items: Order[];
 };
+
+// ✅ tipos mínimos pra shipment (sem any)
+type Shipment = { status?: string | null };
+type ShipmentByOrderResponse =
+  | { ok: true; shipment: Shipment | null }
+  | { ok: false; message?: string };
 
 function formatMoneyBRLFromCents(cents?: number | null) {
   const v = Number(cents ?? 0) / 100;
@@ -71,6 +81,14 @@ function niceCityUF(o: Order) {
 
   const uf2 = uf ? uf.toUpperCase() : '';
   return `${city}${uf2 ? ` / ${uf2}` : ''}`;
+}
+
+/** ✅ NOVO: helper “label do vendedor” */
+function sellerLabel(o: Order) {
+  const t = o.merchant?.tradeName ? String(o.merchant.tradeName).trim() : '';
+  if (t) return t;
+  const id = String(o.merchant?.id ?? o.merchantId ?? '').trim();
+  return id ? id : '—';
 }
 
 // badge color por status
@@ -104,6 +122,20 @@ function statusLabelPT(status: string) {
   return s;
 }
 
+/** ✅ NOVO: helper PT-BR para status de entrega (shipment) */
+function shipmentStatusPT(raw: unknown) {
+  const s = String(raw ?? '').toUpperCase();
+  if (!s || s === '—') return '—';
+
+  if (s === 'CREATED') return 'Criada';
+  if (s === 'PICKED_UP') return 'Coletada';
+  if (s === 'IN_TRANSIT') return 'Em trânsito';
+  if (s === 'DELIVERED') return 'Entregue';
+  if (s === 'CANCELLED') return 'Cancelada';
+
+  return s;
+}
+
 function StatusPill({ status }: { status: string }) {
   const s = String(status || '—');
   return (
@@ -112,7 +144,6 @@ function StatusPill({ status }: { status: string }) {
         s,
       )}`}
     >
-      {/* ✅ troca: mostra label em PT */}
       <span className="text-white/90">{statusLabelPT(s)}</span>
     </span>
   );
@@ -191,6 +222,14 @@ export default function ConsumerOrdersListPage() {
   const [status, setStatus] = useState('ALL');
   const [range, setRange] = useState<RangeKey>('ALL');
 
+  // ✅ status do shipment por orderId
+  const [shipStatusByOrder, setShipStatusByOrder] = useState<
+    Record<string, string>
+  >({});
+
+  // ✅ NOVO: loading específico pra shipments
+  const [loadingShipments, setLoadingShipments] = useState(false);
+
   useEffect(() => {
     let alive = true;
 
@@ -202,6 +241,8 @@ export default function ConsumerOrdersListPage() {
       if (!token) {
         if (!alive) return;
         setItems([]);
+        setShipStatusByOrder({});
+        setLoadingShipments(false);
         setError('Sessão expirada. Faça login novamente.');
         setLoading(false);
         return;
@@ -215,12 +256,48 @@ export default function ConsumerOrdersListPage() {
         });
 
         if (!alive) return;
-        setItems(Array.isArray(res?.items) ? res.items : []);
+
+        const list = Array.isArray(res?.items) ? res.items : [];
+        setItems(list);
+
+        // ✅ buscar shipments por orderId e montar map (sem any)
+        const map: Record<string, string> = {};
+
+        // ✅ antes do Promise.all(...)
+        setLoadingShipments(true);
+
+        await Promise.all(
+          list.map(async (o) => {
+            try {
+              const shRes = await fetchJSON<ShipmentByOrderResponse>(
+                `/logistics/shipments/by-order/${encodeURIComponent(o.id)}`,
+                { method: 'GET', headers: { Authorization: `Bearer ${token}` } },
+              );
+
+              const st =
+                shRes && shRes.ok === true && shRes.shipment?.status
+                  ? String(shRes.shipment.status)
+                  : '—';
+
+              map[o.id] = st;
+            } catch {
+              map[o.id] = '—';
+            }
+          }),
+        );
+
+        if (!alive) return;
+        setShipStatusByOrder(map);
+
+        // ✅ depois de setShipStatusByOrder(map)
+        setLoadingShipments(false);
       } catch (e) {
         if (!alive) return;
         const err = e as ApiError;
         setError(err?.message || 'Falha ao carregar pedidos.');
         setItems([]);
+        setShipStatusByOrder({});
+        setLoadingShipments(false);
       } finally {
         if (!alive) return;
         setLoading(false);
@@ -253,11 +330,16 @@ export default function ConsumerOrdersListPage() {
     return items.filter((o) => {
       const okStatus = status === 'ALL' ? true : String(o.status) === status;
 
+      const seller =
+        String(o.merchant?.tradeName ?? '').toLowerCase().trim() ||
+        String(o.merchant?.id ?? o.merchantId ?? '').toLowerCase().trim();
+
       const okQ =
         !qq ||
         String(o.id ?? '').toLowerCase().includes(qq) ||
         String(o.city ?? '').toLowerCase().includes(qq) ||
-        String(o.uf ?? o.state ?? '').toLowerCase().includes(qq);
+        String(o.uf ?? o.state ?? '').toLowerCase().includes(qq) ||
+        seller.includes(qq);
 
       const t = parseTime(o.createdAt);
       const okRange = minTime ? (t ? t >= minTime : false) : true;
@@ -284,9 +366,9 @@ export default function ConsumerOrdersListPage() {
       <div className="mx-auto max-w-6xl p-6">
         <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div className="space-y-1">
-            <h1 className="text-2xl font-semibold text-white">Meus pedidos</h1>
+            <h1 className="text-2xl font-semibold text-white">Minhas compras</h1>
             <p className="text-sm text-white/75">
-              Linha do tempo Marto • Transparência total do que aconteceu
+              Acompanhe o histórico e o status das suas compras.
             </p>
           </div>
 
@@ -308,7 +390,6 @@ export default function ConsumerOrdersListPage() {
                 Busca
               </label>
 
-              {/* ✅ input de busca com Limpar + Esc */}
               <div className="relative">
                 <input
                   value={q}
@@ -381,7 +462,6 @@ export default function ConsumerOrdersListPage() {
             <span className="text-white/95">{items.length}</span>
           </div>
 
-          {/* filtros ativos */}
           {status !== 'ALL' || range !== 'ALL' ? (
             <div className="mt-2 flex flex-wrap gap-2">
               {status !== 'ALL' ? (
@@ -458,13 +538,12 @@ export default function ConsumerOrdersListPage() {
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
                         <div className="text-sm font-semibold text-white">
-                          Pedido
+                          Compra
                         </div>
                         <StatusPill status={String(o.status ?? '—')} />
                       </div>
 
                       <div className="mt-2 grid gap-1 text-sm text-white/85">
-                        {/* ✅ ID + botão copiar */}
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-white/65">ID:</span>
                           <span className="font-mono text-white/95">{o.id}</span>
@@ -476,7 +555,7 @@ export default function ConsumerOrdersListPage() {
                               try {
                                 await navigator.clipboard.writeText(o.id);
                               } catch {
-                                // silencioso (não precisa toast aqui por enquanto)
+                                // silencioso
                               }
                             }}
                             title="Copiar ID"
@@ -488,6 +567,12 @@ export default function ConsumerOrdersListPage() {
                         <div>
                           <span className="text-white/65">Cidade/UF:</span>{' '}
                           <span className="text-white/95">{niceCityUF(o)}</span>
+                        </div>
+
+                        {/* ✅ NOVO: vendedor */}
+                        <div className="truncate">
+                          <span className="text-white/65">Vendedor:</span>{' '}
+                          <span className="text-white/95">{sellerLabel(o)}</span>
                         </div>
 
                         <div>
@@ -509,7 +594,16 @@ export default function ConsumerOrdersListPage() {
                           <span className="text-white/95">{labelItem}</span>
                         </div>
 
-                        {/* ✅ MUDANÇA ÚNICA: total vira “pill” alinhado */}
+                        {/* ✅ NOVO: status de entrega (shipment) */}
+                        <div>
+                          <span className="text-white/65">Entrega:</span>{' '}
+                          <span className="text-white/95">
+                            {loadingShipments
+                              ? 'Carregando…'
+                              : shipmentStatusPT(shipStatusByOrder[o.id] ?? '—')}
+                          </span>
+                        </div>
+
                         <div className="mt-1 flex items-center justify-between rounded-xl border border-white/10 bg-white/5 px-3 py-2">
                           <span className="text-xs font-semibold text-white/70">
                             Total

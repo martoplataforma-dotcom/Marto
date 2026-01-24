@@ -522,12 +522,20 @@ model Merchant {
   tradeName String
   document  String
   status    MerchantStatus @default(ACTIVE)
+
+  // ✅ NOVO
+  handle    String?        @unique  // ex: "store5" (sem @ no banco)
+
+  logoUrl   String?
+  coverUrl  String?
+
   createdAt DateTime       @default(now())
   cepPrefix String?
   city      String?
   user      User           @relation(fields: [userId], references: [id])
   products  Product[]
 }
+
 
 model Product {
   id          String   @id @default(uuid())

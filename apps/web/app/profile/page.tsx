@@ -1,3 +1,4 @@
+// apps/web/app/profile/page.tsx
 'use client';
 
 import Link from 'next/link';
@@ -22,24 +23,53 @@ type ViaCepResponse = {
   uf?: string;
 };
 
+type Home =
+  | 'consumer'
+  | 'merchant'
+  | 'service_provider'
+  | 'representative'
+  | 'factory';
+
 type MeResponse = {
-  home?: 'consumer' | 'merchant' | 'service_provider' | 'representative' | 'factory';
+  home?: Home;
+  profile?: { handle?: string | null };
 };
 
-function dashboardFromHome(home?: MeResponse['home'] | null) {
+function dashboardFromHome(home?: Home | null) {
   switch (home) {
     case 'merchant':
       return '/dash/merchant';
     case 'factory':
       return '/dash/factory';
     case 'service_provider':
-      return '/dash/provider/services'; // ✅ FIX: rota correta
+      return '/dash/provider/services';
     case 'representative':
       return '/dash/representative';
     case 'consumer':
     default:
       return '/dash/consumer';
   }
+}
+
+function labelFromHome(home?: Home | null) {
+  return home === 'merchant'
+    ? 'Lojista'
+    : home === 'factory'
+      ? 'Fabricante'
+      : home === 'service_provider'
+        ? 'Prestador'
+        : home === 'representative'
+          ? 'Representante'
+          : 'Consumidor';
+}
+
+// ✅ sanitize do @handle
+function sanitizeHandle(raw: string) {
+  return String(raw ?? '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9._-]/g, '')
+    .slice(0, 24);
 }
 
 export default function ProfilePage() {
@@ -51,7 +81,7 @@ export default function ProfilePage() {
   const [city, setCity] = useState('');
   const [cepPrefix, setCepPrefix] = useState('');
 
-  // UX nova: CEP completo (não persistimos ainda) + endereço encontrado
+  // UX: CEP completo + endereço encontrado
   const [cep, setCep] = useState('');
   const [cepLoading, setCepLoading] = useState(false);
   const [addr, setAddr] = useState<{
@@ -61,13 +91,26 @@ export default function ProfilePage() {
     uf: string;
   } | null>(null);
 
-  // ✅ guarda o "home"
-  const [home, setHome] = useState<MeResponse['home'] | null>(null);
+  // ✅ guarda o "home" + handle
+  const [home, setHome] = useState<Home | null>(null);
+  const [handle, setHandle] = useState('');
 
+  // ✅ ainda validamos internamente (mesmo sem input), pra não mandar lixo pro backend
   const canSave = useMemo(() => {
     if (cepPrefix && !/^\d{5}$/.test(cepPrefix)) return false;
     return true;
   }, [cepPrefix]);
+
+  const dashboardHref = dashboardFromHome(home);
+  const badge = labelFromHome(home);
+
+  const effectiveHandle = sanitizeHandle(handle);
+  const publicHref = effectiveHandle ? `/u/${effectiveHandle}` : '/me';
+  const publicCtaLabel = effectiveHandle
+    ? 'Ver meu perfil público'
+    : 'Ativar perfil público';
+
+  const isConsumer = home === 'consumer' || home === null;
 
   useEffect(() => {
     (async () => {
@@ -80,8 +123,12 @@ export default function ProfilePage() {
       }
 
       try {
-        // ✅ A) Primeiro: buscar o home via /me (pela rewrite /api)
-        const me = await fetchJSON<MeResponse>('/me', { method: 'GET' });
+        // ✅ A) buscar home + handle via /me (COM Authorization)
+        const me = await fetchJSON<MeResponse>('/me', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
         const h =
           me?.home === 'consumer' ||
           me?.home === 'merchant' ||
@@ -92,53 +139,79 @@ export default function ProfilePage() {
             : null;
 
         setHome(h);
+        setHandle(String(me?.profile?.handle ?? ''));
 
-        // ✅ B) Buscar preferências somente quando fizer sentido
-        // Por enquanto, este /profile é “Preferências do consumidor/lojista”.
-        if (h === 'merchant') {
-          const data = await fetchJSON<Consumer>('/merchants/me', {
-            method: 'GET',
-            headers: { Authorization: `Bearer ${token}` },
-          });
-
-          setCity(data.city ?? '');
-          setCepPrefix(data.cepPrefix ?? '');
-          if (data.cepPrefix) setCep(String(data.cepPrefix));
-        } else if (h === 'consumer' || !h) {
-          const data = await fetchJSON<Consumer>('/consumers/me', {
-            method: 'GET',
-            headers: { Authorization: `Bearer ${token}` },
-          });
-
-          setCity(data.city ?? '');
-          setCepPrefix(data.cepPrefix ?? '');
-          if (data.cepPrefix) setCep(String(data.cepPrefix));
-        } else {
-          // factory / rep / service_provider
-          setMsg(
-            'Configurações de localização ainda não existem para este papel. (Por enquanto, só consumidor/lojista.)',
-          );
+        // ✅ B) este /profile é a Central do Consumidor
+        if (h && h !== 'consumer') {
+          setMsg('Esta central é do Consumidor. Vá para sua central correta.');
+          return;
         }
+
+        // ✅ C) carrega prefs (fonte da verdade) (COM Authorization)
+        const data = await fetchJSON<Consumer>('/consumers/me', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        setCity(data.city ?? '');
+        setCepPrefix(data.cepPrefix ?? '');
+
+        // ✅ 1) NÃO preencher o campo “CEP (8 dígitos)” com cepPrefix no load inicial
+        setCep('');
+        setAddr(null);
       } catch (e: unknown) {
         const err = e as ApiError;
-        setMsg(err?.message ?? 'Não foi possível carregar suas configurações.');
+
+        // ✅ Se /me falhar, ainda assim tenta carregar /consumers/me
+        try {
+          const token2 = getToken();
+          if (token2) {
+            const data = await fetchJSON<Consumer>('/consumers/me', {
+              method: 'GET',
+              headers: { Authorization: `Bearer ${token2}` },
+            });
+
+            setCity(data.city ?? '');
+            setCepPrefix(data.cepPrefix ?? '');
+
+            // ✅ 1) também não preenche CEP completo no fallback
+            setCep('');
+            setAddr(null);
+
+            setMsg(
+              err?.message
+                ? `⚠️ /me falhou (${err.message}), mas preferências carregadas.`
+                : '⚠️ /me falhou, mas preferências carregadas.'
+            );
+          } else {
+            setMsg(err?.message ?? 'Não foi possível carregar suas configurações.');
+          }
+        } catch (e2: unknown) {
+          const err2 = e2 as ApiError;
+          setMsg(
+            err2?.message ??
+              err?.message ??
+              'Não foi possível carregar suas configurações.'
+          );
+        }
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
+  // ✅ prefixo é setado assim que tiver 5 dígitos, antes do fetch
   async function lookupCep(value: string) {
     setMsg('');
     const clean = value.replace(/\D/g, '').slice(0, 8);
     setCep(clean);
 
+    // ✅ já vai atualizando prefixo conforme digita
+    if (clean.length >= 5) setCepPrefix(clean.slice(0, 5));
+    else setCepPrefix('');
+
     if (clean.length !== 8) {
       setAddr(null);
-
-      if (clean.length >= 5) setCepPrefix(clean.slice(0, 5));
-      else setCepPrefix('');
-
       return;
     }
 
@@ -167,7 +240,7 @@ export default function ProfilePage() {
         uf: foundUf,
       });
 
-      setCepPrefix(clean.slice(0, 5));
+      // ✅ não força cidade se usuário já colocou algo
       if (!city.trim() && foundCity) setCity(foundCity);
     } catch {
       setAddr(null);
@@ -177,6 +250,7 @@ export default function ProfilePage() {
     }
   }
 
+  // ✅ Salva derivando o prefixo do CEP (sem input separado)
   async function onSave() {
     setMsg('');
     const token = getToken();
@@ -185,46 +259,43 @@ export default function ProfilePage() {
       return;
     }
 
-    if (cepPrefix && !/^\d{5}$/.test(cepPrefix)) {
-      setMsg('CEP (prefixo) deve ter 5 números (ex: 36500).');
+    if (!isConsumer) {
+      setMsg('Esta central é do Consumidor. Vá para sua central correta.');
       return;
     }
 
-    // ✅ por enquanto só consumidor/lojista salvam localização
-    if (home && home !== 'consumer' && home !== 'merchant') {
-      setMsg('Salvar preferências ainda não existe para este papel.');
+    const digits = String(cep ?? '').replace(/\D/g, '').slice(0, 8);
+    const nextPrefix = digits.length >= 5 ? digits.slice(0, 5) : '';
+
+    if (!nextPrefix) {
+      setMsg('Digite pelo menos 5 números do CEP para salvar preferências.');
       return;
     }
 
     setSaving(true);
     try {
-      if (home === 'merchant') {
-        await fetchJSON('/merchants/me', {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            city: city.trim() || null,
-            cepPrefix: cepPrefix.trim() || null,
-          }),
-        });
-      } else {
-        await fetchJSON('/consumers/me', {
-          method: 'PUT',
-          headers: {
-            Authorization: `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            city: city.trim() || null,
-            cepPrefix: cepPrefix.trim() || null,
-          }),
-        });
-      }
+      await fetchJSON('/consumers/me', {
+        method: 'PUT',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          city: city.trim() || null,
+          cepPrefix: nextPrefix,
+        }),
+      });
 
-      setMsg('Configurações salvas.');
+      // ✅ garante consistência já na hora: busca do backend e atualiza a tela
+      const fresh = await fetchJSON<Consumer>('/consumers/me', {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      setCity(fresh.city ?? city);
+      setCepPrefix(fresh.cepPrefix ?? nextPrefix);
+
+      setMsg('Preferências salvas.');
       setTimeout(() => setMsg(''), 2500);
     } catch (e: unknown) {
       const err = e as ApiError;
@@ -235,54 +306,59 @@ export default function ProfilePage() {
   }
 
   return (
-    <main className="min-h-screen bg-zinc-950 text-white">
+    <main className="relative min-h-screen overflow-x-hidden bg-neutral-950 text-white">
+      {/* fundo Marto */}
+      <div
+        className="pointer-events-none fixed inset-0 opacity-15"
+        style={{
+          backgroundImage:
+            'linear-gradient(to right, rgba(255,255,255,0.07) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.07) 1px, transparent 1px)',
+          backgroundSize: '52px 52px',
+        }}
+      />
+      <div className="pointer-events-none fixed -top-48 left-1/2 h-[32rem] w-[62rem] -translate-x-1/2 rounded-full bg-white/10 blur-3xl" />
+      <div className="pointer-events-none fixed top-[18rem] -left-40 h-[26rem] w-[26rem] rounded-full bg-white/5 blur-3xl" />
+      <div className="pointer-events-none fixed top-[22rem] -right-40 h-[26rem] w-[26rem] rounded-full bg-white/5 blur-3xl" />
+
       {/* HERO */}
-      <header className="relative overflow-hidden border-b border-white/10">
-        <div
-          className="pointer-events-none absolute inset-0 opacity-15"
-          style={{
-            backgroundImage:
-              'linear-gradient(to right, rgba(255,255,255,0.07) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.07) 1px, transparent 1px)',
-            backgroundSize: '52px 52px',
-          }}
-        />
-        <div className="relative mx-auto max-w-6xl px-6 py-10">
+      <header className="relative">
+        <div className="relative mx-auto max-w-6xl p-6 pt-10">
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
-              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
-                Conta • Configurações
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-neutral-950/75 px-3 py-1 text-xs font-semibold text-white/85 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                Conta • Consumidor
                 <span className="opacity-60">•</span>
                 Porque reputação importa
               </div>
 
               <h1 className="mt-4 text-3xl font-bold tracking-tight sm:text-4xl">
-                Central da Conta
+                Central do Consumidor
               </h1>
 
               <p className="mt-2 max-w-2xl text-sm text-white/70">
-                Aqui ficam seus ajustes e segurança. O social e a reputação vivem
-                no seu perfil público.
+                Preferências e segurança. Seu perfil público é outra coisa:
+                consequência do histórico.
               </p>
             </div>
 
             <div className="flex flex-wrap gap-2">
               <Link
-                href={dashboardFromHome(home)}
+                href={dashboardHref}
                 className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
               >
                 Voltar ao dashboard
               </Link>
 
               <Link
-                href="/me"
+                href={publicHref}
                 className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90"
               >
-                Ver meu perfil público
+                {publicCtaLabel}
               </Link>
 
               <button
                 onClick={onSave}
-                disabled={loading || saving || !canSave}
+                disabled={loading || saving || !canSave || !isConsumer}
                 className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10 disabled:opacity-60"
               >
                 {saving ? 'Salvando…' : 'Salvar'}
@@ -290,8 +366,23 @@ export default function ProfilePage() {
             </div>
           </div>
 
+          {effectiveHandle ? (
+            <div className="mt-4 text-xs text-white/65">
+              Seu perfil público:{' '}
+              <span className="font-semibold text-white/85">
+                /u/{effectiveHandle}
+              </span>
+            </div>
+          ) : (
+            <div className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 px-4 py-3 text-sm text-white/80 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+              <span className="font-semibold">Ative seu perfil público:</span>{' '}
+              crie um <span className="font-semibold">@handle</span> na sua conta
+              (/me). Sem handle, não existe link público.
+            </div>
+          )}
+
           {msg ? (
-            <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/80">
+            <div className="mt-6 rounded-2xl border border-white/15 bg-neutral-950/75 px-4 py-3 text-sm text-white/80 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
               {msg}
             </div>
           ) : null}
@@ -299,210 +390,302 @@ export default function ProfilePage() {
       </header>
 
       {/* CONTENT */}
-      <div className="mx-auto max-w-6xl px-6 py-10">
-        <div className="grid gap-6 lg:grid-cols-12">
-          {/* SIDEBAR */}
-          <aside className="lg:col-span-4">
-            <div className="rounded-3xl border border-white/10 bg-white/5 p-5">
-              <div className="text-sm font-semibold">Seções</div>
-
-              <div className="mt-4 grid gap-2 text-sm">
-                <a
-                  href="#local"
-                  className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 hover:bg-white/10"
-                >
-                  Preferências
-                  <div className="mt-1 text-xs text-white/60">
-                    CEP com auto-complete + cidade
-                  </div>
-                </a>
-
-                <a
-                  href="#seguranca"
-                  className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 hover:bg-white/10"
-                >
-                  Segurança
-                  <div className="mt-1 text-xs text-white/60">
-                    verificação de email e senha
-                  </div>
-                </a>
-              </div>
-
-              <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4 text-xs text-white/65">
-                Dica: no Marto, localização só serve pra destravar conveniência —
-                nunca pra travar o usuário.
-              </div>
+      <div className="mx-auto max-w-6xl p-6 pb-10">
+        {/* Se não for consumer, trava e guia */}
+        {!isConsumer && home ? (
+          <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+            <div className="text-sm font-semibold text-white/90">
+              Você está logado como: {badge}
             </div>
-          </aside>
+            <div className="mt-2 text-sm text-white/70">
+              Esta central é exclusiva do Consumidor. Cada papel tem sua própria
+              central no Marto.
+            </div>
 
-          {/* MAIN */}
-          <section className="lg:col-span-8">
-            {/* Preferências */}
-            <div
-              id="local"
-              className="rounded-3xl border border-white/10 bg-white/5 p-6"
-            >
-              <div className="flex items-start justify-between gap-4">
+            <div className="mt-5 flex flex-wrap gap-2">
+              <Link
+                href={dashboardFromHome(home)}
+                className="rounded-2xl bg-white px-5 py-2 text-sm font-semibold text-black hover:opacity-90"
+              >
+                Ir para minha central
+              </Link>
+
+              <Link
+                href="/me"
+                className="rounded-2xl border border-white/15 bg-white/5 px-5 py-2 text-sm font-semibold text-white hover:bg-white/10"
+              >
+                Minha conta
+              </Link>
+            </div>
+          </div>
+        ) : (
+          <div className="grid gap-6 lg:grid-cols-12">
+            {/* SIDEBAR */}
+            <aside className="lg:col-span-4">
+              <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                <div className="text-sm font-semibold text-white/90">Seções</div>
+
+                <div className="mt-4 grid gap-2 text-sm">
+                  <a
+                    href="#preferencias"
+                    className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
+                  >
+                    Preferências
+                    <div className="mt-1 text-xs text-white/65">
+                      CEP + sugestões
+                    </div>
+                  </a>
+
+                  <a
+                    href="#pagamentos"
+                    className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
+                  >
+                    Pagamentos
+                    <div className="mt-1 text-xs text-white/65">
+                      Marto Pay (em breve)
+                    </div>
+                  </a>
+
+                  <a
+                    href="#documentos"
+                    className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
+                  >
+                    Documentos
+                    <div className="mt-1 text-xs text-white/65">
+                      CPF/telefone (em breve)
+                    </div>
+                  </a>
+
+                  <a
+                    href="#seguranca"
+                    className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
+                  >
+                    Segurança
+                    <div className="mt-1 text-xs text-white/65">
+                      email, senha, sessões
+                    </div>
+                  </a>
+                </div>
+
+                <div className="mt-6 rounded-2xl border border-white/15 bg-black/25 p-4 text-xs text-white/70 ring-1 ring-white/5">
+                  Marto: dados da conta são privados. O público é consequência
+                  real — não currículo.
+                </div>
+              </div>
+            </aside>
+
+            {/* MAIN */}
+            <section className="lg:col-span-8">
+              {/* Preferências */}
+              <div
+                id="preferencias"
+                className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+              >
                 <div>
-                  <h2 className="text-lg font-semibold">Preferências</h2>
-                  <p className="mt-1 text-sm text-white/65">
-                    Digite o CEP e o Marto completa o endereço automaticamente.
+                  <h2 className="text-lg font-semibold text-white/90">
+                    Preferências
+                  </h2>
+                  <p className="mt-1 text-sm text-white/70">
+                    Digite o CEP e o Marto completa automaticamente.
                   </p>
                 </div>
 
-                <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/70">
-                  {home === 'merchant'
-                    ? 'Lojista'
-                    : home === 'factory'
-                      ? 'Fabricante'
-                      : home === 'service_provider'
-                        ? 'Prestador'
-                        : home === 'representative'
-                          ? 'Representante'
-                          : 'Consumidor'}
-                </span>
-              </div>
-
-              <div className="mt-6 grid gap-4">
-                <label className="grid gap-2">
-                  <span className="text-sm font-semibold text-white/90">
-                    CEP (8 dígitos)
-                  </span>
-                  <input
-                    value={cep}
-                    onChange={(e) => lookupCep(e.target.value)}
-                    placeholder="Ex: 36500000"
-                    className="rounded-2xl border border-white/10 bg-zinc-950/30 px-4 py-3 text-white outline-none placeholder:text-white/35 focus:border-white/30"
-                    inputMode="numeric"
-                    disabled={
-                      loading ||
-                      (home !== null && home !== 'consumer' && home !== 'merchant')
-                    }
-                  />
-                  <span className="text-xs text-white/55">
-                    {home !== null && home !== 'consumer' && home !== 'merchant'
-                      ? 'Preferências de localização ainda não existem para este papel.'
-                      : cepLoading
-                        ? 'Buscando endereço…'
-                        : 'Ao completar 8 dígitos, buscamos automaticamente.'}
-                  </span>
-                </label>
-
-                {addr ? (
-                  <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                    <div className="text-sm font-semibold text-white">
-                      Endereço encontrado
-                    </div>
-                    <div className="mt-2 text-sm text-white/75">
-                      {addr.street ? `${addr.street}` : '—'}
-                      {addr.district ? ` • ${addr.district}` : ''}
-                      <br />
-                      {addr.city}/{addr.uf}
-                    </div>
-
-                    <div className="mt-3 text-xs text-white/55">
-                      (Por enquanto salvamos só o prefixo do CEP no banco.
-                      Endereço completo vem no próximo passo.)
-                    </div>
-                  </div>
-                ) : null}
-
-                <div className="grid gap-4 sm:grid-cols-2">
+                <div className="mt-6 grid gap-4">
                   <label className="grid gap-2">
-                    <span className="text-sm font-semibold text-white/90">
-                      Cidade (opcional)
+                    <span className="text-sm font-semibold text-white/85">
+                      CEP (8 dígitos)
                     </span>
                     <input
-                      value={city}
-                      onChange={(e) => setCity(e.target.value)}
-                      placeholder="Ex: Ubá"
-                      className="rounded-2xl border border-white/10 bg-zinc-950/30 px-4 py-3 text-white outline-none placeholder:text-white/35 focus:border-white/30"
-                      disabled={
-                        loading ||
-                        (home !== null &&
-                          home !== 'consumer' &&
-                          home !== 'merchant')
-                      }
+                      value={cep}
+                      onChange={(e) => lookupCep(e.target.value)}
+                      placeholder="Ex: 36500000"
+                      className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white outline-none placeholder:text-white/35 focus:border-white/35"
+                      inputMode="numeric"
+                      disabled={loading}
                     />
-
-                    <div className="text-xs text-white/55">
-                      Salvaremos automaticamente o prefixo do CEP (5 primeiros
-                      dígitos) para sugestões.
-                    </div>
+                    <span className="text-xs text-white/65">
+                      {cepLoading
+                        ? 'Buscando endereço…'
+                        : 'Ao completar 8 dígitos, buscamos automaticamente.'}
+                    </span>
                   </label>
-                </div>
 
-                <div className="mt-2 flex flex-wrap gap-2">
-                  <button
-                    onClick={onSave}
-                    disabled={
-                      loading ||
-                      saving ||
-                      !canSave ||
-                      (home !== null && home !== 'consumer' && home !== 'merchant')
-                    }
-                    className="rounded-2xl bg-white px-5 py-2 text-sm font-semibold text-black disabled:opacity-60"
-                  >
-                    {saving ? 'Salvando…' : 'Salvar preferências'}
-                  </button>
+                  {/* ✅ 2) Card “Região salva” quando existir prefixo */}
+                  {cepPrefix ? (
+                    <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                      <div className="text-sm font-semibold text-white">
+                        Região salva
+                      </div>
+                      <div className="mt-2 text-sm text-white/75">
+                        CEP base:{' '}
+                        <span className="font-semibold text-white">
+                          {cepPrefix}
+                        </span>
+                      </div>
+                      <div className="mt-2 text-xs text-white/55">
+                        Por enquanto o Marto salva só o prefixo (5 primeiros
+                        dígitos) para sugestões. Para ver endereço completo,
+                        digite o CEP (8 dígitos).
+                      </div>
+                    </div>
+                  ) : null}
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCep('');
-                      setAddr(null);
-                      setCity('');
-                      setCepPrefix('');
-                      setMsg('Preferências limpas.');
-                    }}
-                    className="rounded-2xl border border-white/15 bg-white/5 px-5 py-2 text-sm font-semibold text-white hover:bg-white/10"
-                    disabled={loading || saving}
-                  >
-                    Limpar
-                  </button>
+                  {addr ? (
+                    <div className="rounded-2xl border border-white/15 bg-black/25 p-4 text-white/80 ring-1 ring-white/5">
+                      <div className="text-sm font-semibold text-white">
+                        Endereço encontrado
+                      </div>
+                      <div className="mt-2 text-sm text-white/75">
+                        {addr.street ? `${addr.street}` : '—'}
+                        {addr.district ? ` • ${addr.district}` : ''}
+                        <br />
+                        {addr.city}/{addr.uf}
+                      </div>
+
+                      <div className="mt-3 text-xs text-white/65">
+                        Por enquanto salvamos só o prefixo do CEP (5 primeiros
+                        dígitos). Endereço completo vem depois.
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <label className="grid gap-2">
+                      <span className="text-sm font-semibold text-white/85">
+                        Cidade (opcional)
+                      </span>
+                      <input
+                        value={city}
+                        onChange={(e) => setCity(e.target.value)}
+                        placeholder="Ex: Ubá"
+                        className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white outline-none placeholder:text-white/35 focus:border-white/35"
+                        disabled={loading}
+                      />
+                      <div className="text-xs text-white/65">
+                        Usamos isso para sugestões — não pra te travar.
+                      </div>
+                    </label>
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      onClick={onSave}
+                      disabled={loading || saving || cepLoading}
+                      className="rounded-2xl bg-white px-5 py-2 text-sm font-semibold text-black disabled:opacity-60"
+                    >
+                      {saving ? 'Salvando…' : 'Salvar preferências'}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCep('');
+                        setAddr(null);
+                        setCepPrefix('');
+                        setMsg('CEP limpo.');
+                        setTimeout(() => setMsg(''), 1800);
+                      }}
+                      className="rounded-2xl border border-white/15 bg-white/5 px-5 py-2 text-sm font-semibold text-white hover:bg-white/10 disabled:opacity-60"
+                      disabled={loading || saving}
+                    >
+                      Limpar CEP
+                    </button>
+                  </div>
                 </div>
               </div>
-            </div>
 
-            {/* Segurança */}
-            <div
-              id="seguranca"
-              className="mt-6 rounded-3xl border border-white/10 bg-white/5 p-6"
-            >
-              <h2 className="text-lg font-semibold">Segurança</h2>
-              <p className="mt-1 text-sm text-white/65">
-                Em breve: confirmar email, trocar senha e ações sensíveis.
-              </p>
-
-              <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/80">
-                Status:{' '}
-                <span className="font-semibold">
-                  verificação de email (em breve)
-                </span>
-              </div>
-
-              <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                  <div className="text-sm font-semibold">
-                    Confirmação de email
+              {/* Pagamentos (em breve) */}
+              <div
+                id="pagamentos"
+                className="mt-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold text-white/90">
+                      Pagamentos
+                    </h2>
+                    <p className="mt-1 text-sm text-white/70">
+                      Cartões e métodos no Marto Pay. Sem fricção, sem gambiarra.
+                    </p>
                   </div>
-                  <div className="mt-1 text-sm text-white/65">
-                    Vai virar requisito para recursos sensíveis (carteira, saque,
-                    etc).
-                  </div>
+                  <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/75">
+                    em breve
+                  </span>
                 </div>
-                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                  <div className="text-sm font-semibold">
-                    Sessões e dispositivos
-                  </div>
-                  <div className="mt-1 text-sm text-white/65">
-                    Em breve: ver onde sua conta está logada.
-                  </div>
+
+                <div className="mt-5 rounded-2xl border border-white/15 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
+                  Quando ativarmos o Marto Pay, você gerencia seus métodos aqui.
                 </div>
               </div>
-            </div>
-          </section>
-        </div>
+
+              {/* Documentos (em breve) */}
+              <div
+                id="documentos"
+                className="mt-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold text-white/90">
+                      Documentos
+                    </h2>
+                    <p className="mt-1 text-sm text-white/70">
+                      CPF e dados sensíveis ficam aqui — privados.
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/75">
+                    em breve
+                  </span>
+                </div>
+
+                <div className="mt-5 rounded-2xl border border-white/15 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
+                  Isso não aparece no seu perfil público. Serve para compras,
+                  notas e segurança.
+                </div>
+              </div>
+
+              {/* Segurança */}
+              <div
+                id="seguranca"
+                className="mt-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <h2 className="text-lg font-semibold text-white/90">
+                      Segurança
+                    </h2>
+                    <p className="mt-1 text-sm text-white/70">
+                      Em breve: confirmar email, trocar senha e sessões.
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/75">
+                    em breve
+                  </span>
+                </div>
+
+                <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-white/90">
+                      Confirmação de email
+                    </div>
+                    <div className="mt-1 text-sm text-white/70">
+                      Vai virar requisito para recursos sensíveis (carteira,
+                      saque, etc).
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
+                    <div className="text-sm font-semibold text-white/90">
+                      Sessões e dispositivos
+                    </div>
+                    <div className="mt-1 text-sm text-white/70">
+                      Em breve: ver onde sua conta está logada.
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        )}
       </div>
     </main>
   );

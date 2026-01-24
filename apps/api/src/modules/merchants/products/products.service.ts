@@ -26,7 +26,7 @@ export class ProductsService {
         description: true,
         priceCents: true,
         active: true,
-        images: true,
+        images: true, // ✅ garante images na listagem
         createdAt: true,
         updatedAt: true,
       },
@@ -92,7 +92,7 @@ export class ProductsService {
         description: true,
         priceCents: true,
         active: true,
-        images: true,
+        images: true, // ✅ devolve as imagens
         createdAt: true,
       },
     });
@@ -187,7 +187,7 @@ export class ProductsService {
         description: true,
         priceCents: true,
         active: true,
-        images: true, // ✅ NOVO: devolve as imagens sempre
+        images: true, // ✅ devolve as imagens sempre
         updatedAt: true,
       },
     });

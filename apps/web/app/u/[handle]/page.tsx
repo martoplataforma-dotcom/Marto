@@ -1,6 +1,7 @@
+// apps/web/app/u/[handle]/page.tsx
 'use client';
 
-import Image from 'next/image';
+import Image, { type ImageLoader } from 'next/image';
 import Link from 'next/link';
 import { use, useEffect, useMemo, useState } from 'react';
 
@@ -22,26 +23,25 @@ type PublicEvent = {
   meta: string;
   desc: string;
   verified: boolean;
+
+  // ✅ futuro: backend pode mandar
+  type?: 'PURCHASE' | 'SERVICE' | 'OTHER';
 };
 
 type PublicProviderSnapshot = {
-  // opcional (quando o backend passar)
   kind?: 'GENERIC' | 'TRANSPORTER' | null;
   city?: string | null;
   uf?: string | null;
 
-  // resumo público (MVP)
-  specialtiesLabel?: string | null; // "Entregador" | "Prestador"
-  types?: { key: string; title: string }[]; // ex: express, agendada
+  specialtiesLabel?: string | null;
+  types?: { key: string; title: string }[];
   sla?: { pickupMinutes?: number; deliveryMinutes?: number; bias?: string };
-  agendaSummary?: string | null; // ex: "Seg–Sex 09:00–18:00"
-  regionSummary?: string | null; // ex: "Ubá/MG • raio 15 km"
+  agendaSummary?: string | null;
+  regionSummary?: string | null;
 };
 
 type PublicUserResponse = {
   ok: boolean;
-
-  // ✅ novo: home do usuário (pra montar o perfil por tipo)
   home?: Home;
 
   user: {
@@ -52,7 +52,6 @@ type PublicUserResponse = {
     since: string;
   };
 
-  // ✅ opcional: dados públicos do prestador (quando backend mandar)
   provider?: PublicProviderSnapshot | null;
 
   stats: {
@@ -94,6 +93,13 @@ function dashFromHome(home?: Home | null) {
   return '/dash/consumer';
 }
 
+function normalizeAvatarUrl(v: unknown) {
+  const s = String(v ?? '').trim();
+  if (!s) return '';
+  if (s === 'null' || s === 'undefined') return '';
+  return s;
+}
+
 /**
  * ✅ Badge do perfil público NÃO pode depender de `home` (histórico).
  * Regra:
@@ -127,6 +133,48 @@ function badgeFromPublic(data: PublicUserResponse | null) {
           : 'Consumidor';
 }
 
+/** ✅ next/image “direto” (igual o que corrigiu no /me) */
+const passthroughLoader: ImageLoader = ({ src }) => src;
+
+function MartoImage({
+  src,
+  alt,
+  size,
+  className,
+  priority,
+}: {
+  src: string;
+  alt: string;
+  size: number;
+  className?: string;
+  priority?: boolean;
+}) {
+  return (
+    <Image
+      loader={passthroughLoader}
+      unoptimized
+      src={src}
+      alt={alt}
+      width={size}
+      height={size}
+      className={className}
+      priority={priority}
+    />
+  );
+}
+
+function MartoAvatarPlaceholder({ alt, size }: { alt?: string; size: number }) {
+  return (
+    <MartoImage
+      src="/marto-m.svg"
+      alt={alt ?? 'Marto'}
+      size={size}
+      className="h-full w-full object-cover"
+      priority
+    />
+  );
+}
+
 export default function PublicUserProfilePage({ params }: Props) {
   const resolved = use(params);
   const handle = String(resolved?.handle ?? '').trim().toLowerCase();
@@ -139,9 +187,63 @@ export default function PublicUserProfilePage({ params }: Props) {
 
   // ✅ links dinâmicos (baseado no home do usuário logado, não do perfil público)
   const [myHome, setMyHome] = useState<Home | null>(null);
+  const [isAuthed, setIsAuthed] = useState(false);
+
+  // ✅ Aba (UI) + filtro por type (quando backend mandar)
+  const [tab, setTab] = useState<'all' | 'purchases' | 'services'>('all');
+
+  // ✅ Bio expand/collapse
+  const [bioExpanded, setBioExpanded] = useState(false);
+
+  // ✅ copiar link
+  const [copyMsg, setCopyMsg] = useState('');
+
+  // ✅ events memoizado (evita [] novo a cada render + atende exhaustive-deps)
+  const events = useMemo<PublicEvent[]>(() => {
+    const list = data?.events;
+    return Array.isArray(list) ? list : [];
+  }, [data]);
+
+  const visibleEvents = useMemo(() => {
+    const list = events;
+
+    // ✅ se ainda não existir type no backend, não filtra
+    const hasType = list.some((e) => !!e.type);
+
+    if (!hasType || tab === 'all') return list;
+
+    if (tab === 'purchases') return list.filter((e) => e.type === 'PURCHASE');
+    if (tab === 'services') return list.filter((e) => e.type === 'SERVICE');
+
+    return list;
+  }, [events, tab]);
+
+  // ✅ contadores “sem mentir”
+  const counters = useMemo(() => {
+    const list = Array.isArray(events) ? events : [];
+    const total = list.length;
+
+    const hasType = list.some((e) => !!e.type);
+
+    if (!hasType) {
+      return {
+        total,
+        purchases: null as number | null,
+        services: null as number | null,
+      };
+    }
+
+    const purchases = list.filter((e) => e.type === 'PURCHASE').length;
+    const services = list.filter((e) => e.type === 'SERVICE').length;
+
+    return { total, purchases, services };
+  }, [events]);
 
   useEffect(() => {
     try {
+      const token = localStorage.getItem('marto_access');
+      setIsAuthed(Boolean(String(token ?? '').trim()));
+
       const h = localStorage.getItem('marto_home') as Home | null;
       if (
         h === 'consumer' ||
@@ -155,18 +257,10 @@ export default function PublicUserProfilePage({ params }: Props) {
         setMyHome(null);
       }
     } catch {
+      setIsAuthed(false);
       setMyHome(null);
     }
   }, []);
-
-  const headerLinks = useMemo(() => {
-    return {
-      actions: dashFromHome(myHome),
-      // agora que você alinhou: configurações do prestador é /dash/provider/profile,
-      // mas “Minha conta” continua sendo /me (perfil do dono logado)
-      settings: '/me',
-    } as const;
-  }, [myHome]);
 
   useEffect(() => {
     if (!handle) {
@@ -184,7 +278,6 @@ export default function PublicUserProfilePage({ params }: Props) {
         setError('');
         setData(null);
 
-        // ✅ IMPORTANTÍSSIMO: usa a rewrite do Next (/api -> backend)
         const res = await fetch(
           `/api/public/users/${encodeURIComponent(handle)}`,
           { signal: controller.signal },
@@ -208,9 +301,52 @@ export default function PublicUserProfilePage({ params }: Props) {
   }, [handle]);
 
   useEffect(() => {
-    const next = data?.user?.avatarUrl || '/marto-m.svg';
+    const next = normalizeAvatarUrl(data?.user?.avatarUrl) || '/marto-m.svg';
     setAvatarSrc(next);
   }, [data?.user?.avatarUrl]);
+
+  // ✅ Se trocar de usuário, reseta UI local
+  useEffect(() => {
+    setBioExpanded(false);
+    setCopyMsg('');
+  }, [handle]);
+
+  // ✅ helper: pega handle do perfil atual sem quebrar hooks
+  const profileHandle = data?.user?.handle;
+
+  async function copyPublicLink() {
+    try {
+      setCopyMsg('');
+      const h = String(profileHandle ?? '').trim();
+      if (!h) throw new Error('missing handle');
+
+      const url =
+        typeof window !== 'undefined'
+          ? `${window.location.origin}/u/${h}`
+          : `/u/${h}`;
+
+      if (navigator?.clipboard?.writeText) {
+        await navigator.clipboard.writeText(url);
+      } else {
+        // fallback antigo
+        const ta = document.createElement('textarea');
+        ta.value = url;
+        ta.style.position = 'fixed';
+        ta.style.left = '-9999px';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        document.execCommand('copy');
+        ta.remove();
+      }
+
+      setCopyMsg('Link copiado.');
+      window.setTimeout(() => setCopyMsg(''), 1500);
+    } catch {
+      setCopyMsg('Não foi possível copiar.');
+      window.setTimeout(() => setCopyMsg(''), 1500);
+    }
+  }
 
   if (loading) {
     return (
@@ -229,16 +365,25 @@ export default function PublicUserProfilePage({ params }: Props) {
   }
 
   const profile = data.user;
-  const events = data.events ?? [];
   const safeName = profile.name || titleFromHandle(profile.handle);
+
+  const bioText = String(profile.bio ?? '').trim();
+  const hasBio = Boolean(bioText);
+  const bioLong = bioText.length > 180;
+  const bioVisible =
+    !hasBio
+      ? '—'
+      : bioExpanded || !bioLong
+        ? bioText
+        : `${bioText.slice(0, 180).trim()}…`;
 
   const publicBadge = badgeFromPublic(data);
 
-
-  // ✅ heurística “entregador vs prestador” (se backend não mandar)
   const providerLabel =
     data?.provider?.specialtiesLabel ??
     (data?.provider?.kind === 'TRANSPORTER' ? 'Transportadora' : 'Prestador');
+
+  const avatar = normalizeAvatarUrl(avatarSrc);
 
   return (
     <main className="relative min-h-screen overflow-x-hidden bg-zinc-950 text-white">
@@ -262,11 +407,11 @@ export default function PublicUserProfilePage({ params }: Props) {
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 <div className="grid h-10 w-10 place-items-center rounded-2xl bg-black/60 ring-1 ring-white/10">
-                  <Image
+                  <MartoImage
                     src="/marto-m.svg"
                     alt="Marto"
-                    width={20}
-                    height={20}
+                    size={20}
+                    className="h-5 w-5 object-contain"
                     priority
                   />
                 </div>
@@ -286,19 +431,30 @@ export default function PublicUserProfilePage({ params }: Props) {
                   Início
                 </Link>
 
-                <Link
-                  href={headerLinks.actions}
-                  className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
-                >
-                  Minha central
-                </Link>
+                {isAuthed ? (
+                  <>
+                    <Link
+                      href={dashFromHome(myHome)}
+                      className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                    >
+                      Minha central
+                    </Link>
 
-                <Link
-                  href={headerLinks.settings}
-                  className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
-                >
-                  Minha conta
-                </Link>
+                    <Link
+                      href="/me"
+                      className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                    >
+                      Minha conta
+                    </Link>
+                  </>
+                ) : (
+                  <Link
+                    href="/login"
+                    className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                  >
+                    Entrar
+                  </Link>
+                )}
               </div>
             </div>
           </div>
@@ -318,15 +474,17 @@ export default function PublicUserProfilePage({ params }: Props) {
             <div className="relative flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
               {/* Identidade */}
               <div className="flex items-start gap-4">
-                <div className="relative h-16 w-16 overflow-hidden rounded-3xl bg-white/10 ring-1 ring-white/15">
-                  <Image
-                    src={avatarSrc}
-                    alt={safeName}
-                    fill
-                    sizes="64px"
-                    className="object-cover"
-                    onError={() => setAvatarSrc('/marto-m.svg')}
-                  />
+                <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-3xl bg-white/10 ring-1 ring-white/15">
+                  {avatar ? (
+                    <MartoImage
+                      src={avatar}
+                      alt={safeName}
+                      size={64}
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <MartoAvatarPlaceholder alt="Marto" size={64} />
+                  )}
                 </div>
 
                 <div>
@@ -339,13 +497,39 @@ export default function PublicUserProfilePage({ params }: Props) {
                   <div className="mt-3 text-2xl font-bold tracking-tight">
                     {safeName}
                   </div>
-                  <div className="mt-1 text-sm text-white/70">
-                    @{profile.handle}
+
+                  <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-white/70">
+                    <span>@{profile.handle}</span>
+
+                    <button
+                      type="button"
+                      onClick={() => void copyPublicLink()}
+                      className="rounded-lg border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80 hover:bg-white/10"
+                    >
+                      Copiar link
+                    </button>
+
+                    {copyMsg ? (
+                      <span className="text-xs text-white/60">{copyMsg}</span>
+                    ) : null}
                   </div>
 
-                  <p className="mt-3 max-w-xl text-sm leading-relaxed text-white/75">
-                    {profile.bio ?? '—'}
-                  </p>
+                  {/* ✅ BIO expandível */}
+                  <div className="mt-3 max-w-xl">
+                    <p className="text-sm leading-relaxed text-white/75">
+                      {bioVisible}
+                    </p>
+
+                    {hasBio && bioLong ? (
+                      <button
+                        type="button"
+                        onClick={() => setBioExpanded((v) => !v)}
+                        className="mt-2 text-sm font-semibold text-white/80 hover:text-white"
+                      >
+                        {bioExpanded ? 'Ver menos' : 'Ver mais'}
+                      </button>
+                    ) : null}
+                  </div>
 
                   <div className="mt-4 flex flex-wrap gap-2 text-xs text-white/70">
                     <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1">
@@ -376,12 +560,14 @@ export default function PublicUserProfilePage({ params }: Props) {
                 </div>
 
                 <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                  <Stat label="Registros" value={String(data.stats.verifiedCount)} />
+                  <Stat
+                    label="Registros"
+                    value={String(data.stats.verifiedCount)}
+                  />
                   <Stat label="Desde" value={formatSince(profile.since)} />
                   <Stat label="Estado" value="Ativo" />
                 </div>
 
-                {/* ✅ extra: se backend mandar provider, mostra “Operação” (mesmo que home esteja consumer) */}
                 {data.provider ? (
                   <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
                     <div className="text-sm font-semibold text-white">
@@ -408,7 +594,9 @@ export default function PublicUserProfilePage({ params }: Props) {
                       <div className="mt-2 text-xs text-white/60">
                         SLA:{' '}
                         <span className="text-white/80">
-                          iniciar {String(data.provider?.sla?.pickupMinutes ?? '—')} min • concluir{' '}
+                          iniciar{' '}
+                          {String(data.provider?.sla?.pickupMinutes ?? '—')} min •
+                          concluir{' '}
                           {String(data.provider?.sla?.deliveryMinutes ?? '—')} min
                         </span>
                       </div>
@@ -450,26 +638,111 @@ export default function PublicUserProfilePage({ params }: Props) {
               </div>
 
               <div className="flex gap-2">
-                <button className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10">
-                  Tudo
+                <button
+                  type="button"
+                  onClick={() => setTab('all')}
+                  className={[
+                    'rounded-xl border border-white/15 px-4 py-2 text-sm font-semibold',
+                    tab === 'all'
+                      ? 'bg-white/10 text-white'
+                      : 'bg-white/5 text-white/80 hover:bg-white/10',
+                  ].join(' ')}
+                >
+                  Tudo (público){' '}
+                  <span className="ml-1 text-white/60">({counters.total})</span>
                 </button>
-                <button className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10">
-                  Compras
+
+                <button
+                  type="button"
+                  onClick={() => setTab('purchases')}
+                  className={[
+                    'rounded-xl border border-white/15 px-4 py-2 text-sm font-semibold',
+                    tab === 'purchases'
+                      ? 'bg-white/10 text-white'
+                      : 'bg-white/5 text-white/80 hover:bg-white/10',
+                  ].join(' ')}
+                >
+                  Compras (público){' '}
+                  <span className="ml-1 text-white/60">
+                    ({counters.purchases === null ? '—' : counters.purchases})
+                  </span>
                 </button>
-                <button className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10">
-                  Serviços
+
+                <button
+                  type="button"
+                  onClick={() => setTab('services')}
+                  className={[
+                    'rounded-xl border border-white/15 px-4 py-2 text-sm font-semibold',
+                    tab === 'services'
+                      ? 'bg-white/10 text-white'
+                      : 'bg-white/5 text-white/80 hover:bg-white/10',
+                  ].join(' ')}
+                >
+                  Serviços (público){' '}
+                  <span className="ml-1 text-white/60">
+                    ({counters.services === null ? '—' : counters.services})
+                  </span>
                 </button>
               </div>
             </div>
 
             <div className="mt-6 grid gap-3">
-              {events.map((ev, idx) => (
+              {visibleEvents.map((ev, idx) => (
                 <PublicEventCard key={ev.id ?? `${idx}`} ev={ev} />
               ))}
 
-              {events.length === 0 ? (
-                <div className="rounded-3xl border border-white/10 bg-white/5 p-6 text-sm text-white/70">
-                  Ainda sem eventos públicos.
+              {visibleEvents.length === 0 ? (
+                <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
+                  <div className="text-sm font-semibold text-white">
+                    Ainda sem registros públicos
+                  </div>
+
+                  <div className="mt-2 text-sm text-white/70">
+                    No Marto, o perfil público é consequência do que aconteceu —
+                    não um feed.
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
+                    Seus pedidos podem existir, mas só viram “registro público”
+                    quando o Marto tiver os eventos verificados (compra, entrega,
+                    avaliação, serviço).
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {isAuthed ? (
+                      <>
+                        <Link
+                          href="/dash/consumer/orders"
+                          className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90"
+                        >
+                          Ver meus pedidos
+                        </Link>
+
+                        <Link
+                          href="/me"
+                          className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                        >
+                          Editar no meu perfil
+                        </Link>
+                      </>
+                    ) : (
+                      <>
+                        <Link
+                          href="/login"
+                          className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90"
+                        >
+                          Criar minha conta Marto
+                        </Link>
+
+                        <Link
+                          href="/login"
+                          className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                        >
+                          Entrar
+                        </Link>
+                      </>
+                    )}
+                  </div>
                 </div>
               ) : null}
             </div>
@@ -484,6 +757,39 @@ export default function PublicUserProfilePage({ params }: Props) {
                 lojas/prestadores — sem virar rede social genérica.
               </div>
             </div>
+
+            {/* ✅ CTA no final — só quando NÃO está logado */}
+            {!isAuthed ? (
+              <div className="mt-6 rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="text-sm font-semibold text-white">
+                      Quer construir reputação de verdade?
+                    </div>
+                    <div className="mt-1 text-sm text-white/70">
+                      Crie sua conta no Marto e transforme ações reais em
+                      histórico.
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <Link
+                      href="/login"
+                      className="rounded-2xl bg-white px-5 py-2 text-sm font-semibold text-black hover:opacity-90"
+                    >
+                      Criar minha conta Marto
+                    </Link>
+
+                    <Link
+                      href="/login"
+                      className="rounded-2xl border border-white/15 bg-white/5 px-5 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                    >
+                      Entrar
+                    </Link>
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       </div>
@@ -502,6 +808,9 @@ function Stat({ label, value }: { label: string; value: string }) {
 
 function PublicEventCard({ ev }: { ev: PublicEvent }) {
   const badge = ev.verified ? 'verificado' : 'em construção';
+
+  const isAuthed =
+    typeof window !== 'undefined' && !!localStorage.getItem('marto_access');
 
   return (
     <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
@@ -525,12 +834,54 @@ function PublicEventCard({ ev }: { ev: PublicEvent }) {
       <div className="mt-3 text-sm leading-relaxed text-white/70">{ev.desc}</div>
 
       <div className="mt-5 flex flex-wrap gap-2">
-        <button className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10">
-          Ver detalhes
-        </button>
-        <button className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10">
-          Abrir experiência
-        </button>
+        {ev.verified ? (
+          <>
+            {ev.id ? (
+              isAuthed ? (
+                <Link
+                  href={`/dash/consumer/orders/${ev.id}`}
+                  className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                >
+                  Ver detalhes
+                </Link>
+              ) : (
+                <Link
+                  href="/login"
+                  className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                >
+                  Entrar para ver detalhes
+                </Link>
+              )
+            ) : (
+              <button
+                type="button"
+                disabled
+                className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white/60 opacity-70"
+                title="Sem referência"
+              >
+                Ver detalhes
+              </button>
+            )}
+
+            <button
+              type="button"
+              disabled
+              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white/60 opacity-70"
+              title="Em breve"
+            >
+              Abrir experiência
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            disabled
+            className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white/60 opacity-70"
+            title="Em breve"
+          >
+            Em construção
+          </button>
+        )}
       </div>
     </div>
   );

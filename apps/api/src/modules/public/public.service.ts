@@ -1,5 +1,38 @@
+// apps/api/src/modules/public/public.service.ts
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import type { OrderStatus } from '@prisma/client';
+
+type PublicEventType = 'PURCHASE' | 'SERVICE' | 'OTHER';
+
+type PublicEvent = {
+  id?: string;
+  title: string;
+  meta: string;
+  desc: string;
+  verified: boolean;
+  type?: PublicEventType;
+};
+
+function isPublicPurchaseStatus(
+  status: OrderStatus | null | undefined,
+): boolean {
+  const s = String(status ?? '')
+    .toUpperCase()
+    .trim();
+
+  return s === 'DELIVERED' || s === 'COMPLETED';
+}
+
+function formatDateBR(d: Date | string | null | undefined): string {
+  const dt = d instanceof Date ? d : new Date(String(d ?? ''));
+  if (Number.isNaN(dt.getTime())) return '—';
+
+  const yyyy = dt.getFullYear();
+  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+  const dd = String(dt.getDate()).padStart(2, '0');
+  return `${dd}/${mm}/${yyyy}`;
+}
 
 @Injectable()
 export class PublicService {
@@ -15,6 +48,7 @@ export class PublicService {
     const user = await this.prisma.user.findUnique({
       where: { handle },
       select: {
+        id: true,
         handle: true,
         displayName: true,
         bio: true,
@@ -24,6 +58,65 @@ export class PublicService {
     });
 
     if (!user) return null;
+
+    // ✅ MVP: compras viram eventos públicos (sem dados sensíveis)
+    const orders = await this.prisma.order.findMany({
+      where: { userId: user.id },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: {
+        id: true,
+        status: true,
+        createdAt: true,
+        merchantId: true,
+      },
+    });
+
+    // ✅ opcional: buscar nomes dos merchants (se existirem)
+    const merchantIds = Array.from(
+      new Set(
+        orders
+          .map((o) => String(o.merchantId ?? '').trim())
+          .filter((v) => v.length > 0),
+      ),
+    );
+
+    const merchantNameById = new Map<string, string>();
+
+    if (merchantIds.length) {
+      const merchants = await this.prisma.merchant.findMany({
+        where: { id: { in: merchantIds } },
+        select: { id: true, tradeName: true },
+      });
+
+      for (const m of merchants) {
+        const name = String(m.tradeName ?? '').trim();
+        if (name) merchantNameById.set(m.id, name);
+      }
+    }
+
+    const publicOrders = orders
+      .filter((o) => isPublicPurchaseStatus(o.status))
+      .slice(0, 6);
+
+    const events: PublicEvent[] = publicOrders.map((o) => {
+      const verified = true;
+
+      const merchantName = merchantNameById.get(o.merchantId) ?? '';
+
+      return {
+        id: o.id,
+        type: 'PURCHASE',
+        verified,
+        title: 'Compra concluída',
+        meta: `Compra • ${formatDateBR(o.createdAt)} • verificado`,
+        desc: merchantName
+          ? `Registro vinculado a uma compra real em ${merchantName}.`
+          : 'Registro vinculado a uma compra real no Marto.',
+      };
+    });
+
+    const verifiedCount = events.length;
 
     return {
       ok: true,
@@ -35,10 +128,10 @@ export class PublicService {
         since: user.createdAt,
       },
       stats: {
-        verifiedCount: 0,
+        verifiedCount,
         linksCount: 0,
       },
-      events: [],
+      events,
     };
   }
 }

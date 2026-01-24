@@ -88,7 +88,10 @@ export class LogisticsService {
 
       await this.prisma.order.update({
         where: { id: updated.orderId },
-        data: { status: 'DELIVERED' as any },
+        data: {
+          status: 'DELIVERED' as any,
+          completedAt: null, // ✅ status não é COMPLETED, então limpa
+        },
       });
 
       await this.prisma.orderEvent.create({

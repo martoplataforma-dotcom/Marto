@@ -10,6 +10,82 @@ function getToken() {
   return localStorage.getItem('marto_access');
 }
 
+// ✅ helpers de “dismiss” (card de post verificado)
+function dismissKey(orderId: string) {
+  return `marto:dismiss_post_card:${orderId}`;
+}
+
+function isDismissed(orderId: string) {
+  if (typeof window === 'undefined') return false;
+  const raw = localStorage.getItem(dismissKey(orderId));
+  if (!raw) return false;
+  const ts = Number(raw);
+  if (!Number.isFinite(ts)) return false;
+  return Date.now() < ts;
+}
+
+function dismissForDays(orderId: string, days: number) {
+  if (typeof window === 'undefined') return;
+  const until = Date.now() + days * 24 * 60 * 60 * 1000;
+  localStorage.setItem(dismissKey(orderId), String(until));
+}
+
+// ✅ helper: extrair capa do campo images
+function coverFromImages(images: unknown): string | null {
+  // aceita:
+  // - ["url", ...]
+  // - [{ url: "..." }, ...]
+  // - { urls: [...] } ou { items: [...] } (fallback)
+  if (!images) return null;
+
+  if (Array.isArray(images)) {
+    const first = images[0];
+    if (typeof first === 'string' && first.trim()) return first.trim();
+    if (first && typeof first === 'object') {
+      const url = (first as Record<string, unknown>).url;
+      if (typeof url === 'string' && url.trim()) return url.trim();
+    }
+    return null;
+  }
+
+  if (typeof images === 'object') {
+    const r = images as Record<string, unknown>;
+    const arr = Array.isArray(r.urls)
+      ? r.urls
+      : Array.isArray(r.items)
+        ? r.items
+        : null;
+    if (arr && arr.length) return coverFromImages(arr);
+  }
+
+  return null;
+}
+
+// ✅ SUBSTITUIR toAbsoluteUrl por este (inteiro)
+function apiOrigin() {
+  // Seu .env tem NEXT_PUBLIC_API_URL = http://localhost:3001/api
+  const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+
+  // remove o /api do final (ou no meio) pra virar ORIGIN
+  // ex: http://localhost:3001/api -> http://localhost:3001
+  return base.replace(/\/api\/?$/, '');
+}
+
+function toAbsoluteUrl(url: string | null) {
+  if (!url) return null;
+  const u = url.trim();
+  if (!u) return null;
+
+  // já é absoluta
+  if (u.startsWith('http://') || u.startsWith('https://')) return u;
+
+  // vira absoluta usando ORIGIN (sem /api)
+  const origin = apiOrigin();
+
+  if (u.startsWith('/')) return `${origin}${u}`;
+  return `${origin}/${u}`;
+}
+
 type OrderItem = {
   id: string;
   productId: string;
@@ -33,6 +109,8 @@ type Order = {
   id: string;
   status: string;
   merchantId: string;
+  // ✅ NOVO: merchant no payload
+  merchant?: { id: string; tradeName: string | null } | null;
   userId: string | null;
   city: string | null;
   state: string | null;
@@ -65,9 +143,70 @@ type Shipment = {
   } | null;
 };
 
-type MyOrdersOk = { ok: true; items: Order[] };
-type MyOrdersFail = { ok: false; message?: string; items?: Order[] };
-type MyOrdersResponse = MyOrdersOk | MyOrdersFail;
+// ✅ ProductLite (ajustado)
+type ProductLite = {
+  id: string;
+  title?: string | null;
+  images?: unknown;
+};
+
+// ✅ cache em memória + loader
+const productCache = new Map<string, ProductLite>();
+
+async function loadProduct(productId: string): Promise<ProductLite | null> {
+  const pid = String(productId ?? '').trim();
+  if (!pid) return null;
+
+  const cached = productCache.get(pid);
+  if (cached) return cached;
+
+  const token = getToken();
+  if (!token) return null;
+
+  // ✅ ajuste rota se for diferente no seu backend
+  const res = await fetchJSON<unknown>(`/products/${encodeURIComponent(pid)}`, {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  const p =
+    res && typeof res === 'object'
+      ? (res as Record<string, unknown>).product ?? res
+      : null;
+
+  if (!p || typeof p !== 'object') return null;
+
+  const pr = p as Record<string, unknown>;
+
+  const out: ProductLite = {
+    id: pid,
+    title: typeof pr.title === 'string' ? pr.title : null,
+    images: pr.images,
+  };
+
+  productCache.set(pid, out);
+  return out;
+}
+
+// ✅ tipos do response: /orders/:id
+type OrderByIdOk = { ok: true; order: Order };
+type OrderByIdFail = { ok: false; message?: string };
+type OrderByIdResponse = OrderByIdOk | OrderByIdFail;
+
+function isOrderByIdOk(res: unknown): res is OrderByIdOk {
+  if (!res || typeof res !== 'object') return false;
+  const r = res as Record<string, unknown>;
+  return r.ok === true && !!r.order && typeof r.order === 'object';
+}
+
+function orderByIdErrorMessage(res: unknown): string {
+  if (!res || typeof res !== 'object') return 'Falha ao carregar pedido';
+  const r = res as Record<string, unknown>;
+  const msg = r.message;
+  return typeof msg === 'string' && msg.trim()
+    ? msg
+    : 'Falha ao carregar pedido';
+}
 
 type SetStatusOk = { ok: true; order: unknown };
 type SetStatusFail = { ok: false; message?: string };
@@ -129,12 +268,26 @@ function badgeClass(status: string) {
   return 'bg-white/10 text-white/90 border-white/15';
 }
 
-// ✅ NOVO: label PT-BR para status
+// ✅ label PT-BR para status da entrega
+function shipmentStatusPT(raw: unknown) {
+  const s = String(raw ?? '').toUpperCase();
+  if (!s || s === '—') return '—';
+
+  if (s === 'CREATED') return 'Criada';
+  if (s === 'PICKED_UP') return 'Coletada';
+  if (s === 'IN_TRANSIT') return 'Em trânsito';
+  if (s === 'DELIVERED') return 'Entregue';
+  if (s === 'CANCELLED') return 'Cancelada';
+
+  return s;
+}
+
+// ✅ label PT-BR para status do pedido
 function statusLabelPT(status: string) {
   const s = String(status || '').toUpperCase();
   if (s === 'CREATED') return 'Criado';
   if (s === 'PAID') return 'Pago';
-  if (s === 'CONFIRMED_BY_SELLER') return 'Confirmado pelo vendedor';
+  if (s === 'CONFIRMED_BY_SELLER') return 'Confirmado pelo Loja';
   if (s === 'READY_FOR_PICKUP') return 'Pronto para coleta';
   if (s === 'IN_TRANSIT') return 'Em trânsito';
   if (s === 'DELIVERED') return 'Entregue';
@@ -142,21 +295,6 @@ function statusLabelPT(status: string) {
   if (s === 'CANCELLED') return 'Cancelado';
   if (s === 'RETURN_REQUESTED') return 'Devolução solicitada';
   return s;
-}
-
-function isOrdersOk(res: unknown): res is MyOrdersOk {
-  if (!res || typeof res !== 'object') return false;
-  const r = res as Record<string, unknown>;
-  return r.ok === true && Array.isArray(r.items);
-}
-
-function errorMessageFromRes(res: unknown): string {
-  if (!res || typeof res !== 'object') return 'Falha ao carregar pedidos';
-  const r = res as Record<string, unknown>;
-  const msg = r.message;
-  return typeof msg === 'string' && msg.trim()
-    ? msg
-    : 'Falha ao carregar pedidos';
 }
 
 function parseBRNumber(raw: unknown): number | null {
@@ -248,6 +386,37 @@ async function postMockPayment(orderId: string) {
   return data;
 }
 
+// ✅ helper único de copiar texto
+async function copyText(text: string) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// ✅ pega o primeiro productId de um order (compatível sem usar any)
+function firstProductIdFromOrder(orderLike: unknown): string | null {
+  if (!orderLike || typeof orderLike !== 'object') return null;
+
+  const o = orderLike as Record<string, unknown>;
+
+  const tryArray = (key: 'items' | 'orderItems') => {
+    const arr = o[key];
+    if (!Array.isArray(arr) || arr.length === 0) return null;
+
+    const first = arr[0];
+    if (!first || typeof first !== 'object') return null;
+
+    const pid = (first as Record<string, unknown>).productId;
+    if (typeof pid === 'string' && pid.trim()) return pid;
+    return null;
+  };
+
+  return tryArray('items') ?? tryArray('orderItems');
+}
+
 function Btn({
   tone,
   disabled,
@@ -310,15 +479,51 @@ export default function ConsumerOrderDetailsPage({
   const [showReturnModal, setShowReturnModal] = useState(false);
   const [returnReason, setReturnReason] = useState('');
 
+  // ✅ (Montagem)
+  const [showAssemblyModal, setShowAssemblyModal] = useState(false);
+  const [assemblyNotes, setAssemblyNotes] = useState('');
+
+  // ✅ states da montagem (loading/erro)
+  const [assemblyLoading, setAssemblyLoading] = useState(false);
+  const [assemblyError, setAssemblyError] = useState<string | null>(null);
+
   const [actionLoading, setActionLoading] = useState<
     null | 'CANCEL' | 'PAY' | 'RETURN'
   >(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [reloadTick, setReloadTick] = useState(0);
 
-  // ✅ NOVO: ids vizinhos (front-only)
+  // ✅ ids vizinhos (front-only) — não dá mais pra calcular sem /orders/me
   const [prevId, setPrevId] = useState<string | null>(null);
   const [nextId, setNextId] = useState<string | null>(null);
+
+  // ✅ eventos locais (UI-only)
+  const [localEvents, setLocalEvents] = useState<
+    {
+      key: string;
+      source: 'SERVICE';
+      title: string;
+      desc?: string;
+      createdAt: string;
+    }[]
+  >([]);
+
+  // ✅ checar se já existe post verificado desse pedido
+  const [hasPost, setHasPost] = useState(false);
+  const [checkingPost, setCheckingPost] = useState(true);
+
+  // ✅ state pra controlar se o card foi dismissado
+  const [hidePostCard, setHidePostCard] = useState(false);
+
+  // ✅ state para map de produtos carregados
+  const [productsById, setProductsById] = useState<Record<string, ProductLite>>(
+    {},
+  );
+
+  useEffect(() => {
+    if (!orderId) return;
+    setHidePostCard(isDismissed(orderId));
+  }, [orderId]);
 
   function reviewStarsLabel(
     rating: Shipment['review'] extends infer R
@@ -340,7 +545,7 @@ export default function ConsumerOrderDetailsPage({
     if (!shipment?.id) return;
 
     if (shipment.review) {
-      setReviewMsg('Este shipment já foi avaliado.');
+      setReviewMsg('Esta entrega já foi avaliada.');
       return;
     }
 
@@ -365,8 +570,15 @@ export default function ConsumerOrderDetailsPage({
         },
       );
 
-      setReviewMsg('✅ Avaliação enviada.');
-      setReloadTick((t) => t + 1); // ✅ recarrega e traz shipment.review
+      // ✅ (1) limpa o textarea após sucesso
+      setReviewComment('');
+      // mantém a nota (se quiser resetar):
+      // setReviewRating(5);
+
+      // ✅ (2) mensagem “Marto”
+      setReviewMsg('✅ Avaliação registrada no seu rastro.');
+
+      setReloadTick((t) => t + 1);
     } catch (e) {
       setReviewMsg(e instanceof Error ? e.message : 'Erro ao enviar avaliação');
     } finally {
@@ -382,28 +594,21 @@ export default function ConsumerOrderDetailsPage({
       const token = getToken();
       if (!token) throw new Error('Sem token. Faça login novamente.');
 
-      const res = await fetchJSON<MyOrdersResponse>('/orders/me', {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      const res = await fetchJSON<OrderByIdResponse>(
+        `/orders/${encodeURIComponent(orderId)}`,
+        {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
 
-      if (!isOrdersOk(res)) throw new Error(errorMessageFromRes(res));
+      if (!isOrderByIdOk(res)) throw new Error(orderByIdErrorMessage(res));
 
-      const found = res.items.find((o) => String(o.id) === orderId) ?? null;
+      const found = res.order ?? null;
       setOrder(found);
 
-      // ✅ NOVO: ordena e calcula prev/next (createdAt desc)
-      const sorted = [...res.items].sort(
-        (a, b) => +new Date(b.createdAt) - +new Date(a.createdAt),
-      );
-      const idx = sorted.findIndex((o) => String(o.id) === orderId);
-
-      setPrevId(idx > 0 ? String(sorted[idx - 1]?.id ?? '') || null : null);
-      setNextId(
-        idx >= 0 && idx < sorted.length - 1
-          ? String(sorted[idx + 1]?.id ?? '') || null
-          : null,
-      );
+      setPrevId(null);
+      setNextId(null);
 
       if (found?.id) {
         try {
@@ -455,10 +660,86 @@ export default function ConsumerOrderDetailsPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderId, reloadTick]);
 
-  // ✅ Timeline unificada (ORDER + SHIPMENT)
+  useEffect(() => {
+    if (!order?.id) return;
+
+    const token = getToken();
+    if (!token) {
+      setCheckingPost(false);
+      return;
+    }
+
+    let alive = true;
+
+    (async () => {
+      try {
+        setCheckingPost(true);
+
+        const res = await fetch(`/api/social/posts/by-order/${order.id}`, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (!res.ok) return;
+
+        const data = (await res.json()) as { posts?: unknown[] };
+        const has = Array.isArray(data.posts) && data.posts.length > 0;
+
+        if (alive) setHasPost(has);
+      } finally {
+        if (alive) setCheckingPost(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [order?.id]);
+
+  useEffect(() => {
+    const items = order?.items ?? [];
+    if (!items.length) return;
+
+    let alive = true;
+
+    (async () => {
+      const ids = Array.from(
+        new Set(
+          items
+            .map((it) => String(it.productId ?? '').trim())
+            .filter(Boolean),
+        ),
+      );
+
+      const results = await Promise.all(
+        ids.map(async (pid) => {
+          try {
+            return await loadProduct(pid);
+          } catch {
+            return null;
+          }
+        }),
+      );
+
+      if (!alive) return;
+
+      setProductsById((prev) => {
+        const next = { ...prev };
+        for (const p of results) {
+          if (p?.id) next[p.id] = p;
+        }
+        return next;
+      });
+    })();
+
+    return () => {
+      alive = false;
+    };
+  }, [order?.items]);
+
+  // ✅ Timeline unificada (ORDER + ENTREGA + SERVICE UI-only)
   type UnifiedEvent = {
     key: string;
-    source: 'ORDER' | 'SHIPMENT';
+    source: 'ORDER' | 'SHIPMENT' | 'SERVICE';
     title: string;
     desc?: string | null;
     createdAt: string;
@@ -467,15 +748,14 @@ export default function ConsumerOrderDetailsPage({
   const unifiedEvents = useMemo<UnifiedEvent[]>(() => {
     const list: UnifiedEvent[] = [];
 
-    // Order events
     for (const ev of order?.events ?? []) {
       list.push({
         key: `order:${ev.id}`,
         source: 'ORDER',
         title:
           ev.fromStatus && ev.toStatus
-            ? `${ev.fromStatus} → ${ev.toStatus}`
-            : String(ev.toStatus ?? ev.type ?? 'EVENT'),
+            ? `${statusLabelPT(ev.fromStatus)} → ${statusLabelPT(ev.toStatus)}`
+            : statusLabelPT(String(ev.toStatus ?? ev.type ?? 'EVENT')),
         desc:
           ev.message ??
           `Ação: ${(ev.actorRole ?? '—').toString().toLowerCase()} de ${
@@ -485,20 +765,49 @@ export default function ConsumerOrderDetailsPage({
       });
     }
 
-    // Shipment events
     for (const sev of shipment?.events ?? []) {
       list.push({
         key: `ship:${sev.id}`,
         source: 'SHIPMENT',
-        title: String(sev.status ?? 'SHIPMENT_EVENT'),
+        title: shipmentStatusPT(sev.status),
         desc: sev.description ?? null,
         createdAt: sev.createdAt,
       });
     }
 
-    list.sort((a, b) => +new Date(a.createdAt) - +new Date(b.createdAt));
+    for (const lev of localEvents) {
+      list.push({
+        key: lev.key,
+        source: 'SERVICE',
+        title: lev.title,
+        desc: lev.desc ?? null,
+        createdAt: lev.createdAt,
+      });
+    }
+
+    // ✅ mais recente no topo (melhor UX)
+    list.sort((a, b) => +new Date(b.createdAt) - +new Date(a.createdAt));
     return list;
-  }, [order?.events, shipment?.events]);
+  }, [order?.events, shipment?.events, localEvents]);
+
+  // ✅ ÚLTIMA ATUALIZAÇÃO (rastro real)
+  const lastOrderEventAt = useMemo(() => {
+    const evs = order?.events ?? [];
+    if (!evs.length) return null;
+    return evs.reduce((acc, ev) => {
+      const t = +new Date(ev.createdAt);
+      return t > acc ? t : acc;
+    }, 0);
+  }, [order?.events]);
+
+  const lastShipmentEventAt = useMemo(() => {
+    const evs = shipment?.events ?? [];
+    if (!evs.length) return null;
+    return evs.reduce((acc, ev) => {
+      const t = +new Date(ev.createdAt);
+      return t > acc ? t : acc;
+    }, 0);
+  }, [shipment?.events]);
 
   const status = (order?.status ?? '') as OrderStatus;
   const allow = buyerActionsAllowed(status);
@@ -547,6 +856,20 @@ export default function ConsumerOrderDetailsPage({
         await postOrderStatus(order.id, 'PAID');
       }
 
+      // ✅ feedback imediato
+      setToast('✅ Pagamento registrado. Atualizando status…');
+
+      setLocalEvents((prev) => [
+        ...prev,
+        {
+          key: `service:pay-${Date.now()}`,
+          source: 'SERVICE',
+          title: 'Pagamento iniciado',
+          desc: 'Pagamento registrado (MVP). Atualizando status…',
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+
       setReloadTick((t) => t + 1);
     } catch (e) {
       setActionError(e instanceof Error ? e.message : 'Erro ao pagar');
@@ -580,6 +903,66 @@ export default function ConsumerOrderDetailsPage({
     }
   }
 
+  async function createAssemblyRequest() {
+    setAssemblyError(null);
+    setAssemblyLoading(true);
+
+    try {
+      const token = getToken();
+      if (!token) throw new Error('Sem token. Faça login novamente.');
+      if (!orderId) throw new Error('orderId inválido');
+
+      const sr = await fetchJSON<{
+        id: string;
+        orderId: string;
+        title: string;
+        notes: string | null;
+        status: string;
+        createdAt: string;
+      }>('/service-requests', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          orderId,
+          title: 'Montagem',
+          notes: assemblyNotes?.trim() || undefined,
+        }),
+      });
+
+      setShowAssemblyModal(false);
+      setAssemblyNotes('');
+      setToast(`✅ Montagem solicitada. ID do serviço: ${sr.id}`);
+
+      setLocalEvents((prev) => [
+        ...prev,
+        {
+          key: `service:${sr.id}`,
+          source: 'SERVICE',
+          title: 'Serviço solicitado: Montagem',
+          desc: `ID do serviço: ${sr.id}`,
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+    } catch (e) {
+      setAssemblyError(
+        e instanceof Error ? e.message : 'Erro ao solicitar montagem',
+      );
+    } finally {
+      setAssemblyLoading(false);
+    }
+  }
+
+  const canPost = String(order?.status ?? '').toUpperCase() === 'COMPLETED';
+
+  // ✅ (NOVO) nextUrl para post
+  const pid = firstProductIdFromOrder(order);
+  const nextUrl = pid
+    ? `/shop/${encodeURIComponent(pid)}/posts`
+    : `/dash/consumer/orders/${encodeURIComponent(order?.id ?? orderId)}`;
+
   return (
     <main className="min-h-screen bg-neutral-950 text-white">
       <div className="pointer-events-none fixed inset-0 -z-10 bg-[radial-gradient(900px_520px_at_20%_10%,rgba(255,255,255,0.06),transparent_55%),radial-gradient(900px_520px_at_80%_0%,rgba(255,255,255,0.04),transparent_60%),linear-gradient(to_bottom,rgba(0,0,0,0.0),rgba(0,0,0,0.55))]" />
@@ -587,13 +970,12 @@ export default function ConsumerOrderDetailsPage({
       <div className="mx-auto max-w-5xl p-6">
         <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-white">Pedido</h1>
+            <h1 className="text-2xl font-semibold text-white">Compra</h1>
             <p className="text-sm text-white/75">
-              Linha do tempo Marto • Transparência total do que aconteceu
+              Acompanhe o histórico completo da sua compra.
             </p>
           </div>
 
-          {/* ✅ header com Voltar + Anterior/Próximo */}
           <div className="flex flex-wrap gap-2">
             <Link
               href="/dash/consumer/orders"
@@ -638,7 +1020,7 @@ export default function ConsumerOrderDetailsPage({
           </div>
         ) : !order ? (
           <div className="rounded-2xl border border-white/15 bg-neutral-950/75 p-5 text-sm text-white/85 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-            Pedido não encontrado em /orders/me.
+            Pedido não encontrado.
           </div>
         ) : (
           <section className="grid gap-4 lg:grid-cols-3">
@@ -653,12 +1035,8 @@ export default function ConsumerOrderDetailsPage({
                       type="button"
                       className="rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs font-semibold text-white/80 hover:bg-white/10"
                       onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(order.id);
-                          setToast('✅ ID copiado');
-                        } catch {
-                          setToast('Não foi possível copiar o ID');
-                        }
+                        const ok = await copyText(order.id);
+                        setToast(ok ? '✅ ID copiado' : 'Não foi possível copiar o ID');
                       }}
                     >
                       Copiar
@@ -678,9 +1056,11 @@ export default function ConsumerOrderDetailsPage({
                   <div className="grid">
                     <div>{statusLabelPT(order.status)}</div>
                     <div className="mt-1 text-[11px] font-medium text-white/70">
-                      Vendedor:{' '}
+                      Loja:{' '}
                       <span className="font-mono text-white/80">
-                        {order.merchantId}
+                        {order.merchant?.tradeName
+                          ? order.merchant.tradeName
+                          : order.merchant?.id ?? order.merchantId}
                       </span>
                     </div>
                   </div>
@@ -695,11 +1075,12 @@ export default function ConsumerOrderDetailsPage({
                   </span>
                 </div>
 
-                {/* ✅ VENDEDOR NO LUGAR CERTO: entre Cidade/UF e Criado */}
                 <div className="flex items-center justify-between text-white/80">
-                  <span className="text-white/70">Vendedor</span>
+                  <span className="text-white/70">Loja</span>
                   <span className="break-all text-white/95">
-                    {order.merchantId ?? '—'}
+                    {order.merchant?.tradeName
+                      ? order.merchant.tradeName
+                      : order.merchant?.id ?? order.merchantId ?? '—'}
                   </span>
                 </div>
 
@@ -714,8 +1095,10 @@ export default function ConsumerOrderDetailsPage({
                 </div>
 
                 <div className="flex items-center justify-between text-white/80">
-                  <span className="text-white/70">Total</span>
-                  <span className="text-white/95">{totalLabel(order)}</span>
+                  <span className="text-white/70">Total do pedido</span>
+                  <span className="text-base font-semibold text-white">
+                    {totalLabel(order)}
+                  </span>
                 </div>
               </div>
 
@@ -731,13 +1114,99 @@ export default function ConsumerOrderDetailsPage({
                         className="flex items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-sm"
                       >
                         <div className="min-w-0">
-                          <div className="truncate text-white/90">
-                            Produto: {it.productId}
-                          </div>
-                          <div className="text-xs text-white/65">
-                            Qtd: {it.quantity} • Unit: {String(it.unitPrice)}
+                          <div className="flex items-center justify-between gap-3">
+                            {(() => {
+                              const p = productsById[String(it.productId)];
+                              const title = p?.title?.trim() || null;
+
+                              const img = toAbsoluteUrl(coverFromImages(p?.images));
+
+                              return (
+                                <div className="flex items-start gap-3">
+                                  {img ? (
+                                    <div className="shrink-0 overflow-hidden rounded-xl border border-white/10 bg-white/5">
+                                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                                      <img
+                                        src={img}
+                                        alt={title ?? 'Produto'}
+                                        className="h-14 w-14 object-cover"
+                                        loading="lazy"
+                                        onError={() => {
+                                          console.log('IMG ERROR:', img);
+                                          setToast(`Falha ao carregar imagem: ${img}`);
+                                        }}
+                                      />
+                                    </div>
+                                  ) : (
+                                    <div className="grid h-14 w-14 shrink-0 place-items-center rounded-xl border border-white/10 bg-white/5 text-xs font-semibold text-white/60">
+                                      M
+                                    </div>
+                                  )}
+
+                                  <div className="min-w-0">
+                                    <div className="text-sm font-semibold text-white/90">
+                                      {title ??
+                                        `Produto ${String(it.productId).slice(0, 8)}…`}
+                                    </div>
+
+                                    <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-white/65">
+                                      <span>
+                                        ID:{' '}
+                                        <span className="font-mono text-white/80">
+                                          {it.productId}
+                                        </span>
+                                      </span>
+
+                                      <Link
+                                        href={`/shop/${String(it.productId)}`}
+                                        className="text-white/75 underline decoration-white/20 underline-offset-2 hover:text-white"
+                                      >
+                                        Ver produto →
+                                      </Link>
+                                    </div>
+
+                                    {/* ✅ Subtotal (mais “produto”) */}
+                                    <div className="mt-1 text-xs text-white/65">
+                                      {it.quantity} ×{' '}
+                                      {Number(
+                                        parseBRNumber(it.unitPrice) ?? 0,
+                                      ).toLocaleString('pt-BR', {
+                                        style: 'currency',
+                                        currency: 'BRL',
+                                      })}{' '}
+                                      ={' '}
+                                      {(
+                                        (Number(it.quantity ?? 0) || 0) *
+                                        (parseBRNumber(it.unitPrice) ?? 0)
+                                      ).toLocaleString('pt-BR', {
+                                        style: 'currency',
+                                        currency: 'BRL',
+                                      })}
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+
+                            <button
+                              type="button"
+                              className="shrink-0 rounded-lg border border-white/15 bg-white/5 px-2 py-1 text-xs font-semibold text-white/70 hover:bg-white/10"
+                              onClick={async () => {
+                                const pid = String(it.productId);
+                                const ok = await copyText(pid);
+                                setToast(
+                                  ok
+                                    ? '✅ productId copiado'
+                                    : 'Não foi possível copiar o productId',
+                                );
+                              }}
+                              title="Copiar productId"
+                            >
+                              Copiar
+                            </button>
                           </div>
                         </div>
+
                         <div className="shrink-0 text-sm font-semibold text-white/85">
                           {(
                             (Number(it.quantity ?? 0) || 0) *
@@ -755,19 +1224,18 @@ export default function ConsumerOrderDetailsPage({
                 )}
               </div>
 
-              {/* Entrega (shipment) */}
+              {/* Entrega */}
               <div className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
                 <div className="text-xs font-semibold text-white/85">Entrega</div>
 
                 {!shipment ? (
                   <div className="mt-2 text-sm text-white/70">
-                    Nenhum shipment ainda para este pedido.
+                    Nenhuma entrega vinculada ainda para esta compra.
                   </div>
                 ) : (
                   <div className="mt-2 grid gap-2 text-sm text-white/80">
-                    {/* ✅ ALTERADO: copiar shipment id */}
                     <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/70">Shipment</span>
+                      <span className="text-white/70">Entrega</span>
 
                       <div className="flex items-center gap-2">
                         <span className="font-mono text-xs text-white/85">
@@ -778,14 +1246,14 @@ export default function ConsumerOrderDetailsPage({
                           type="button"
                           className="rounded-lg border border-white/15 bg-white/5 px-2 py-0.5 text-[11px] font-semibold text-white/75 hover:bg-white/10"
                           onClick={async () => {
-                            try {
-                              await navigator.clipboard.writeText(shipment.id);
-                              setToast('✅ Shipment ID copiado');
-                            } catch {
-                              setToast('Não foi possível copiar o Shipment ID');
-                            }
+                            const ok = await copyText(shipment.id);
+                            setToast(
+                              ok
+                                ? '✅ ID da entrega copiado'
+                                : 'Não foi possível copiar o ID da entrega',
+                            );
                           }}
-                          title="Copiar Shipment ID"
+                          title="Copiar ID da entrega"
                         >
                           Copiar
                         </button>
@@ -794,22 +1262,23 @@ export default function ConsumerOrderDetailsPage({
 
                     <div className="flex items-center justify-between gap-3">
                       <span className="text-white/70">Status</span>
-                      <span className="text-white/95">{shipment.status}</span>
+                      <span className="text-white/95">
+                        {shipmentStatusPT(shipment.status)}
+                      </span>
                     </div>
 
-                    {/* ✅ NOVO: nudger de avaliação quando DELIVERED e sem review */}
-                     {String(shipment.status ?? '').toUpperCase().trim() === 'DELIVERED' &&
-                    !shipment.review ? (
+                    {String(shipment.status ?? '').toUpperCase().trim() ===
+                      'DELIVERED' && !shipment.review ? (
                       <div className="mt-2 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-100">
                         Entrega concluída. Leva 30s: avalie agora para registrar
                         sua experiência.
                       </div>
                     ) : null}
 
-                    {/* ✅ Já avaliado */}
                     {shipment.review ? (
                       <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-100">
-                        ✅ Avaliado ({reviewStarsLabel(shipment.review.rating)}★)
+                        ✅ Entrega avaliada (
+                        {reviewStarsLabel(shipment.review.rating)}★)
                       </div>
                     ) : shipment.status !== 'DELIVERED' ? (
                       <div className="mt-3 rounded-xl border border-white/15 bg-white/5 p-3 text-sm text-white/75">
@@ -828,10 +1297,9 @@ export default function ConsumerOrderDetailsPage({
                           </label>
                           <select
                             value={reviewRating}
-                            onChange={(e) =>
-                              setReviewRating(Number(e.target.value))
-                            }
+                            onChange={(e) => setReviewRating(Number(e.target.value))}
                             className="rounded-lg border border-white/15 bg-black/60 px-2 py-1 text-sm text-white/85"
+                            disabled={reviewLoading || Boolean(shipment?.review)}
                           >
                             {[1, 2, 3, 4, 5].map((n) => (
                               <option key={n} value={n}>
@@ -846,22 +1314,25 @@ export default function ConsumerOrderDetailsPage({
                           onChange={(e) => setReviewComment(e.target.value)}
                           placeholder="Opcional: como foi a entrega?"
                           className="mt-2 w-full rounded-xl border border-white/15 bg-black/60 p-2 text-sm text-white/85 placeholder:text-white/50 focus:outline-none"
+                          disabled={reviewLoading || Boolean(shipment?.review)}
                         />
 
                         <div className="mt-2 flex items-center gap-2">
                           <button
                             type="button"
-                            disabled={reviewLoading}
+                            disabled={reviewLoading || Boolean(shipment?.review)}
                             onClick={submitShipmentReview}
                             className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
                           >
-                            {reviewLoading ? 'Enviando…' : 'Enviar avaliação'}
+                            {shipment?.review
+                              ? 'Avaliado'
+                              : reviewLoading
+                                ? 'Enviando…'
+                                : 'Enviar avaliação'}
                           </button>
 
                           {reviewMsg ? (
-                            <div className="text-xs text-white/75">
-                              {reviewMsg}
-                            </div>
+                            <div className="text-xs text-white/75">{reviewMsg}</div>
                           ) : null}
                         </div>
                       </div>
@@ -870,11 +1341,41 @@ export default function ConsumerOrderDetailsPage({
                 )}
               </div>
 
+              {/* Pagamento (Marto) */}
+              {allow.canPay ? (
+                <div className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                  <div className="text-xs font-semibold text-white/85">Pagamento</div>
+                  <div className="mt-2 text-sm text-white/75">
+                    Este pedido foi criado e ainda não foi pago. Ao pagar, o rastro
+                    avança e a loja pode confirmar.
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    <Btn
+                      tone="primary"
+                      disabled={actionLoading !== null}
+                      title="Pagar agora"
+                      onClick={() => {
+                        void confirmPay();
+                      }}
+                    >
+                      {actionLoading === 'PAY' ? 'Pagando…' : 'Pagar agora'}
+                    </Btn>
+
+                    <span className="text-xs text-white/60">(MVP) Pagamento simulado</span>
+                  </div>
+
+                  {actionError ? (
+                    <div className="mt-3 rounded-lg border border-white/15 bg-white/5 p-3 text-sm text-white/80">
+                      {actionError}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
               {/* Ações do comprador */}
               <div className="mt-5 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-                <div className="text-xs font-semibold text-white/85">
-                  Ações do comprador
-                </div>
+                <div className="text-xs font-semibold text-white/85">Ações do comprador</div>
                 <div className="mt-2 text-xs text-white/70">
                   Os botões aparecem/somem conforme o status.
                 </div>
@@ -897,28 +1398,21 @@ export default function ConsumerOrderDetailsPage({
                   </div>
                 )}
 
-                {/* ✅ COLE AQUI (antes dos botões) */}
                 {String(status).toUpperCase() === 'DELIVERED' ? (
-                  <div className="mt-3 rounded-xl border border-white/15 bg-white/5 p-3 text-sm text-white/80">
-                    Sua entrega foi marcada como <b>DELIVERED</b>. Confirme o
-                    recebimento para concluir o pedido.
-                  </div>
+                  shipment ? (
+                    <div className="mt-3 rounded-xl border border-white/15 bg-white/5 p-3 text-sm text-white/80">
+                      Sua entrega foi marcada como <b>Entregue</b>. Confirme o
+                      recebimento para concluir o pedido.
+                    </div>
+                  ) : (
+                    <div className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-100">
+                      Este pedido está como <b>Entregue</b>, mas ainda não existe
+                      entrega vinculada. No MVP, a confirmação depende da entrega.
+                    </div>
+                  )
                 ) : null}
 
                 <div className="mt-4 flex flex-wrap gap-2">
-                  {allow.canPay && (
-                    <button
-                      type="button"
-                      disabled={
-                        actionLoading === 'PAY' || actionLoading === 'CANCEL'
-                      }
-                      className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
-                      onClick={confirmPay}
-                    >
-                      {actionLoading === 'PAY' ? 'Pagando…' : 'Pagar'}
-                    </button>
-                  )}
-
                   {allow.canCancel && (
                     <Btn
                       tone="ghost"
@@ -933,32 +1427,50 @@ export default function ConsumerOrderDetailsPage({
                     </Btn>
                   )}
 
-                  {allow.canReturn && (
-                    <button
-                      type="button"
-                      disabled={actionLoading !== null}
-                      className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
-                      onClick={() => {
-                        setActionError(null);
-                        setShowReturnModal(true);
-                      }}
-                    >
-                      Pedir devolução
-                    </button>
-                  )}
+                  {allow.canReturn &&
+                    String(shipment?.status ?? '').toUpperCase() === 'DELIVERED' && (
+                      <button
+                        type="button"
+                        disabled={actionLoading !== null}
+                        className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
+                        onClick={() => {
+                          setActionError(null);
+                          setShowReturnModal(true);
+                        }}
+                      >
+                        Pedir devolução
+                      </button>
+                    )}
 
-                  {String(status).toUpperCase() === 'DELIVERED' && (
-                    <Btn
-                      tone="primary"
-                      disabled={actionLoading !== null}
-                      title="Confirmar recebimento"
-                      onClick={() => {
-                        void doSetStatus('COMPLETED', 'recebido');
-                      }}
-                    >
-                      Confirmar recebimento
-                    </Btn>
-                  )}
+                  {String(status).toUpperCase() === 'DELIVERED' &&
+                    String(shipment?.status ?? '').toUpperCase() === 'DELIVERED' && (
+                      <Btn
+                        tone="primary"
+                        disabled={actionLoading !== null}
+                        title="Confirmar recebimento"
+                        onClick={() => {
+                          void doSetStatus('COMPLETED', 'recebido');
+                        }}
+                      >
+                        Confirmar recebimento
+                      </Btn>
+                    )}
+
+                  <Btn
+                    tone="ghost"
+                    disabled={
+                      actionLoading !== null ||
+                      String(status).toUpperCase().includes('CANCEL')
+                    }
+                    title="Contratar montagem"
+                    onClick={() => {
+                      setToast('');
+                      setAssemblyError(null);
+                      setShowAssemblyModal(true);
+                    }}
+                  >
+                    Contratar montagem
+                  </Btn>
                 </div>
 
                 {!allow.canPay &&
@@ -974,48 +1486,63 @@ export default function ConsumerOrderDetailsPage({
               </div>
             </div>
 
-            {/* Card Timeline (coluna direita) */}
+            {/* Card Timeline */}
             <div className="rounded-2xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur lg:col-span-2">
               <div className="mb-4 flex items-start justify-between gap-3">
                 <div>
-                  <div className="text-sm font-semibold text-white">Timeline</div>
+                  <div className="text-sm font-semibold text-white">Histórico</div>
                   <div className="mt-1 text-xs text-white/70">
                     Cada mudança vira um evento — reputação e verdade.
                   </div>
                 </div>
               </div>
 
-              {/* Estado atual */}
               <div className="mb-4 grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
-                  <div className="text-xs font-semibold text-white/70">
-                    Pedido agora
-                  </div>
+                  <div className="text-xs font-semibold text-white/70">Status da Loja</div>
                   <div className="mt-2 text-sm font-semibold text-white/90">
                     {statusLabelPT(order.status)}
+                  </div>
+
+                  <div className="mt-1 text-xs text-white/60">
+                    {lastOrderEventAt
+                      ? `Último evento: ${fmt(new Date(lastOrderEventAt).toString())}`
+                      : '—'}
                   </div>
                 </div>
 
                 <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
                   <div className="text-xs font-semibold text-white/70">
-                    Entrega agora
+                    Status da transportadora
                   </div>
                   <div className="mt-2 text-sm font-semibold text-white/90">
-                    {shipment ? statusLabelPT(shipment.status) : '—'}
+                    {shipment ? shipmentStatusPT(shipment.status) : '—'}
+                  </div>
+
+                  <div className="mt-1 text-xs text-white/60">
+                    {lastShipmentEventAt
+                      ? `Último evento: ${fmt(
+                          new Date(lastShipmentEventAt).toString(),
+                        )}`
+                      : '—'}
                   </div>
                 </div>
               </div>
 
               {unifiedEvents.length === 0 ? (
                 <div className="rounded-xl border border-white/15 bg-white/10 p-4 text-sm text-white/75">
-                  Sem eventos ainda.
+                  Ainda não há movimentações.
                 </div>
               ) : (
                 <div className="grid gap-3">
-                  {unifiedEvents.map((ev) => (
+                  {unifiedEvents.map((ev, idx) => (
                     <div
                       key={ev.key}
-                      className="rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+                      className={`rounded-2xl border p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur ${
+                        idx === 0
+                          ? 'border-emerald-500/25 bg-emerald-500/10'
+                          : 'border-white/15 bg-neutral-950/75'
+                      }`}
                     >
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
@@ -1023,30 +1550,96 @@ export default function ConsumerOrderDetailsPage({
                             className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${
                               ev.source === 'ORDER'
                                 ? 'border-white/15 bg-white/10 text-white/80'
-                                : 'border-sky-500/25 bg-sky-500/10 text-sky-100'
+                                : ev.source === 'SHIPMENT'
+                                  ? 'border-sky-500/25 bg-sky-500/10 text-sky-100'
+                                  : 'border-emerald-500/25 bg-emerald-500/10 text-emerald-100'
                             }`}
                           >
-                            {ev.source === 'ORDER' ? 'Pedido' : 'Entrega'}
+                            {ev.source === 'ORDER'
+                              ? 'Loja'
+                              : ev.source === 'SHIPMENT'
+                                ? 'Transportadora'
+                                : 'Serviço'}
                           </span>
 
-                          <div className="text-sm font-semibold text-white/90">
-                            {ev.title}
-                          </div>
+                          <div className="text-sm font-semibold text-white/90">{ev.title}</div>
                         </div>
 
-                        <div className="text-xs text-white/70">
-                          {fmt(ev.createdAt)}
-                        </div>
+                        <div className="text-xs text-white/70">{fmt(ev.createdAt)}</div>
                       </div>
 
                       {ev.desc ? (
-                        <div className="mt-2 text-xs text-white/75">
-                          {ev.desc}
-                        </div>
+                        <div className="mt-2 text-xs text-white/75">{ev.desc}</div>
                       ) : null}
                     </div>
                   ))}
                 </div>
+              )}
+
+              {/* Card Post verificado */}
+              {canPost && !hidePostCard && (
+                <section className="mt-6 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                  <div className="flex flex-col gap-1">
+                    <div className="text-sm font-semibold text-white/85">
+                      Transformar em post verificado
+                    </div>
+
+                    {/* ✅ TEXTO AJUSTADO (coerente: só libera após confirmar) */}
+                    <div className="text-sm text-white/75">
+                      Após <span className="text-white/85">confirmar o recebimento</span>,
+                      você pode publicar sua experiência. O Marto marca como{' '}
+                      <span className="text-white/85">verificado</span> porque veio de um
+                      pedido real.
+                    </div>
+
+                    <div className="mt-2 text-xs text-white/70">
+                      Isso aparece no seu perfil público e pode aparecer no produto/na
+                      loja.
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {checkingPost ? (
+                      <span className="rounded-lg border border-white/15 bg-black/80 px-3 py-2 text-sm font-medium text-white/70">
+                        Checando…
+                      </span>
+                    ) : hasPost ? (
+                      <Link
+                        href={
+                          firstProductIdFromOrder(order)
+                            ? `/shop/${encodeURIComponent(
+                                String(firstProductIdFromOrder(order)),
+                              )}/posts`
+                            : `/dash/consumer/orders/${encodeURIComponent(order.id)}`
+                        }
+                        className="rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15"
+                      >
+                        ✅ Ver meu post no produto
+                      </Link>
+                    ) : (
+                      <Link
+                        href={`/dash/consumer/orders/${encodeURIComponent(
+                          order.id,
+                        )}/post?next=${encodeURIComponent(nextUrl)}`}
+                        className="rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15"
+                      >
+                        Criar post
+                      </Link>
+                    )}
+
+                    <button
+                      type="button"
+                      className="rounded-lg border border-white/15 bg-black/80 px-3 py-2 text-sm font-medium text-white/85 hover:bg-white/5"
+                      onClick={() => {
+                        dismissForDays(orderId, 7);
+                        setHidePostCard(true);
+                        setToast('Ok — vou te lembrar depois.');
+                      }}
+                    >
+                      Agora não
+                    </button>
+                  </div>
+                </section>
               )}
             </div>
           </section>
@@ -1064,8 +1657,8 @@ export default function ConsumerOrderDetailsPage({
           <div className="relative w-full max-w-md rounded-2xl border border-white/15 bg-neutral-950/90 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
             <h3 className="text-lg font-semibold text-white">Cancelar pedido?</h3>
             <p className="mt-2 text-sm text-white/75">
-              Essa ação tenta cancelar o pedido imediatamente. Se o pedido já
-              estiver avançado demais, o sistema pode negar.
+              Essa ação tenta cancelar o pedido imediatamente. Se o pedido já estiver
+              avançado demais, o sistema pode negar.
             </p>
 
             {actionError && (
@@ -1090,9 +1683,7 @@ export default function ConsumerOrderDetailsPage({
                 className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
                 onClick={confirmCancel}
               >
-                {actionLoading === 'CANCEL'
-                  ? 'Cancelando…'
-                  : 'Confirmar cancelamento'}
+                {actionLoading === 'CANCEL' ? 'Cancelando…' : 'Confirmar cancelamento'}
               </button>
             </div>
           </div>
@@ -1110,8 +1701,8 @@ export default function ConsumerOrderDetailsPage({
           <div className="relative w-full max-w-md rounded-2xl border border-white/15 bg-neutral-950/90 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
             <h3 className="text-lg font-semibold text-white">Pedir devolução</h3>
             <p className="mt-2 text-sm text-white/75">
-              Explique rapidamente o motivo (opcional). Você poderá acompanhar o
-              status na timeline.
+              Explique rapidamente o motivo (opcional). Você poderá acompanhar o status
+              na timeline.
             </p>
 
             <textarea
@@ -1144,6 +1735,72 @@ export default function ConsumerOrderDetailsPage({
                 onClick={confirmReturn}
               >
                 {actionLoading ? 'Enviando…' : 'Confirmar devolução'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal montagem */}
+      {showAssemblyModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div
+            className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+            onClick={() => (assemblyLoading ? null : setShowAssemblyModal(false))}
+          />
+
+          <div className="relative w-full max-w-md rounded-2xl border border-white/15 bg-neutral-950/90 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)]">
+            <h3 className="text-lg font-semibold text-white">Solicitar montagem</h3>
+            <p className="mt-2 text-sm text-white/75">
+              Essa solicitação fica vinculada à sua compra. O Marto usa isso para
+              conectar você com prestadores disponíveis e registrar o resultado no seu
+              histórico.
+            </p>
+
+            <div className="mt-4 rounded-xl border border-white/15 bg-white/5 p-3 text-sm text-white/85">
+              <div className="text-xs font-semibold text-white/80">Vinculado à compra</div>
+              <div className="mt-1 break-all font-mono text-xs text-white/75">{orderId}</div>
+            </div>
+
+            <label className="mt-4 block">
+              <div className="text-sm font-semibold text-white/85">Observações (opcional)</div>
+              <textarea
+                value={assemblyNotes}
+                onChange={(e) => setAssemblyNotes(e.target.value)}
+                placeholder="Ex: preferir horário após 18h, cuidado com parede, etc."
+                className="mt-2 min-h-[90px] w-full rounded-xl border border-white/15 bg-black/60 p-3 text-sm text-white/85 placeholder:text-white/50 focus:outline-none"
+              />
+              <div className="mt-2 text-xs text-white/65">
+                (MVP) Isso prepara o fluxo de contratação. Vamos plugar no backend na
+                etapa de serviços.
+              </div>
+            </label>
+
+            {assemblyError ? (
+              <div className="mt-3 rounded-lg border border-white/15 bg-white/5 p-3 text-sm text-white/80">
+                {assemblyError}
+              </div>
+            ) : null}
+
+            <div className="mt-5 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                disabled={assemblyLoading}
+                className="rounded-lg border border-white/15 bg-white/5 px-3 py-2 text-sm font-medium text-white/85 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => setShowAssemblyModal(false)}
+              >
+                Voltar
+              </button>
+
+              <button
+                type="button"
+                disabled={assemblyLoading}
+                className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
+                onClick={() => {
+                  void createAssemblyRequest();
+                }}
+              >
+                {assemblyLoading ? 'Solicitando…' : 'Solicitar montagem'}
               </button>
             </div>
           </div>

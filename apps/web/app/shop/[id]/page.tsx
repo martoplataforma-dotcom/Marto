@@ -3,6 +3,7 @@
 
 import Link from 'next/link';
 import { use, useEffect, useMemo, useState } from 'react';
+import { VerifiedSocialSummary } from '../../../components/marto/VerifiedSocialSummary';
 
 type Product = {
   id: string;
@@ -19,6 +20,17 @@ type ProductDetailResponse =
 
 // ✅ flexível sem usar any (lint-friendly)
 type CreateOrderResponse = unknown;
+
+// ✅ Social posts do produto (verificados)
+type SocialPost = {
+  id: string;
+  caption?: string | null;
+  createdAt: string;
+  userId: string;
+
+  // ✅ agora aceita mídia (MVP)
+  media?: Array<{ type?: 'IMAGE' | 'VIDEO'; url?: string | null }> | null;
+};
 
 function getToken() {
   if (typeof window === 'undefined') return null;
@@ -41,6 +53,58 @@ function getApiMessage<T extends { ok: boolean; message?: string }>(
   return fallback;
 }
 
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+}
+
+function extractErrorMessage(data: unknown, fallback: string) {
+  const r = asRecord(data);
+  const msg = r?.message ?? r?.error;
+  if (typeof msg === 'string' && msg.trim()) return msg;
+  if (typeof data === 'string' && data.trim()) return data;
+  return fallback;
+}
+
+function isSocialPostsByProductOk(
+  x: unknown,
+): x is { ok: true; posts: SocialPost[] } {
+  const r = asRecord(x);
+  if (!r) return false;
+  if (r.ok !== true) return false;
+  return Array.isArray(r.posts);
+}
+
+function socialPostsErrorMessage(x: unknown) {
+  const r = asRecord(x);
+  const msg = r?.message;
+  if (typeof msg === 'string' && msg.trim()) return msg;
+  return 'Não foi possível carregar experiências.';
+}
+
+function apiOrigin() {
+  const base = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+  return base.replace(/\/api\/?$/, '');
+}
+
+function toAbsoluteUrl(url: string | null) {
+  if (!url) return null;
+  const u = url.trim();
+  if (!u) return null;
+
+  if (u.startsWith('http://') || u.startsWith('https://')) return u;
+
+  const origin = apiOrigin();
+  if (u.startsWith('/')) return `${origin}${u}`;
+  return `${origin}/${u}`;
+}
+
+function coverFromImages(images?: string[] | null): string | null {
+  if (!images || !Array.isArray(images) || images.length === 0) return null;
+  const first = images[0];
+  if (typeof first === 'string' && first.trim()) return first.trim();
+  return null;
+}
+
 export default function ShopProductPage({
   params,
 }: {
@@ -61,6 +125,11 @@ export default function ShopProductPage({
   const [paying, setPaying] = useState(false);
   const [paidOrderId, setPaidOrderId] = useState<string | null>(null);
 
+  // ✅ novos states (posts do produto)
+  const [posts, setPosts] = useState<SocialPost[]>([]);
+  const [postsLoading, setPostsLoading] = useState(true);
+  const [postsErr, setPostsErr] = useState('');
+
   useEffect(() => {
     let alive = true;
 
@@ -69,10 +138,9 @@ export default function ShopProductPage({
         setErr(null);
         setLoading(true);
 
-        const res = await fetch(
-          `http://localhost:3001/api/products/${encodeURIComponent(id)}`,
-          { method: 'GET' },
-        );
+        const res = await fetch(`/api/products/${encodeURIComponent(id)}`, {
+          method: 'GET',
+        });
 
         if (!res.ok) {
           const text = await res.text().catch(() => '');
@@ -100,6 +168,50 @@ export default function ShopProductPage({
     }
 
     run();
+    return () => {
+      alive = false;
+    };
+  }, [id]);
+
+  // ✅ buscar posts verificados do produto
+  // endpoint retorna { ok: true, posts }
+  useEffect(() => {
+    if (!id) return;
+
+    let alive = true;
+
+    (async () => {
+      try {
+        setPostsLoading(true);
+        setPostsErr('');
+
+        const res = await fetch(
+          `/api/social/products/${encodeURIComponent(id)}/posts`,
+        );
+
+        const data: unknown = await res.json().catch(() => null);
+
+        if (!res.ok) {
+          throw new Error(
+            extractErrorMessage(data, 'Não foi possível carregar experiências.'),
+          );
+        }
+
+        if (!isSocialPostsByProductOk(data)) {
+          throw new Error(socialPostsErrorMessage(data));
+        }
+
+        if (alive) setPosts(data.posts);
+      } catch (e) {
+        if (alive)
+          setPostsErr(
+            e instanceof Error ? e.message : 'Erro ao carregar experiências.',
+          );
+      } finally {
+        if (alive) setPostsLoading(false);
+      }
+    })();
+
     return () => {
       alive = false;
     };
@@ -153,18 +265,7 @@ export default function ShopProductPage({
 
       // Se o backend devolveu erro HTTP, mostra o conteúdo real
       if (!res.ok) {
-        const msg =
-          (data &&
-            typeof data === 'object' &&
-            data !== null &&
-            ('message' in data || 'error' in data) &&
-            String(
-              (data as Record<string, unknown>).message ??
-                (data as Record<string, unknown>).error,
-            )) ||
-          (typeof data === 'string' && data) ||
-          `HTTP ${res.status}`;
-
+        const msg = extractErrorMessage(data, `HTTP ${res.status}`);
         throw new Error(String(msg));
       }
 
@@ -262,18 +363,7 @@ export default function ShopProductPage({
       );
 
       if (!res.ok) {
-        const msg =
-          (data &&
-            typeof data === 'object' &&
-            data !== null &&
-            ('message' in data || 'error' in data) &&
-            String(
-              (data as Record<string, unknown>).message ??
-                (data as Record<string, unknown>).error,
-            )) ||
-          (typeof data === 'string' && data) ||
-          `HTTP ${res.status}`;
-
+        const msg = extractErrorMessage(data, `HTTP ${res.status}`);
         throw new Error(String(msg));
       }
 
@@ -312,60 +402,171 @@ export default function ShopProductPage({
         ) : !p ? (
           <p className="text-sm text-white/70">Produto não encontrado.</p>
         ) : (
-          <div className="rounded-2xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-            <div className="flex flex-col gap-2">
-              <div className="text-xl font-semibold">{p.name}</div>
-              <div className="text-sm text-white/70">
-                R$ {(p.price / 100).toFixed(2).replace('.', ',')}
+          <>
+            <div className="overflow-hidden rounded-2xl border border-white/15 bg-neutral-950/75 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+              {/* ✅ NOVO: imagem do produto */}
+              <div className="relative">
+                {toAbsoluteUrl(coverFromImages(p.images)) ? (
+                  <div className="h-56 w-full bg-black/40">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={toAbsoluteUrl(coverFromImages(p.images)) as string}
+                      alt={p.name}
+                      className="h-56 w-full object-cover"
+                      loading="lazy"
+                      onError={() => {
+                        console.log(
+                          'SHOP IMG ERROR:',
+                          toAbsoluteUrl(coverFromImages(p.images)),
+                        );
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <div className="grid h-56 w-full place-items-center bg-white/5 text-sm font-semibold text-white/60">
+                    Sem foto
+                  </div>
+                )}
+
+                <div className="absolute left-4 top-4 rounded-full border border-white/15 bg-black/60 px-3 py-1 text-xs font-semibold text-white/80 backdrop-blur">
+                  Verificado pelo rastro
+                </div>
               </div>
 
-              {p.description ? (
-                <div className="text-sm text-white/75">{p.description}</div>
-              ) : (
-                <div className="text-sm text-white/65">Sem descrição.</div>
-              )}
-
-              <div className="mt-2 text-xs text-white/60">ID: {p.id}</div>
-            </div>
-
-            <div className="mt-5 flex flex-wrap items-center gap-3">
-              <button
-                onClick={buyNow}
-                disabled={buying}
-                className="rounded-lg bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:opacity-60"
-              >
-                {buying ? 'Comprando...' : 'Comprar (1 unidade)'}
-              </button>
-
-              {createdOrderId ? (
-                <>
-                  <div className="text-sm text-white/80">
-                    ✅ Pedido criado:{' '}
-                    <span className="font-semibold">{createdOrderId}</span>
+              <div className="p-5">
+                <div className="flex flex-col gap-2">
+                  <div className="text-xl font-semibold">{p.name}</div>
+                  <div className="text-sm text-white/70">
+                    R$ {(p.price / 100).toFixed(2).replace('.', ',')}
                   </div>
 
-                  {!paidOrderId ? (
-                    <button
-                      onClick={payNow}
-                      disabled={paying}
-                      className="rounded-lg bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:opacity-60"
-                    >
-                      {paying ? 'Pagando...' : 'Pagar agora'}
-                    </button>
+                  {p.description ? (
+                    <div className="text-sm text-white/75">{p.description}</div>
                   ) : (
-                    <Link
-                      href={`/dash/consumer/orders/${encodeURIComponent(
-                        paidOrderId,
-                      )}`}
-                      className="rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-white hover:bg-white/10"
-                    >
-                      Ver pedido →
-                    </Link>
+                    <div className="text-sm text-white/65">Sem descrição.</div>
                   )}
-                </>
-              ) : null}
+
+                  <div className="mt-2 text-xs text-white/60">ID: {p.id}</div>
+                </div>
+
+                <div className="mt-5 flex flex-wrap items-center gap-3">
+                  <button
+                    onClick={buyNow}
+                    disabled={buying}
+                    className="rounded-lg bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:opacity-60"
+                  >
+                    {buying ? 'Comprando...' : 'Comprar (1 unidade)'}
+                  </button>
+
+                  {createdOrderId ? (
+                    <>
+                      <div className="text-sm text-white/80">
+                        ✅ Pedido criado:{' '}
+                        <span className="font-semibold">{createdOrderId}</span>
+                      </div>
+
+                      {!paidOrderId ? (
+                        <button
+                          onClick={payNow}
+                          disabled={paying}
+                          className="rounded-lg bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:opacity-60"
+                        >
+                          {paying ? 'Pagando...' : 'Pagar agora'}
+                        </button>
+                      ) : (
+                        <Link
+                          href={`/dash/consumer/orders/${encodeURIComponent(
+                            paidOrderId,
+                          )}`}
+                          className="rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-white hover:bg-white/10"
+                        >
+                          Ver pedido →
+                        </Link>
+                      )}
+                    </>
+                  ) : null}
+                </div>
+              </div>
             </div>
-          </div>
+
+            {/* ✅ Resumo “Social verificado” (componente) */}
+            <section className="mt-8">
+              <VerifiedSocialSummary productId={p.id} />
+            </section>
+
+            {/* ✅ Experiências reais */}
+            <section className="mt-8 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+              <div className="flex items-baseline justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-white/85">
+                    Experiências reais
+                  </div>
+                  <div className="mt-1 text-sm text-white/70">
+                    Posts ligados a compras reais (verificados).
+                  </div>
+                </div>
+              </div>
+
+              {postsLoading ? (
+                <div className="mt-4 text-sm text-white/70">
+                  Carregando experiências…
+                </div>
+              ) : postsErr ? (
+                <div className="mt-4 text-sm text-white/75">{postsErr}</div>
+              ) : posts.length === 0 ? (
+                <div className="mt-4 text-sm text-white/70">
+                  Ainda não há experiências verificadas para este produto.
+                </div>
+              ) : (
+                <div className="mt-4 space-y-3">
+                  {posts.slice(0, 3).map((post) => (
+                    <div
+                      key={post.id}
+                      className="rounded-xl border border-white/15 bg-black/60 p-3"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="text-xs text-white/65">
+                          verificado •{' '}
+                          {new Date(post.createdAt).toLocaleString('pt-BR')}
+                        </div>
+                      </div>
+
+                      {Array.isArray(post.media) && post.media.length > 0 ? (
+                        <div className="mt-3 overflow-hidden rounded-xl border border-white/10 bg-white/5">
+                          {String(post.media[0]?.type ?? 'IMAGE').toUpperCase() ===
+                          'VIDEO' ? (
+                            <video
+                              controls
+                              className="h-auto w-full"
+                              src={String(post.media[0]?.url ?? '')}
+                            />
+                          ) : (
+                            // eslint-disable-next-line @next/next/no-img-element
+                            <img
+                              alt="Mídia do post"
+                              className="h-auto w-full object-cover"
+                              src={String(post.media[0]?.url ?? '')}
+                            />
+                          )}
+                        </div>
+                      ) : null}
+
+                      <div className="mt-2 whitespace-pre-wrap text-sm text-white/85">
+                        {post.caption || '(sem texto)'}
+                      </div>
+                    </div>
+                  ))}
+
+                  <Link
+                    href={`/shop/${encodeURIComponent(p.id)}/posts`}
+                    className="mt-3 inline-flex items-center rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
+                  >
+                    Ver todos →
+                  </Link>
+                </div>
+              )}
+            </section>
+          </>
         )}
       </div>
     </main>

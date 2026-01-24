@@ -37,9 +37,8 @@ async function bootstrap(): Promise<void> {
   app.setGlobalPrefix('api');
 
   // ✅ uploads na raiz do monorepo (Marto/uploads)
-  // path.resolve(process.cwd(), '..', '..') assume que o cwd está em apps/api
-  // e sobe pra raiz do monorepo. Se seu cwd já for a raiz, ainda funciona (vai pra fora),
-  // então usamos uma estratégia: tentar root por cwd e fallback.
+  // - Se o cwd já for a raiz do monorepo: process.cwd()/uploads
+  // - Se o cwd estiver em apps/api: ../../uploads
   const uploadsFromCwd = path.resolve(process.cwd(), 'uploads');
   const uploadsFromAppsApi = path.resolve(process.cwd(), '..', '..', 'uploads');
 
@@ -48,7 +47,7 @@ async function bootstrap(): Promise<void> {
     : uploadsFromAppsApi;
 
   // ✅ Sirva em /uploads (fora do prefixo /api)
-  // Assim: http://localhost:3001/uploads/arquivo.jpg
+  // Ex: http://localhost:3001/uploads/arquivo.jpg
   app.use('/uploads', express.static(uploadsDir));
 
   app.useGlobalPipes(

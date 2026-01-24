@@ -48,6 +48,8 @@ type OrderWithItems = Prisma.OrderGetPayload<{
   include: { items: true; events: true };
 }>;
 
+type MerchantMini = { id: string; tradeName: string | null };
+
 function roleLabel(role: ActorRole) {
   if (role === 'buyer') return 'buyer';
   if (role === 'seller') return 'seller';
@@ -121,6 +123,34 @@ export class OrdersService {
     private readonly wallet: WalletService,
   ) {}
 
+  // ✅ helper: anexa merchant {id, tradeName} nos pedidos
+  private async attachMerchants<T extends { merchantId: string }>(
+    rows: T[],
+  ): Promise<Array<T & { merchant: MerchantMini | null }>> {
+    const ids = Array.from(
+      new Set(
+        rows.map((r) => String(r.merchantId || '').trim()).filter((v) => !!v),
+      ),
+    );
+
+    if (ids.length === 0) {
+      return rows.map((r) => ({ ...r, merchant: null }));
+    }
+
+    const merchants = await this.prisma.merchant.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, tradeName: true },
+    });
+
+    const map = new Map<string, MerchantMini>();
+    for (const m of merchants) map.set(m.id, m);
+
+    return rows.map((r) => ({
+      ...r,
+      merchant: map.get(String(r.merchantId)) ?? null,
+    }));
+  }
+
   /**
    * MVP:
    * Cria um pedido com itens e retorna o pedido criado
@@ -182,12 +212,14 @@ export class OrdersService {
 
   /**
    * 🔎 Busca pedido por ID (com itens + events)
+   * ✅ Agora também inclui merchant { id, tradeName }
    */
-  async getOrderById(orderId: string): Promise<OrderWithItems | null> {
+  async getOrderById(
+    orderId: string,
+  ): Promise<(OrderWithItems & { merchant: MerchantMini | null }) | null> {
     const id = String(orderId ?? '').trim();
     if (!id) return null;
 
-    // ✅ usa await pra não disparar lint (require-await)
     const order = await this.prisma.order.findUnique({
       where: { id },
       include: {
@@ -196,7 +228,14 @@ export class OrdersService {
       },
     });
 
-    return order;
+    if (!order) return null;
+
+    const merchant = await this.prisma.merchant.findUnique({
+      where: { id: order.merchantId },
+      select: { id: true, tradeName: true },
+    });
+
+    return { ...order, merchant: merchant ?? null };
   }
 
   /**
@@ -349,6 +388,7 @@ export class OrdersService {
 
   /**
    * 📦 Lista pedidos do comprador logado (buyer)
+   * ✅ Agora também inclui merchant { id, tradeName }
    */
   async listMyOrders(params: { userId: string }) {
     const userId = String(params.userId ?? '').trim();
@@ -368,13 +408,17 @@ export class OrdersService {
       },
     });
 
-    return { ok: true, items };
+    const withMerchants = await this.attachMerchants(items);
+
+    return { ok: true, items: withMerchants };
   }
 
   /**
    * 🧾 Lista vendas do lojista logado (seller)
    * Como o model Order não tem relation "merchant" no Prisma,
    * buscamos os merchants do user e filtramos por merchantId.
+   *
+   * ✅ Também inclui merchant { id, tradeName } (útil p/ telas de seller também)
    */
   async listMySales(params: { userId: string }) {
     const userId = String(params.userId ?? '').trim();
@@ -404,7 +448,9 @@ export class OrdersService {
       },
     });
 
-    return { ok: true, items };
+    const withMerchants = await this.attachMerchants(items);
+
+    return { ok: true, items: withMerchants };
   }
 
   // ✅ seller vê pedidos do merchant dele (helper p/ controller)

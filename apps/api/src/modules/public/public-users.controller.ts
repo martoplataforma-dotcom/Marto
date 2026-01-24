@@ -1,58 +1,76 @@
+// apps/api/src/modules/public/public-users.controller.ts
 import { Controller, Get, Param } from '@nestjs/common';
-import { PrismaService } from '../../common/prisma/prisma.service';
+import { PublicService } from './public.service';
 
-function safeHandle(raw: string) {
-  return String(raw ?? '')
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9._-]/g, '')
-    .slice(0, 32);
-}
+type PublicEvent = {
+  id?: string;
+  title: string;
+  meta: string;
+  desc: string;
+  verified: boolean;
+
+  // ✅ contrato novo (frontend já espera)
+  type?: 'PURCHASE' | 'SERVICE' | 'OTHER';
+};
 
 @Controller('public/users')
 export class PublicUsersController {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly publicService: PublicService) {}
 
   /**
-   * GET /api/public/users/:handle
-   * Perfil público por handle
+   * ✅ GET /api/public/users/:handle
+   *
+   * Contrato do perfil público:
+   * - events: lista de registros públicos (consequência do histórico)
+   * - stats: contadores (públicos)
    */
   @Get(':handle')
-  async byHandle(@Param('handle') handle: string) {
-    const h = safeHandle(handle);
-    if (!h) {
-      return { ok: false, message: 'Handle inválido.' };
-    }
+  async getPublicUser(@Param('handle') handle: string) {
+    const raw = await this.publicService.getPublicUserByHandle(handle);
 
-    const user = await this.prisma.user.findUnique({
-      where: { handle: h },
-      select: {
-        handle: true,
-        displayName: true,
-        bio: true,
-        avatarUrl: true,
-        createdAt: true,
-      },
-    });
+    // ✅ normaliza events
+    const events: PublicEvent[] = Array.isArray((raw as any)?.events)
+      ? ((raw as any).events as any[]).map((ev) => {
+          const verified = Boolean(ev?.verified);
 
-    if (!user) {
-      return { ok: false, message: 'Usuário não encontrado.' };
-    }
+          // ✅ MVP: se o service ainda não mandar type, mantém OTHER.
+          // No próximo passo (service), vamos gerar PURCHASE/SERVICE de verdade.
+          const type =
+            ev?.type === 'PURCHASE' ||
+            ev?.type === 'SERVICE' ||
+            ev?.type === 'OTHER'
+              ? ev.type
+              : 'OTHER';
+
+          return {
+            id: ev?.id,
+            title: String(ev?.title ?? '').trim(),
+            meta: String(ev?.meta ?? '').trim(),
+            desc: String(ev?.desc ?? '').trim(),
+            verified,
+            type,
+          };
+        })
+      : [];
+
+    // ✅ stats consistentes
+    const verifiedCount =
+      typeof (raw as any)?.stats?.verifiedCount === 'number'
+        ? (raw as any).stats.verifiedCount
+        : events.filter((e) => e.verified).length;
+
+    const linksCount =
+      typeof (raw as any)?.stats?.linksCount === 'number'
+        ? (raw as any).stats.linksCount
+        : 0;
 
     return {
-      ok: true,
-      user: {
-        handle: user.handle,
-        name: user.displayName ?? user.handle ?? 'Usuário',
-        bio: user.bio ?? null,
-        avatarUrl: user.avatarUrl ?? null,
-        since: user.createdAt.toISOString(),
-      },
+      ...(raw as any),
       stats: {
-        verifiedCount: 0,
-        linksCount: 0,
+        verifiedCount,
+        linksCount,
       },
-      events: [],
+      events,
     };
   }
 }
