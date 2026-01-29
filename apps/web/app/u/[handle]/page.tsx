@@ -72,12 +72,6 @@ function titleFromHandle(handle: string) {
   return nice || 'Usuário';
 }
 
-function formatSince(iso: string) {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
-  return d.getFullYear().toString();
-}
-
 function getErrorMessage(err: unknown) {
   if (err instanceof Error) return err.message;
   if (typeof err === 'string') return err;
@@ -238,6 +232,7 @@ export default function PublicUserProfilePage({ params }: Props) {
 
     return { total, purchases, services };
   }, [events]);
+  const typeReady = counters.purchases !== null && counters.services !== null;
 
   useEffect(() => {
     try {
@@ -378,11 +373,6 @@ export default function PublicUserProfilePage({ params }: Props) {
         : `${bioText.slice(0, 180).trim()}…`;
 
   const publicBadge = badgeFromPublic(data);
-
-  const providerLabel =
-    data?.provider?.specialtiesLabel ??
-    (data?.provider?.kind === 'TRANSPORTER' ? 'Transportadora' : 'Prestador');
-
   const avatar = normalizeAvatarUrl(avatarSrc);
 
   return (
@@ -425,7 +415,7 @@ export default function PublicUserProfilePage({ params }: Props) {
 
               <div className="flex flex-wrap gap-2">
                 <Link
-                  href="/"
+                  href={isAuthed ? dashFromHome(myHome) : '/'}
                   className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
                 >
                   Início
@@ -545,82 +535,50 @@ export default function PublicUserProfilePage({ params }: Props) {
                 </div>
               </div>
 
-              {/* Resumo */}
+              {/* Histórico no Marto (leve, sem KPI vazio) */}
               <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-white/5 p-5 ring-1 ring-white/10">
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <div className="text-sm font-semibold">Resumo público</div>
-                    <div className="mt-1 text-xs text-white/65">
-                      O que aparece aqui vem de ações no ecossistema.
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white/85">
-                    MVP
-                  </div>
-                </div>
-
-                <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                  <Stat
-                    label="Registros"
-                    value={String(data.stats.verifiedCount)}
-                  />
-                  <Stat label="Desde" value={formatSince(profile.since)} />
-                  <Stat label="Estado" value="Ativo" />
-                </div>
-
-                {data.provider ? (
-                  <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
                     <div className="text-sm font-semibold text-white">
-                      Operação ({providerLabel})
+                      Histórico no Marto
                     </div>
-                    <div className="mt-2 text-sm text-white/70">
-                      {data.provider?.regionSummary ??
-                        (data.provider?.city || data.provider?.uf
-                          ? `${data.provider?.city ?? '—'}/${data.provider?.uf ?? '—'}`
-                          : 'Dados de operação serão exibidos quando o prestador ativar o perfil público.')}
+                    <div className="mt-1 text-xs text-white/65">
+                      Público só quando existe ação real.
                     </div>
-
-                    {data.provider?.agendaSummary ? (
-                      <div className="mt-2 text-xs text-white/60">
-                        Agenda:{' '}
-                        <span className="text-white/80">
-                          {data.provider.agendaSummary}
-                        </span>
-                      </div>
-                    ) : null}
-
-                    {data.provider?.sla?.pickupMinutes ||
-                    data.provider?.sla?.deliveryMinutes ? (
-                      <div className="mt-2 text-xs text-white/60">
-                        SLA:{' '}
-                        <span className="text-white/80">
-                          iniciar{' '}
-                          {String(data.provider?.sla?.pickupMinutes ?? '—')} min •
-                          concluir{' '}
-                          {String(data.provider?.sla?.deliveryMinutes ?? '—')} min
-                        </span>
-                      </div>
-                    ) : null}
-
-                    {Array.isArray(data.provider?.types) &&
-                    data.provider!.types!.length ? (
-                      <div className="mt-3 flex flex-wrap gap-2">
-                        {data.provider!.types!.slice(0, 6).map((t) => (
-                          <span
-                            key={t.key}
-                            className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs text-white/75"
-                          >
-                            {t.title}
-                          </span>
-                        ))}
-                      </div>
-                    ) : null}
                   </div>
-                ) : (
-                  <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
-                    “O social do Marto é consequência do que aconteceu.”
+
+                  <div className="rounded-2xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white/85">
+                    Público
                   </div>
-                )}
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
+                  {events.length > 0 ? (
+                    <>
+                      <div className="text-sm font-semibold text-white">
+                        {events.length} registro
+                        {events.length === 1 ? '' : 's'} público
+                        {events.length === 1 ? '' : 's'}
+                      </div>
+                      <div className="mt-2 text-sm text-white/70">
+                        Experiências registradas a partir do que aconteceu:
+                        compra, entrega, serviço e avaliação.
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="text-sm font-semibold text-white">
+                        Ainda sem registros públicos
+                      </div>
+                      <div className="mt-2 text-sm text-white/70">
+                        No Marto, o perfil público é consequência — não um feed.
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                {/* Se for prestador/transportadora no futuro, o bloco de operação entra aqui.
+                    Para consumidor, fica leve. */}
               </div>
             </div>
           </div>
@@ -655,8 +613,15 @@ export default function PublicUserProfilePage({ params }: Props) {
                 <button
                   type="button"
                   onClick={() => setTab('purchases')}
+                  disabled={!typeReady}
+                  title={
+                    !typeReady
+                      ? 'Em breve: eventos tipados (compra/serviço)'
+                      : undefined
+                  }
                   className={[
                     'rounded-xl border border-white/15 px-4 py-2 text-sm font-semibold',
+                    !typeReady ? 'cursor-not-allowed opacity-60' : '',
                     tab === 'purchases'
                       ? 'bg-white/10 text-white'
                       : 'bg-white/5 text-white/80 hover:bg-white/10',
@@ -671,8 +636,15 @@ export default function PublicUserProfilePage({ params }: Props) {
                 <button
                   type="button"
                   onClick={() => setTab('services')}
+                  disabled={!typeReady}
+                  title={
+                    !typeReady
+                      ? 'Em breve: eventos tipados (compra/serviço)'
+                      : undefined
+                  }
                   className={[
                     'rounded-xl border border-white/15 px-4 py-2 text-sm font-semibold',
+                    !typeReady ? 'cursor-not-allowed opacity-60' : '',
                     tab === 'services'
                       ? 'bg-white/10 text-white'
                       : 'bg-white/5 text-white/80 hover:bg-white/10',
@@ -794,15 +766,6 @@ export default function PublicUserProfilePage({ params }: Props) {
         </div>
       </div>
     </main>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-      <div className="text-xs font-semibold text-white/65">{label}</div>
-      <div className="mt-2 truncate text-xl font-bold text-white">{value}</div>
-    </div>
   );
 }
 

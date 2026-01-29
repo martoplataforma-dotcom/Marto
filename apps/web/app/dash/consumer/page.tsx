@@ -34,9 +34,11 @@ type Mission = {
   done: boolean;
   verified?: boolean;
 
-  // ✅ CTA real
   href?: string;
   cta?: string;
+
+  // micro-feedback (MVP): mostra “quanto rende” fechar isso
+  rewardPts?: number;
 };
 
 type QuickAction = {
@@ -56,6 +58,17 @@ type InspoItem = {
   badge: 'verificado';
   href: string;
   cta: string;
+};
+
+type LoopStep = {
+  id: 'comprar' | 'servico' | 'avaliar' | 'postar';
+  eyebrow: string;
+  title: string;
+  desc: string;
+  href: string;
+  cta: string;
+  state: 'agora' | 'em seguida' | 'opcional' | 'travado';
+  verified?: boolean;
 };
 
 function safeIsoToDateMs(s: unknown): number {
@@ -225,6 +238,120 @@ function buildRastroInspo(params: {
   return items.slice(0, 6);
 }
 
+type RadarLevel = 'baixo' | 'médio' | 'alto';
+
+type MartoLevel = 'BRONZE' | 'PRATA' | 'OURO' | 'DIAMANTE';
+
+function levelFromPoints(points: number): MartoLevel {
+  if (points >= 120_000) return 'DIAMANTE';
+  if (points >= 45_000) return 'OURO';
+  if (points >= 15_000) return 'PRATA';
+  return 'BRONZE';
+}
+
+function brlFromPoints(points: number): string {
+  // doc base: 10.000 pontos -> R$ 10  => 1 ponto = R$ 0,001 (valor ilustrativo)
+  const brl = points * 0.001;
+  return brl.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+}
+
+function clamp01(n: number) {
+  if (!Number.isFinite(n)) return 0;
+  if (n < 0) return 0;
+  if (n > 1) return 1;
+  return n;
+}
+
+function radarFromState(params: {
+  ordersCount: number | null;
+  pendingCount: number | null;
+  reviewPendenciesCount: number | null;
+  lastOrderId: string | null;
+  lastOrderStatus: string | null;
+  lastShipmentStatus: string | null;
+}) {
+  const { ordersCount, pendingCount, reviewPendenciesCount, lastOrderId } = params;
+
+  // loading
+  if (
+    ordersCount === null ||
+    pendingCount === null ||
+    reviewPendenciesCount === null
+  ) {
+    return {
+      badge: 'analisando',
+      title: 'Radar Marto',
+      desc: 'Lendo seu rastro para sugerir o próximo passo.',
+      level: 'baixo' as RadarLevel,
+      ctaLabel: '—',
+      ctaHref: '/catalog',
+      tone: 'neutral' as const,
+      hint: 'consequência do real',
+    };
+  }
+
+  const hasOrders = ordersCount > 0;
+  const hasPending = pendingCount > 0;
+  const needsReview = reviewPendenciesCount > 0;
+
+  // regra vanguarda: risco = travas + pendências
+  let level: RadarLevel = 'baixo';
+  if (hasPending && !needsReview) level = 'médio';
+  if (needsReview) level = 'alto';
+
+  if (!hasOrders) {
+    return {
+      badge: 'sem rastro',
+      title: 'Radar Marto',
+      desc: 'Você ainda não tem rastro. Comece um ciclo pequeno para destravar confiança.',
+      level: 'baixo' as RadarLevel,
+      ctaLabel: 'Começar pelo catálogo →',
+      ctaHref: '/catalog',
+      tone: 'neutral' as const,
+      hint: 'ação real → rastro → confiança',
+    };
+  }
+
+  if (needsReview) {
+    return {
+      badge: 'ciclo aberto',
+      title: 'Radar Marto',
+      desc: 'Existe entrega sem avaliação. Fechar o ciclo aumenta sua confiança (e a do sistema).',
+      level,
+      ctaLabel: `Fechar ciclo (${reviewPendenciesCount}) →`,
+      ctaHref: '/review',
+      tone: 'emerald' as const,
+      hint: 'reputação vinculada',
+    };
+  }
+
+  if (hasPending) {
+    return {
+      badge: 'em andamento',
+      title: 'Radar Marto',
+      desc: 'Você tem fluxo em andamento. O melhor agora é acompanhar a timeline e próximos passos.',
+      level,
+      ctaLabel: 'Abrir meu rastro →',
+      ctaHref: lastOrderId
+        ? `/dash/consumer/orders/${encodeURIComponent(lastOrderId)}`
+        : '/dash/consumer/orders',
+      tone: 'neutral' as const,
+      hint: 'menos achismo, mais fatos',
+    };
+  }
+
+  return {
+    badge: 'em dia',
+    title: 'Radar Marto',
+    desc: 'Você está em dia. Use seu rastro para repetir escolhas seguras.',
+    level,
+    ctaLabel: 'Explorar com segurança →',
+    ctaHref: '/catalog',
+    tone: 'neutral' as const,
+    hint: 'recorrência inteligente',
+  };
+}
+
 export default function ConsumerDash() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -238,10 +365,8 @@ export default function ConsumerDash() {
   const [ordersCount, setOrdersCount] = useState<number | null>(null);
   const [servicesCount, setServicesCount] = useState<number | null>(null);
   const [reviewsCount, setReviewsCount] = useState<number | null>(null);
-
   const [pendingCount, setPendingCount] = useState<number | null>(null);
 
-  // ✅ NOVO: pendências de avaliação (shipments DELIVERED sem review)
   const [reviewPendenciesCount, setReviewPendenciesCount] = useState<
     number | null
   >(null);
@@ -292,6 +417,64 @@ export default function ConsumerDash() {
     lastShipmentStatus,
     lastShipmentReviewed,
   ]);
+
+  const radar = useMemo(() => {
+    return radarFromState({
+      ordersCount,
+      pendingCount,
+      reviewPendenciesCount,
+      lastOrderId,
+      lastOrderStatus,
+      lastShipmentStatus,
+    });
+  }, [
+    ordersCount,
+    pendingCount,
+    reviewPendenciesCount,
+    lastOrderId,
+    lastOrderStatus,
+    lastShipmentStatus,
+  ]);
+
+  const rewards = useMemo(() => {
+    // MVP: estimativa baseada no rastro (sem backend de pontos ainda)
+    const o = Number(ordersCount ?? 0);
+    const s = Number(servicesCount ?? 0);
+    const r = Number(reviewsCount ?? 0);
+    const pendReview = Number(reviewPendenciesCount ?? 0);
+
+    // pesos simples e previsíveis (ajusta depois)
+    let points = 0;
+    points += o * 180; // comprar (gera rastro)
+    points += s * 140; // serviço (dado operacional)
+    points += r * 420; // avaliação (reputação real)
+    points -= pendReview * 220; // ciclo aberto reduz “recompensa”
+
+    if (points < 0) points = 0;
+
+    const level = levelFromPoints(points);
+
+    const nextTargets: Record<
+      MartoLevel,
+      { next: MartoLevel | null; target: number }
+    > = {
+      BRONZE: { next: 'PRATA', target: 15_000 },
+      PRATA: { next: 'OURO', target: 45_000 },
+      OURO: { next: 'DIAMANTE', target: 120_000 },
+      DIAMANTE: { next: null, target: 120_000 },
+    };
+
+    const target = nextTargets[level].target;
+    const progress = level === 'DIAMANTE' ? 1 : clamp01(points / target);
+
+    return {
+      points,
+      level,
+      progress,
+      next: nextTargets[level].next,
+      brl: brlFromPoints(points),
+    };
+  }, [ordersCount, servicesCount, reviewsCount, reviewPendenciesCount]);
 
   const inspoHeader = useMemo(() => {
     if (!lastOrderId) {
@@ -481,6 +664,74 @@ export default function ConsumerDash() {
     ];
   }, [quickActions, lastOrderId, lastOrderStatus]);
 
+  const loop = useMemo(() => {
+    const hasOrders = Number(ordersCount ?? 0) > 0;
+    const hasServices = Number(servicesCount ?? 0) > 0;
+    const needsReview = Number(reviewPendenciesCount ?? 0) > 0;
+
+    // decisão “Marto”: o próximo passo vem do rastro
+    const now: LoopStep['id'] = !hasOrders
+      ? 'comprar'
+      : needsReview
+        ? 'avaliar'
+        : !hasServices
+          ? 'servico'
+          : 'postar';
+
+    const stepState = (id: LoopStep['id']): LoopStep['state'] => {
+      if (id === now) return 'agora';
+      if (!hasOrders && id !== 'comprar') return 'travado';
+      return 'em seguida';
+    };
+
+    const base: LoopStep[] = [
+      {
+        id: 'comprar',
+        eyebrow: 'Ciclo',
+        title: 'Comprar',
+        desc: 'Ação real abre o rastro (pedido + eventos).',
+        href: '/catalog',
+        cta: 'Explorar catálogo →',
+        state: stepState('comprar'),
+        verified: true,
+      },
+      {
+        id: 'servico',
+        eyebrow: 'Campo',
+        title: 'Serviço / Instala',
+        desc: 'Quando existe execução, nasce confiança operacional.',
+        href: '/dash/consumer/orders',
+        cta: 'Ver meus pedidos →',
+        state: stepState('servico'),
+        verified: true,
+      },
+      {
+        id: 'avaliar',
+        eyebrow: 'Reputação',
+        title: 'Avaliar',
+        desc: 'Fechar ciclo vira reputação vinculada (sem achismo).',
+        href: '/review',
+        cta: needsReview
+          ? `Fechar ciclo (${reviewPendenciesCount ?? 0}) →`
+          : 'Avaliar →',
+        state: stepState('avaliar'),
+        verified: true,
+      },
+      {
+        id: 'postar',
+        eyebrow: 'Marto Social',
+        title: 'Postar (verificado)',
+        desc: 'Social aqui é consequência: post nasce do rastro.',
+        href: '/me',
+        cta: 'Abrir meu perfil →',
+        state: stepState('postar'),
+        verified: true,
+      },
+    ];
+
+    return { now, items: base };
+  }, [ordersCount, servicesCount, reviewPendenciesCount]);
+
   useEffect(() => {
     (async () => {
       setMsg('');
@@ -530,7 +781,6 @@ export default function ConsumerDash() {
         setLastOrderStatus(getOrderStatus(last));
         setLastOrderCreatedAt(getOrderCreatedAt(last));
 
-        // ✅ meta do último pedido
         const first = list[0] as unknown;
         if (first && typeof first === 'object') {
           const r = first as Record<string, unknown>;
@@ -544,8 +794,7 @@ export default function ConsumerDash() {
           setLastOrderMeta(null);
         }
 
-        const norm = (s: unknown) =>
-          typeof s === 'string' ? s.toUpperCase() : '';
+        const norm = (s: unknown) => (typeof s === 'string' ? s.toUpperCase() : '');
         const byCreatedDesc = [...list].sort((a, b) => {
           const ams = safeIsoToDateMs(getOrderCreatedAt(a));
           const bms = safeIsoToDateMs(getOrderCreatedAt(b));
@@ -553,14 +802,12 @@ export default function ConsumerDash() {
         });
 
         const newestCreated =
-          byCreatedDesc.find((o) => norm(getOrderStatus(o)) === 'CREATED') ??
-          null;
+          byCreatedDesc.find((o) => norm(getOrderStatus(o)) === 'CREATED') ?? null;
         const newestPaid =
           byCreatedDesc.find((o) => norm(getOrderStatus(o)) === 'PAID') ?? null;
         const newestReturn =
-          byCreatedDesc.find(
-            (o) => norm(getOrderStatus(o)) === 'RETURN_REQUESTED',
-          ) ?? null;
+          byCreatedDesc.find((o) => norm(getOrderStatus(o)) === 'RETURN_REQUESTED') ??
+          null;
 
         let reviewedOrderIds = new Set<string>();
 
@@ -605,7 +852,6 @@ export default function ConsumerDash() {
 
         setServicesCount(services);
 
-        // ✅ Pendências: pedidos que ainda não finalizaram
         const pending = list.filter((o) => {
           if (!o || typeof o !== 'object') return false;
           const r = o as Record<string, unknown>;
@@ -651,7 +897,6 @@ export default function ConsumerDash() {
 
         setReviewsCount(reviewedCount);
 
-        // ✅ pendências de avaliação: shipment DELIVERED sem review
         const reviewPend = shipments.filter((s) => {
           if (!s || typeof s !== 'object') return false;
           const sr = s as Record<string, unknown>;
@@ -662,7 +907,6 @@ export default function ConsumerDash() {
 
         setReviewPendenciesCount(reviewPend);
 
-        // ✅ pega a entrega mais recente (se houver)
         const mostRecentShipment = (() => {
           if (!shipments.length) return null;
 
@@ -711,8 +955,7 @@ export default function ConsumerDash() {
           if (!s || typeof s !== 'object') return;
           const sr = s as Record<string, unknown>;
           const oid = sr.orderId;
-          const orderId =
-            typeof oid === 'string' && oid.trim() ? oid.trim() : null;
+          const orderId = typeof oid === 'string' && oid.trim() ? oid.trim() : null;
           if (!orderId) return;
           if (getShipmentReviewFlag(s)) reviewedOrderIds.add(orderId);
         });
@@ -743,6 +986,7 @@ export default function ConsumerDash() {
             verified: true,
             href: `/dash/consumer/orders/${idNeedReview}`,
             cta: 'Abrir pedido →',
+            rewardPts: 900,
           };
         } else if (idCreated) {
           urgent = {
@@ -753,6 +997,7 @@ export default function ConsumerDash() {
             verified: true,
             href: `/dash/consumer/orders/${idCreated}`,
             cta: 'Abrir pedido →',
+            rewardPts: 320,
           };
         } else if (idPaid) {
           urgent = {
@@ -763,6 +1008,7 @@ export default function ConsumerDash() {
             verified: true,
             href: `/dash/consumer/orders/${idPaid}`,
             cta: 'Ver timeline →',
+            rewardPts: 180,
           };
         } else if (idReturn) {
           urgent = {
@@ -773,6 +1019,7 @@ export default function ConsumerDash() {
             verified: true,
             href: `/dash/consumer/orders/${idReturn}`,
             cta: 'Acompanhar →',
+            rewardPts: 220,
           };
         } else if ((list?.length ?? 0) === 0) {
           urgent = {
@@ -783,6 +1030,7 @@ export default function ConsumerDash() {
             verified: true,
             href: '/catalog',
             cta: 'Explorar →',
+            rewardPts: 260,
           };
         } else {
           urgent = {
@@ -793,6 +1041,7 @@ export default function ConsumerDash() {
             verified: true,
             href: '/dash/consumer/orders',
             cta: 'Ver rastro →',
+            rewardPts: 80,
           };
         }
 
@@ -804,10 +1053,9 @@ export default function ConsumerDash() {
             desc: 'Timeline do último pedido: pedido + entrega + eventos.',
             done: Boolean(lastId),
             verified: true,
-            href: lastId
-              ? `/dash/consumer/orders/${lastId}`
-              : '/dash/consumer/orders',
+            href: lastId ? `/dash/consumer/orders/${lastId}` : '/dash/consumer/orders',
             cta: 'Abrir →',
+            rewardPts: 120,
           },
           {
             id: 'm-pref',
@@ -817,6 +1065,7 @@ export default function ConsumerDash() {
             verified: false,
             href: '#preferencias',
             cta: 'Editar →',
+            rewardPts: 60,
           },
         ]);
 
@@ -897,30 +1146,29 @@ export default function ConsumerDash() {
   }
 
   return (
-    <main className="relative min-h-screen overflow-x-hidden bg-zinc-950 text-white">
-      {/* fundo (grid + glows) */}
-      <div
-        className="pointer-events-none absolute inset-0 opacity-15"
-        style={{
-          backgroundImage:
-            'linear-gradient(to right, rgba(255,255,255,0.07) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.07) 1px, transparent 1px)',
-          backgroundSize: '52px 52px',
-        }}
-      />
-      <div className="pointer-events-none absolute -top-48 left-1/2 h-[32rem] w-[62rem] -translate-x-1/2 rounded-full bg-white/10 blur-3xl" />
-      <div className="pointer-events-none absolute top-[18rem] -left-40 h-[26rem] w-[26rem] rounded-full bg-white/5 blur-3xl" />
-      <div className="pointer-events-none absolute top-[22rem] -right-40 h-[26rem] w-[26rem] rounded-full bg-white/5 blur-3xl" />
+    <main className="min-h-screen bg-neutral-950 text-white">
+      {/* Fundo Marto (padrão) */}
+      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+        <div className="absolute inset-0 bg-neutral-950" />
+        <div className="absolute -top-48 left-1/2 h-[38rem] w-[70rem] -translate-x-1/2 rounded-full bg-white/10 blur-3xl" />
+        <div className="absolute top-[18rem] -left-40 h-[26rem] w-[26rem] rounded-full bg-white/5 blur-3xl" />
+        <div className="absolute top-[22rem] -right-40 h-[26rem] w-[26rem] rounded-full bg-white/5 blur-3xl" />
+        <div className="absolute inset-0 opacity-[0.08] [background-image:linear-gradient(to_right,rgba(255,255,255,0.18)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.18)_1px,transparent_1px)] [background-size:64px_64px]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.10),transparent_55%)]" />
+      </div>
 
-      <div className="relative mx-auto max-w-6xl px-6 py-10">
+      <div className="mx-auto max-w-6xl p-6">
         {/* Topbar */}
         <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
-            <div className="grid h-10 w-10 place-items-center rounded-2xl bg-black/60 ring-1 ring-white/10">
+            <div className="grid h-10 w-10 place-items-center rounded-2xl border border-white/15 bg-neutral-950/75 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
               <Image src="/marto-m.svg" alt="Marto" width={20} height={20} />
             </div>
             <div className="leading-tight">
-              <div className="text-sm font-semibold">Consumidor • Marto</div>
-              <div className="text-xs text-white/60">
+              <div className="text-sm font-semibold text-white/85">
+                Consumidor • Marto
+              </div>
+              <div className="text-xs text-white/65">
                 Social de consumo real. Sem conteúdo vazio.
               </div>
             </div>
@@ -929,14 +1177,14 @@ export default function ConsumerDash() {
           <div className="flex flex-wrap gap-2">
             <Link
               href="/me"
-              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+              className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white/85 hover:bg-white/15"
             >
               Meu perfil
             </Link>
 
             <Link
               href="/profile"
-              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+              className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white/85 hover:bg-white/15"
             >
               Configurações
             </Link>
@@ -944,7 +1192,7 @@ export default function ConsumerDash() {
             {publicHandle ? (
               <Link
                 href={`/u/${publicHandle}`}
-                className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white/85 hover:bg-white/15"
               >
                 Perfil público
               </Link>
@@ -955,7 +1203,7 @@ export default function ConsumerDash() {
                 localStorage.removeItem('marto_access');
                 window.location.href = '/login';
               }}
-              className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+              className="rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white/85 hover:bg-white/15"
             >
               Sair
             </button>
@@ -963,54 +1211,97 @@ export default function ConsumerDash() {
         </div>
 
         {/* HERO */}
-        <section className="rounded-[2rem] border border-white/10 bg-white/5 p-6 shadow-sm backdrop-blur sm:p-8">
+        <section className="rounded-[2rem] border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur sm:p-8">
           <div className="flex flex-col gap-8 lg:flex-row lg:items-start lg:justify-between">
             <div className="max-w-2xl">
-              <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
+              <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/40 px-3 py-1 text-xs font-semibold text-white/75 backdrop-blur">
                 Central do Consumidor
               </div>
 
-              <h1 className="mt-4 text-3xl font-bold tracking-tight sm:text-4xl">
+              <h1 className="mt-4 text-3xl font-semibold tracking-tight sm:text-4xl">
                 O que você quer fazer agora?
               </h1>
 
-              <p className="mt-3 text-sm leading-relaxed text-white/70">
+              <p className="mt-3 text-sm leading-relaxed text-white/75">
                 Explore produtos, contrate serviços e acompanhe seus pedidos. O
                 Marto registra tudo para você decidir com segurança.
               </p>
 
-              <div className="mt-6 flex flex-wrap gap-3">
-                <Link
-                  href="/catalog"
-                  className="rounded-2xl bg-white px-6 py-3 text-sm font-semibold text-black hover:opacity-90"
-                >
-                  Explorar catálogo
-                </Link>
+              <div
+                className={`mt-6 rounded-3xl border p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur ${
+                  radar.tone === 'emerald'
+                    ? 'border-emerald-500/25 bg-emerald-500/10'
+                    : 'border-white/15 bg-black/40'
+                }`}
+              >
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <div className="text-sm font-semibold text-white/85">
+                        {radar.title}
+                      </div>
+                      <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-semibold text-white/70">
+                        {radar.badge}
+                      </span>
+                    </div>
 
-                <Link
-                  href="/dash/consumer/orders"
-                  className="rounded-2xl border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold text-white hover:bg-white/10"
-                >
-                  Meus pedidos
-                </Link>
+                    <div className="mt-2 text-sm text-white/75">{radar.desc}</div>
 
-                <Link
-                  href="/choose-role"
-                  className="rounded-2xl border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold text-white hover:bg-white/10"
-                >
-                  Adicionar outro papel
-                </Link>
+                    <div className="mt-3 flex items-center gap-2 text-xs text-white/65">
+                      <span className="rounded-full border border-white/15 bg-white/10 px-2 py-0.5 font-semibold">
+                        risco: {radar.level}
+                      </span>
+                      <span className="text-white/60">{radar.hint}</span>
+                    </div>
+                  </div>
+
+                  <Link
+                    href={radar.ctaHref}
+                    className={`rounded-2xl px-5 py-2.5 text-sm font-semibold transition ${
+                      radar.tone === 'emerald'
+                        ? 'bg-white text-black hover:opacity-90'
+                        : 'border border-white/15 bg-white/10 text-white/85 hover:bg-white/15'
+                    }`}
+                  >
+                    {radar.ctaLabel}
+                  </Link>
+                </div>
               </div>
+
+              {reviewPendenciesCount !== null && reviewPendenciesCount > 0 ? (
+                <Link
+                  href="/review"
+                  className="rounded-2xl border border-emerald-500/25 bg-emerald-500/10 px-6 py-3 text-sm font-semibold text-emerald-100 hover:bg-emerald-500/15"
+                >
+                  Fechar ciclo: avaliar ({reviewPendenciesCount})
+                </Link>
+              ) : null}
             </div>
 
             <div className="w-full max-w-xl">
-              <div className="rounded-3xl border border-white/10 bg-black/30 p-5 ring-1 ring-white/5">
+              <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
                 <div>
-                  <div className="text-sm font-semibold">Resumo</div>
-                  <div className="mt-1 text-xs text-white/60">
+                  <div className="text-sm font-semibold text-white/85">Resumo</div>
+                  <div className="mt-1 text-xs text-white/65">
                     Visão rápida do seu uso recente.
                   </div>
                 </div>
+                {reviewPendenciesCount === null ? (
+                  <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/40 px-3 py-1 text-xs font-semibold text-white/65 backdrop-blur">
+                    <span className="h-1.5 w-1.5 rounded-full bg-white/40" />
+                    Ciclo: checando…
+                  </div>
+                ) : reviewPendenciesCount > 0 ? (
+                  <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-200">
+                    <span className="h-1.5 w-1.5 rounded-full bg-emerald-300/80" />
+                    Ciclo: {reviewPendenciesCount} pendência(s)
+                  </div>
+                ) : (
+                  <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/40 px-3 py-1 text-xs font-semibold text-white/65 backdrop-blur">
+                    <span className="h-1.5 w-1.5 rounded-full bg-white/40" />
+                    Ciclo: em dia
+                  </div>
+                )}
 
                 <div className="mt-4 grid gap-3 sm:grid-cols-2">
                   <Kpi
@@ -1031,18 +1322,55 @@ export default function ConsumerDash() {
                   <Kpi
                     label="Pendências"
                     value={pendingCount === null ? '—' : String(pendingCount)}
-                    hint={
-                      pendingCount === null
-                        ? 'carregando…'
-                        : 'pedidos em andamento'
-                    }
+                    hint={pendingCount === null ? 'carregando…' : 'em andamento'}
                   />
                 </div>
 
-                <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
-                  <div className="text-xs text-white/70">
-                    Dica: comece por “Catálogo” para ver o ciclo completo.
+                <div className="mt-4 rounded-2xl border border-white/15 bg-black/40 p-4 backdrop-blur">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold text-white/65">
+                        Recompensa Marto
+                      </div>
+                      <div className="mt-1 text-sm font-semibold text-white/85">
+                        Nível {rewards.level} •{' '}
+                        {rewards.points.toLocaleString('pt-BR')} pts
+                      </div>
+                      <div className="mt-1 text-xs text-white/65">
+                        Estimativa (MVP) baseada no seu rastro • {rewards.brl}{' '}
+                        equivalente
+                      </div>
+                    </div>
+
+                    <span className="rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-semibold text-white/70">
+                      preview
+                    </span>
                   </div>
+
+                  <div className="mt-3 h-2 w-full overflow-hidden rounded-full border border-white/10 bg-black/40">
+                    <div
+                      className="h-full bg-white/60"
+                      style={{ width: `${Math.round(rewards.progress * 100)}%` }}
+                    />
+                  </div>
+
+                  <div className="mt-2 flex items-center justify-between text-xs text-white/65">
+                    <span>ciclo fechado = mais pontos</span>
+                    <span>
+                      {rewards.next
+                        ? `próximo: ${rewards.next}`
+                        : 'topo do ecossistema'}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 rounded-2xl border border-white/15 bg-black/40 p-3 text-xs text-white/70">
+                    No Marto, recompensa vem de ações reais: comprar, usar
+                    serviço, avaliar, postar.
+                  </div>
+                </div>
+
+                <div className="mt-4 rounded-2xl border border-white/15 bg-black/40 p-4 text-xs text-white/70 backdrop-blur">
+                  Dica: comece pelo “Catálogo” para ver o ciclo completo.
                 </div>
               </div>
             </div>
@@ -1058,10 +1386,8 @@ export default function ConsumerDash() {
           {/* AÇÕES RÁPIDAS */}
           <div className="mt-10">
             <div className="mb-3">
-              <div className="text-sm font-semibold text-white">
-                Ações rápidas
-              </div>
-              <div className="mt-1 text-xs text-white/60">Comece por aqui.</div>
+              <div className="text-sm font-semibold text-white/85">Ações rápidas</div>
+              <div className="mt-1 text-xs text-white/65">Comece por aqui.</div>
             </div>
 
             <div className="grid gap-4 lg:grid-cols-3">
@@ -1079,26 +1405,112 @@ export default function ConsumerDash() {
             </div>
           </div>
 
-          {/* ✅ INSPIRAÇÕES REAIS (DO RASTRO) */}
-          <section className="mt-10 rounded-3xl border border-white/10 bg-black/25 p-6 ring-1 ring-white/5">
+          {/* LOOP DO CONSUMIDOR (Marto Social por consequência) */}
+          <section className="mt-10 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="flex items-center gap-2">
-                  <div className="text-lg font-semibold">{inspoHeader.title}</div>
+                  <div className="text-lg font-semibold text-white/85">
+                    Loop do Consumidor
+                  </div>
+                  <span className="rounded-full border border-white/15 bg-black/40 px-3 py-1 text-xs font-semibold text-white/70 backdrop-blur">
+                    ação real → rastro → confiança
+                  </span>
+                </div>
+                <div className="mt-1 max-w-2xl text-sm text-white/65">
+                  No Marto, “social” não é feed. É consequência de compra,
+                  execução e avaliação.
+                </div>
+              </div>
 
-                  <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/70">
+              <Link
+                href={
+                  loop.now === 'comprar'
+                    ? '/catalog'
+                    : loop.now === 'avaliar'
+                      ? '/review'
+                      : '/dash/consumer/orders'
+                }
+                className="rounded-2xl bg-white px-5 py-2.5 text-sm font-semibold text-black hover:opacity-90"
+              >
+                Ir para o passo “agora” →
+              </Link>
+            </div>
+
+            <div className="mt-6 grid gap-3 md:grid-cols-2 lg:grid-cols-4">
+              {loop.items.map((s) => (
+                <Link
+                  key={s.id}
+                  href={s.href}
+                  className={`rounded-2xl border p-4 backdrop-blur transition ${
+                    s.state === 'agora'
+                      ? 'border-emerald-500/25 bg-emerald-500/10 hover:bg-emerald-500/15'
+                      : s.state === 'travado'
+                        ? 'border-white/10 bg-black/30 opacity-60'
+                        : 'border-white/15 bg-black/40 hover:bg-white/10'
+                  }`}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="text-xs font-semibold text-white/65">
+                      {s.eyebrow}
+                    </div>
+                    <span
+                      className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                        s.state === 'agora'
+                          ? 'bg-emerald-500/15 text-emerald-200'
+                          : s.state === 'travado'
+                            ? 'bg-white/10 text-white/60'
+                            : 'bg-white/10 text-white/70'
+                      }`}
+                    >
+                      {s.state === 'agora'
+                        ? 'agora'
+                        : s.state === 'travado'
+                          ? 'travado'
+                          : 'próximo'}
+                    </span>
+                  </div>
+
+                  <div className="mt-2 text-sm font-semibold text-white/85">
+                    {s.title}
+                  </div>
+                  <div className="mt-2 text-sm text-white/70">{s.desc}</div>
+
+                  <div className="mt-5 text-xs font-semibold text-white/70">
+                    {s.cta}
+                  </div>
+                </Link>
+              ))}
+            </div>
+
+            <div className="mt-5 rounded-2xl border border-white/15 bg-black/40 p-4 text-xs text-white/70 backdrop-blur">
+              Esse loop é o coração do Marto Social: reputação e recompensa
+              nascem do que aconteceu de verdade.
+            </div>
+          </section>
+
+          {/* INSPIRAÇÕES REAIS (DO RASTRO) */}
+          <section className="mt-10 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="flex items-center gap-2">
+                  <div className="text-lg font-semibold text-white/85">
+                    {inspoHeader.title}
+                  </div>
+
+                  <span className="rounded-full border border-white/15 bg-black/40 px-3 py-1 text-xs font-semibold text-white/70 backdrop-blur">
                     {inspoHeader.badge}
                   </span>
                 </div>
 
-                <div className="mt-1 max-w-2xl text-sm text-white/60">
+                <div className="mt-1 max-w-2xl text-sm text-white/65">
                   {inspoHeader.desc}
                 </div>
               </div>
 
               <Link
                 href={inspoHeader.ctaHref}
-                className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white/85 hover:bg-white/15"
               >
                 {inspoHeader.ctaLabel}
               </Link>
@@ -1111,113 +1523,124 @@ export default function ConsumerDash() {
             </div>
           </section>
 
-          {/* ✅ Atividade recente (cards reais) */}
-          <section className="mt-10 rounded-3xl border border-white/10 bg-black/25 p-6 text-white ring-1 ring-white/5">
-            <div className="flex flex-wrap items-start justify-between gap-3">
+          {/* TRILHA DO RASTRO */}
+          <section className="mt-10 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+            <div className="flex items-start justify-between gap-3">
               <div>
-                <div className="text-lg font-semibold">Atividade recente</div>
-                <div className="mt-1 max-w-xl text-sm text-white/60">
-                  Visão rápida: última compra, última entrega e avaliações.
+                <div className="text-lg font-semibold text-white/85">
+                  Trilha do rastro
+                </div>
+                <div className="mt-1 max-w-xl text-sm text-white/65">
+                  Uma linha clara do que aconteceu, onde você está e o que falta.
                 </div>
               </div>
 
-              {lastOrderId ? (
-                <Link
-                  href={`/dash/consumer/orders/${lastOrderId}`}
-                  className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
-                >
-                  Abrir timeline →
-                </Link>
-              ) : null}
+              <span className="rounded-full border border-white/15 bg-black/40 px-3 py-1 text-xs font-semibold text-white/70 backdrop-blur">
+                consequência real
+              </span>
             </div>
 
-            <div className="mt-6 grid gap-3 md:grid-cols-2">
-              {lastOrderMeta ? (
-                <HistoryRow
-                  title="Última compra"
-                  meta={`${String(lastOrderMeta.status)} • ${
-                    lastOrderMeta.createdAt
-                      ? new Date(lastOrderMeta.createdAt).toLocaleString('pt-BR')
-                      : '—'
+            <div className="mt-6 grid gap-4">
+              {/* 1 — Pedido */}
+              <div className="flex items-start gap-4">
+                <div className="mt-1 h-2 w-2 shrink-0 rounded-full bg-emerald-400" />
+                <div>
+                  <div className="text-sm font-semibold text-white/85">
+                    Pedido
+                  </div>
+                  <div className="mt-1 text-sm text-white/65">
+                    {lastOrderMeta
+                      ? `Último pedido registrado • ${
+                          lastOrderMeta.createdAt
+                            ? new Date(
+                                lastOrderMeta.createdAt,
+                              ).toLocaleDateString('pt-BR')
+                            : '—'
+                        }`
+                      : 'Nenhum pedido ainda'}
+                  </div>
+                </div>
+              </div>
+
+              {/* 2 — Entrega / Serviço */}
+              <div className="flex items-start gap-4">
+                <div
+                  className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+                    lastShipmentMeta ? 'bg-emerald-400' : 'bg-white/30'
                   }`}
-                  desc="O Marto registrou a compra e iniciou seu rastro."
-                  status="verificado"
                 />
-              ) : (
-                <HistoryRow
-                  title="Nenhuma compra ainda"
-                  meta="Comece pelo catálogo"
-                  desc="Quando você comprar, seu rastro aparece aqui."
-                  status="em construção"
-                />
-              )}
+                <div>
+                  <div className="text-sm font-semibold text-white/85">
+                    Entrega / Serviço
+                  </div>
+                  <div className="mt-1 text-sm text-white/65">
+                    {lastShipmentMeta
+                      ? `${String(lastShipmentMeta.status)} • ${
+                          lastShipmentMeta.createdAt
+                            ? new Date(
+                                lastShipmentMeta.createdAt,
+                              ).toLocaleDateString('pt-BR')
+                            : '—'
+                        }`
+                      : 'Ainda não iniciado'}
+                  </div>
+                </div>
+              </div>
 
-              {lastShipmentMeta ? (
-                <HistoryRow
-                  title="Última entrega"
-                  meta={`${String(lastShipmentMeta.status)} • ${
-                    lastShipmentMeta.createdAt
-                      ? new Date(
-                          lastShipmentMeta.createdAt,
-                        ).toLocaleString('pt-BR')
-                      : '—'
+              {/* 3 — Avaliação */}
+              <div className="flex items-start gap-4">
+                <div
+                  className={`mt-1 h-2 w-2 shrink-0 rounded-full ${
+                    reviewPendenciesCount && reviewPendenciesCount > 0
+                      ? 'bg-amber-400'
+                      : 'bg-emerald-400'
                   }`}
-                  desc={
-                    lastShipmentMeta.reviewed
-                      ? 'Entrega avaliada e vinculada à experiência.'
-                      : 'Entrega registrada. Quando avaliar, vira reputação.'
-                  }
-                  status="verificado"
                 />
-              ) : (
-                <HistoryRow
-                  title="Nenhuma entrega registrada"
-                  meta="Aguardando transportadora"
-                  desc="Quando uma entrega for criada, ela aparece aqui."
-                  status="em construção"
-                />
-              )}
-
-              {reviewsCount !== null && reviewsCount > 0 ? (
-                <HistoryRow
-                  title="Avaliação registrada"
-                  meta={`${reviewsCount} no total`}
-                  desc="Avaliações no Marto são vinculadas a ações reais."
-                  status="verificado"
-                />
-              ) : (
-                <HistoryRow
-                  title="Sem avaliações ainda"
-                  meta="Leva 30 segundos"
-                  desc="Após a entrega, avalie e fortaleça seu rastro."
-                  status="em construção"
-                />
-              )}
-
-              <HistoryRow
-                title="Rastro do consumidor"
-                meta="Sem feed • só consequência"
-                desc="Aqui você vê o que aconteceu e o que falta — com verdade."
-                status="verificado"
-              />
+                <div>
+                  <div className="text-sm font-semibold text-white/85">
+                    Avaliação
+                  </div>
+                  <div className="mt-1 text-sm text-white/65">
+                    {reviewPendenciesCount && reviewPendenciesCount > 0
+                      ? `${reviewPendenciesCount} pendência(s) • fechar ciclo`
+                      : 'Em dia'}
+                  </div>
+                </div>
+              </div>
             </div>
 
-            <div className="mt-5 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/70">
-              Aqui é operacional: o que aconteceu, o que falta, e o que fazer
-              depois.
+            <div className="mt-6 flex flex-wrap items-center gap-3">
+              <Link
+                href={
+                  reviewPendenciesCount && reviewPendenciesCount > 0
+                    ? '/review'
+                    : lastOrderId
+                      ? `/dash/consumer/orders/${lastOrderId}`
+                      : '/catalog'
+                }
+                className="rounded-2xl bg-white px-6 py-3 text-sm font-semibold text-black hover:opacity-90"
+              >
+                Abrir rastro →
+              </Link>
+
+              <span className="text-xs text-white/60">
+                Aqui não existe feed: só fatos.
+              </span>
             </div>
           </section>
 
           {/* Preferências */}
           <details
             id="preferencias"
-            className="mt-10 rounded-3xl border border-white/10 bg-black/25 p-6 ring-1 ring-white/5"
+            className="mt-10 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
           >
             <summary className="cursor-pointer list-none">
               <div className="flex items-center justify-between">
                 <div>
-                  <div className="text-lg font-semibold">Preferências</div>
-                  <div className="mt-1 text-sm text-white/60">
+                  <div className="text-lg font-semibold text-white/85">
+                    Preferências
+                  </div>
+                  <div className="mt-1 text-sm text-white/65">
                     Opcional. Ajuda a sugerir coisas perto de você.
                   </div>
                 </div>
@@ -1229,18 +1652,20 @@ export default function ConsumerDash() {
 
             <div className="mt-6 grid gap-4">
               <label className="grid gap-2">
-                <span className="text-sm font-semibold">Cidade (opcional)</span>
+                <span className="text-sm font-semibold text-white/85">
+                  Cidade (opcional)
+                </span>
                 <input
                   value={city}
                   onChange={(e) => setCity(e.target.value)}
                   placeholder="Ex: Ubá"
-                  className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none placeholder:text-white/40 focus:border-white/40"
+                  className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white/85 outline-none placeholder:text-white/40 focus:border-white/40"
                   disabled={loading}
                 />
               </label>
 
               <label className="grid gap-2">
-                <span className="text-sm font-semibold">
+                <span className="text-sm font-semibold text-white/85">
                   CEP (prefixo) — opcional
                 </span>
                 <input
@@ -1249,17 +1674,17 @@ export default function ConsumerDash() {
                     setCepPrefix(e.target.value.replace(/\D/g, '').slice(0, 5))
                   }
                   placeholder="Ex: 36500"
-                  className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-white outline-none placeholder:text-white/40 focus:border-white/40"
+                  className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white/85 outline-none placeholder:text-white/40 focus:border-white/40"
                   disabled={loading}
                   inputMode="numeric"
                 />
-                <span className="text-xs text-white/55">
+                <span className="text-xs text-white/65">
                   Se não souber, deixe em branco.
                 </span>
               </label>
 
               {msg ? (
-                <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/80">
+                <div className="rounded-2xl border border-white/15 bg-black/40 px-4 py-3 text-sm text-white/80 backdrop-blur">
                   {msg}
                 </div>
               ) : null}
@@ -1280,7 +1705,7 @@ export default function ConsumerDash() {
                     setCepPrefix('');
                     setMsg('Ok — você pode configurar isso depois.');
                   }}
-                  className="rounded-2xl border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold text-white hover:bg-white/10"
+                  className="rounded-2xl border border-white/15 bg-white/10 px-6 py-3 text-sm font-semibold text-white/85 hover:bg-white/15"
                   disabled={loading || saving}
                 >
                   Limpar
@@ -1304,10 +1729,10 @@ function Kpi({
   hint: string;
 }) {
   return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-      <div className="text-xs font-semibold text-white/60">{label}</div>
-      <div className="mt-2 text-2xl font-bold text-white">{value}</div>
-      <div className="mt-1 text-xs text-white/55">{hint}</div>
+    <div className="rounded-2xl border border-white/15 bg-black/40 p-4 backdrop-blur">
+      <div className="text-xs font-semibold text-white/65">{label}</div>
+      <div className="mt-2 text-2xl font-semibold text-white/85">{value}</div>
+      <div className="mt-1 text-xs text-white/65">{hint}</div>
     </div>
   );
 }
@@ -1330,15 +1755,15 @@ function BlockCard({
   return (
     <Link
       href={href}
-      className={`rounded-3xl border p-6 transition ${
+      className={`rounded-3xl border p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur transition ${
         highlight
           ? 'border-emerald-500/25 bg-emerald-500/10 hover:bg-emerald-500/15'
-          : 'border-white/10 bg-white/5 hover:bg-white/10'
+          : 'border-white/15 bg-neutral-950/75 hover:bg-white/10'
       }`}
     >
-      <div className="text-xs font-semibold text-white/60">{eyebrow}</div>
-      <div className="mt-2 text-base font-semibold text-white">{title}</div>
-      <div className="mt-2 text-sm text-white/65">{desc}</div>
+      <div className="text-xs font-semibold text-white/65">{eyebrow}</div>
+      <div className="mt-2 text-base font-semibold text-white/85">{title}</div>
+      <div className="mt-2 text-sm text-white/70">{desc}</div>
       <div className="mt-6 text-xs font-semibold text-white/70">{cta}</div>
     </Link>
   );
@@ -1355,19 +1780,19 @@ function TodayCard({
   const done = missions.filter((m) => m.done).length;
 
   return (
-    <div className="rounded-3xl border border-white/10 bg-black/25 p-6 ring-1 ring-white/5 lg:col-span-2">
+    <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur lg:col-span-2">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-xs font-semibold text-white/60">Hoje no Marto</div>
-          <div className="mt-2 text-lg font-semibold">
+          <div className="text-xs font-semibold text-white/65">Hoje no Marto</div>
+          <div className="mt-2 text-lg font-semibold text-white/85">
             Missões rápidas (sem enrolação)
           </div>
-          <div className="mt-1 text-sm text-white/60">
+          <div className="mt-1 text-sm text-white/65">
             O social aqui é consequência. Missões só existem quando são úteis.
           </div>
         </div>
 
-        <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white/80">
+        <div className="rounded-2xl border border-white/15 bg-black/40 px-4 py-2 text-sm font-semibold text-white/80 backdrop-blur">
           {loading ? '—' : `${done}/${total}`} feito
         </div>
       </div>
@@ -1376,10 +1801,10 @@ function TodayCard({
         {missions.map((m) => (
           <div
             key={m.id}
-            className="rounded-2xl border border-white/10 bg-white/5 p-4"
+            className="rounded-2xl border border-white/15 bg-black/40 p-4 backdrop-blur"
           >
             <div className="flex items-center justify-between gap-2">
-              <div className="text-xs font-semibold text-white/60">Missão</div>
+              <div className="text-xs font-semibold text-white/65">Missão</div>
               <span
                 className={`rounded-full px-3 py-1 text-xs font-semibold ${
                   m.verified
@@ -1391,7 +1816,23 @@ function TodayCard({
               </span>
             </div>
 
-            <div className="mt-2 text-sm font-semibold">{m.title}</div>
+            <div className="mt-2 text-sm font-semibold text-white/85">{m.title}</div>
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              {typeof m.rewardPts === 'number' ? (
+                <span className="rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-white/70">
+                  +{m.rewardPts.toLocaleString('pt-BR')} pts
+                </span>
+              ) : null}
+              {m.verified ? (
+                <span className="rounded-full bg-emerald-500/15 px-2.5 py-1 text-[11px] font-semibold text-emerald-200">
+                  reputação vinculada
+                </span>
+              ) : (
+                <span className="rounded-full bg-white/10 px-2.5 py-1 text-[11px] font-semibold text-white/70">
+                  opcional
+                </span>
+              )}
+            </div>
             <div className="mt-2 text-sm text-white/70">{m.desc}</div>
 
             <div className="mt-4 flex items-center justify-between">
@@ -1408,20 +1849,20 @@ function TodayCard({
                   <button
                     type="button"
                     onClick={() => scrollToId(m.href!.slice(1))}
-                    className="text-xs font-semibold text-white/70 hover:text-white"
+                    className="text-xs font-semibold text-white/70 hover:text-white/85"
                   >
                     {m.cta}
                   </button>
                 ) : (
                   <Link
                     href={m.href}
-                    className="text-xs font-semibold text-white/70 hover:text-white"
+                    className="text-xs font-semibold text-white/70 hover:text-white/85"
                   >
                     {m.cta}
                   </Link>
                 )
               ) : (
-                <span className="text-xs text-white/55">MVP</span>
+                <span className="text-xs text-white/65">MVP</span>
               )}
             </div>
           </div>
@@ -1430,18 +1871,19 @@ function TodayCard({
 
       <div className="mt-5 flex flex-wrap gap-3">
         <Link
-          href="/dash/consumer/orders"
-          className="rounded-2xl border border-white/15 bg-white/5 px-6 py-3 text-sm font-semibold text-white hover:bg-white/10"
-        >
-          Abrir meu rastro →
-        </Link>
-
-        <Link
-          href="/review"
+          href={(missions[0]?.href ?? '/dash/consumer/orders') as string}
           className="rounded-2xl bg-white px-6 py-3 text-sm font-semibold text-black hover:opacity-90"
         >
-          Avaliar agora
+          Executar agora →
         </Link>
+
+        <button
+          type="button"
+          onClick={() => scrollToId('preferencias')}
+          className="rounded-2xl border border-white/15 bg-white/10 px-6 py-3 text-sm font-semibold text-white/85 hover:bg-white/15"
+        >
+          Ajustar preferências
+        </button>
       </div>
     </div>
   );
@@ -1458,8 +1900,7 @@ function NextActionCard({
 
   const desc = loading
     ? 'Montando seu próximo passo.'
-    : urgent?.desc ??
-      'O Marto decide seu próximo passo com base no seu rastro real.';
+    : urgent?.desc ?? 'O Marto decide seu próximo passo com base no seu rastro real.';
 
   const href = urgent?.href ?? '/dash/consumer/orders';
   const cta = urgent?.cta ?? 'Abrir →';
@@ -1467,15 +1908,21 @@ function NextActionCard({
   return (
     <Link
       href={href}
-      className="rounded-3xl border border-white/10 bg-black/25 p-6 ring-1 ring-white/5 transition hover:bg-white/5"
+      className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur transition hover:bg-white/10"
     >
-      <div className="text-xs font-semibold text-white/60">Próximo passo</div>
-      <div className="mt-2 text-lg font-semibold">{title}</div>
-      <div className="mt-2 text-sm text-white/60">{desc}</div>
+      <div className="text-xs font-semibold text-white/65">Próximo passo</div>
+      <div className="mt-2 text-lg font-semibold text-white/85">{title}</div>
+      <div className="mt-2 text-sm text-white/65">{desc}</div>
+      {typeof urgent?.rewardPts === 'number' ? (
+        <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/40 px-3 py-1 text-xs font-semibold text-white/70 backdrop-blur">
+          <span className="h-1.5 w-1.5 rounded-full bg-white/40" />
+          recompensa estimada: +{urgent.rewardPts.toLocaleString('pt-BR')} pts
+        </div>
+      ) : null}
 
       <div className="mt-6 text-xs font-semibold text-white/70">{cta}</div>
 
-      <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4 text-xs text-white/65">
+      <div className="mt-4 rounded-2xl border border-white/15 bg-black/40 p-4 text-xs text-white/65 backdrop-blur">
         Aqui o Marto te guia por consequência: ação real → rastro → confiança.
       </div>
     </Link>
@@ -1484,15 +1931,17 @@ function NextActionCard({
 
 function TrustCard() {
   return (
-    <div className="rounded-3xl border border-white/10 bg-black/25 p-6 ring-1 ring-white/5">
-      <div className="text-xs font-semibold text-white/60">Regra do Marto</div>
-      <div className="mt-2 text-lg font-semibold">Nada de conteúdo vazio</div>
-      <div className="mt-2 text-sm text-white/60">
+    <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+      <div className="text-xs font-semibold text-white/65">Regra do Marto</div>
+      <div className="mt-2 text-lg font-semibold text-white/85">
+        Nada de conteúdo vazio
+      </div>
+      <div className="mt-2 text-sm text-white/65">
         Quando aparecer algo “social”, vai estar ligado a produto, serviço ou
         experiência real. O foco é decisão segura.
       </div>
 
-      <div className="mt-6 rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/70">
+      <div className="mt-6 rounded-2xl border border-white/15 bg-black/40 p-4 text-sm text-white/70 backdrop-blur">
         Social como consequência — reputação como ativo.
       </div>
     </div>
@@ -1503,12 +1952,12 @@ function InspoCard({ item }: { item: InspoItem }) {
   return (
     <Link
       href={item.href}
-      className="rounded-2xl border border-white/10 bg-white/5 p-4 transition hover:bg-white/10"
+      className="rounded-2xl border border-white/15 bg-black/40 p-4 backdrop-blur transition hover:bg-white/10"
     >
       <div className="flex items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold">{item.title}</div>
-          <div className="mt-1 text-xs text-white/55">{item.meta}</div>
+          <div className="text-sm font-semibold text-white/85">{item.title}</div>
+          <div className="mt-1 text-xs text-white/65">{item.meta}</div>
         </div>
 
         <span className="shrink-0 rounded-full bg-emerald-500/15 px-3 py-1 text-xs font-semibold text-emerald-200">
@@ -1522,37 +1971,3 @@ function InspoCard({ item }: { item: InspoItem }) {
   );
 }
 
-function HistoryRow({
-  title,
-  meta,
-  desc,
-  status,
-}: {
-  title: string;
-  meta: string;
-  desc: string;
-  status: 'verificado' | 'em construção';
-}) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-sm font-semibold text-white">{title}</div>
-          <div className="mt-1 text-xs text-white/55">{meta}</div>
-        </div>
-
-        <span
-          className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${
-            status === 'verificado'
-              ? 'bg-emerald-500/15 text-emerald-200'
-              : 'bg-white/10 text-white/70'
-          }`}
-        >
-          {status}
-        </span>
-      </div>
-
-      <div className="mt-2 text-sm text-white/70">{desc}</div>
-    </div>
-  );
-}

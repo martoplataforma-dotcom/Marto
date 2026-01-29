@@ -6,7 +6,6 @@ import Link from 'next/link';
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useParams } from 'next/navigation';
 import { fetchJSON, type ApiError } from '../../../src/lib/api';
-import { resolveAsset } from '../../../src/lib/urls';
 
 type PublicMerchant = {
   id: string;
@@ -27,8 +26,27 @@ type ProductItem = {
   images?: string[] | null;
 };
 
+// ✅ API pode vir como http://localhost:3001/api
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api';
+// ✅ assets NÃO podem usar /api (uploads ficam em /uploads)
+const ASSETS_URL = API_URL.replace(/\/api\/?$/, '');
+
 function isRemoteHttp(src: string) {
   return /^https?:\/\//i.test(src);
+}
+
+// ✅ resolve de assets (idêntico ao padrão do resto do projeto)
+function resolveAsset(urlOrPath?: string | null) {
+  const v = String(urlOrPath ?? '').trim();
+  if (!v) return null;
+
+  // já é absoluto
+  if (isRemoteHttp(v)) return v;
+
+  // relativo do backend: /uploads/...
+  if (v.startsWith('/uploads/')) return `${ASSETS_URL}${v}`;
+
+  return null;
 }
 
 function moneyFromCentsBRL(cents: number) {

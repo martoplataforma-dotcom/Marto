@@ -1,3 +1,5 @@
+// prisma/schema.prisma
+
 generator client {
   provider = "prisma-client-js"
 }
@@ -42,17 +44,17 @@ model Transporter {
 }
 
 model Shipment {
-  id            String         @id @default(uuid())
+  id            String             @id @default(uuid())
   orderId       String
   transporterId String?
-  status        ShipmentStatus @default(CREATED)
+  status        ShipmentStatus     @default(CREATED)
   quotedPrice   Int?
   estimatedDays Int?
-  createdAt     DateTime       @default(now())
-  updatedAt     DateTime       @updatedAt
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
   proofs        DeliveryProof[]
   review        LogisticsReview?
-  transporter   Transporter?   @relation(fields: [transporterId], references: [id])
+  transporter   Transporter?       @relation(fields: [transporterId], references: [id])
   events        ShipmentEvent[]
   incidents     ShipmentIncident[]
 
@@ -108,19 +110,26 @@ model LogisticsReview {
 }
 
 model SocialPost {
-  id               String           @id @default(uuid())
-  status           SocialPostStatus @default(ACTIVE)
+  id     String           @id @default(uuid())
+  status SocialPostStatus @default(ACTIVE)
+
   userId           String
   orderId          String
   productId        String
   serviceRequestId String?
-  caption          String?
-  deletedAt        DateTime?
-  createdAt        DateTime         @default(now())
-  updatedAt        DateTime         @updatedAt
-  comments         SocialComment[]
-  likes            SocialLike[]
-  media            SocialMedia[]
+
+  caption   String?
+  deletedAt DateTime?
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  comments SocialComment[]
+  likes    SocialLike[]
+  media    SocialMedia[]
 
   @@unique([userId, orderId, productId])
   @@index([userId, createdAt])
@@ -132,20 +141,24 @@ model SocialMedia {
   id          String          @id @default(uuid())
   postId      String
   type        SocialMediaType
+  origin      MediaOrigin     @default(UPLOAD)
   url         String
   durationSec Int?
   createdAt   DateTime        @default(now())
   post        SocialPost      @relation(fields: [postId], references: [id], onDelete: Cascade)
 
   @@index([postId])
+  @@index([origin])
 }
 
 model SocialLike {
-  id        String     @id @default(uuid())
+  id        String   @id @default(uuid())
   postId    String
   userId    String
-  createdAt DateTime   @default(now())
-  post      SocialPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  post SocialPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([postId, userId])
   @@index([userId, createdAt])
@@ -153,13 +166,15 @@ model SocialLike {
 }
 
 model SocialComment {
-  id        String     @id @default(uuid())
+  id        String   @id @default(uuid())
   postId    String
   userId    String
   text      String
-  createdAt DateTime   @default(now())
-  updatedAt DateTime   @updatedAt
-  post      SocialPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  post SocialPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user User       @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([postId, createdAt])
   @@index([userId, createdAt])
@@ -170,10 +185,13 @@ model MartoFund {
   balance   Decimal  @default(0) @db.Decimal(14, 2)
   updatedAt DateTime @updatedAt
   createdAt DateTime @default(now())
+
+  entries MartoFundEntry[]
 }
 
 model MartoFundEntry {
   id        String        @id @default(uuid())
+  fundId    String
   type      FundEntryType
   amount    Decimal       @db.Decimal(14, 2)
   reason    String?
@@ -181,8 +199,11 @@ model MartoFundEntry {
   refId     String?
   createdAt DateTime      @default(now())
 
+  fund MartoFund @relation(fields: [fundId], references: [id], onDelete: Cascade)
+
   @@index([type, createdAt])
   @@index([refType, refId])
+  @@index([fundId, createdAt])
 }
 
 model PointsWallet {
@@ -191,11 +212,14 @@ model PointsWallet {
   balance   Int      @default(0)
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  user         User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  transactions PointsTransaction[]
 }
 
 model PointsTransaction {
   id          String       @id @default(uuid())
-  userId      String
+  walletId    String
   type        PointsTxType
   amount      Int
   description String?
@@ -203,7 +227,9 @@ model PointsTransaction {
   refId       String?
   createdAt   DateTime     @default(now())
 
-  @@index([userId, createdAt])
+  wallet PointsWallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  @@index([walletId, createdAt])
   @@index([type, createdAt])
   @@index([refType, refId])
 }
@@ -312,10 +338,14 @@ model Order {
 
   city      String?
   state     String?
-  createdAt DateTime     @default(now())
-  updatedAt DateTime     @updatedAt
-  events    OrderEvent[]
-  items     OrderItem[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  events OrderEvent[]
+  items  OrderItem[]
+
+  user        User?        @relation(fields: [userId], references: [id])
+  socialPosts SocialPost[]
 
   @@index([merchantId, createdAt])
   @@index([status])
@@ -473,33 +503,46 @@ model PixCharge {
 }
 
 model User {
-  id                   String               @id @default(uuid())
-  email                String               @unique
-  createdAt            DateTime             @default(now())
-  passwordHash         String
-  avatarUrl            String?
-  bio                  String?
-  displayName          String?
-  handle               String?              @unique
-  updatedAt            DateTime             @default(now()) @updatedAt
-  consumer             Consumer?
-  factory              Factory?
-  merchant             Merchant?
-  representative       Representative?
-  serviceProvider      ServiceProvider?
-  roles                UserRole[]
-  passwordResetTokens  PasswordResetToken[]
+  id           String   @id @default(uuid())
+  email        String   @unique
+  createdAt    DateTime @default(now())
+  passwordHash String
+  avatarUrl    String?
+  bio          String?
+  displayName  String?
+  handle       String?  @unique
+  updatedAt    DateTime @updatedAt
+
+  consumer        Consumer?
+  factory         Factory?
+  merchant        Merchant?
+  representative  Representative?
+  serviceProvider ServiceProvider?
+
+  roles               UserRole[]
+  passwordResetTokens PasswordResetToken[]
+
+  // Orders (buyer)
+  orders Order[]
+
+  // Social (conveniência)
+  socialPosts    SocialPost[]
+  socialLikes    SocialLike[]
+  socialComments SocialComment[]
+
+  // Points
+  pointsWallet PointsWallet?
 }
 
 model PasswordResetToken {
-  id        String   @id @default(uuid())
+  id        String    @id @default(uuid())
   userId    String
   tokenHash String
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime @default(now())
+  createdAt DateTime  @default(now())
 
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([expiresAt])
@@ -523,19 +566,17 @@ model Merchant {
   document  String
   status    MerchantStatus @default(ACTIVE)
 
-  // ✅ NOVO
-  handle    String?        @unique  // ex: "store5" (sem @ no banco)
+  handle   String? @unique // ex: "store5" (sem @ no banco)
+  logoUrl  String?
+  coverUrl String?
 
-  logoUrl   String?
-  coverUrl  String?
-
-  createdAt DateTime       @default(now())
+  createdAt DateTime @default(now())
   cepPrefix String?
   city      String?
-  user      User           @relation(fields: [userId], references: [id])
-  products  Product[]
-}
 
+  user     User      @relation(fields: [userId], references: [id])
+  products Product[]
+}
 
 model Product {
   id          String   @id @default(uuid())
@@ -545,9 +586,12 @@ model Product {
   priceCents  Int
   active      Boolean  @default(true)
   images      Json?
+  meta        Json?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
-  merchant    Merchant @relation(fields: [merchantId], references: [id])
+
+  merchant    Merchant     @relation(fields: [merchantId], references: [id])
+  socialPosts SocialPost[]
 
   @@index([merchantId])
   @@index([active])
@@ -566,10 +610,10 @@ model ServiceProvider {
   cep          String?
   document     String?
   documentType DocumentType?
-  user         User                  @relation(fields: [userId], references: [id])
+  user         User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   transporter  Transporter?
 
-  specialties  String[]              @default([])
+  specialties String[] @default([])
 }
 
 model Consumer {
@@ -579,7 +623,7 @@ model Consumer {
   cepPrefix String?
   status    ConsumerStatus @default(ACTIVE)
   createdAt DateTime       @default(now())
-  user      User           @relation(fields: [userId], references: [id])
+  user      User           @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Representative {
@@ -590,7 +634,7 @@ model Representative {
   status     RepresentativeStatus @default(ACTIVE)
   createdAt  DateTime             @default(now())
   updatedAt  DateTime             @updatedAt
-  user       User                 @relation(fields: [userId], references: [id])
+  user       User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 model Factory {
@@ -604,7 +648,7 @@ model Factory {
   status    FactoryStatus @default(ACTIVE)
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
-  user      User          @relation(fields: [userId], references: [id])
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
 enum OrderEventType {
@@ -677,6 +721,11 @@ enum LogisticsRating {
 enum SocialMediaType {
   IMAGE
   VIDEO
+}
+
+enum MediaOrigin {
+  UPLOAD
+  EXTERNAL
 }
 
 enum SocialPostStatus {

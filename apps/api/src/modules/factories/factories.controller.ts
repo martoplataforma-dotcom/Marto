@@ -17,20 +17,109 @@ type UpsertFactoryBody = {
   state?: string | null;
 };
 
-@Controller('factories/me')
-@UseGuards(JwtAuthGuard)
+@Controller('factories')
 export class FactoriesController {
-  constructor(private readonly service: FactoriesService) {}
+  constructor(private readonly factoriesService: FactoriesService) {}
 
-  @Get()
+  // ✅ GET /api/factories/me
+  @UseGuards(JwtAuthGuard)
+  @Get('me')
   async me(@Req() req: Request) {
     const userId = getUserId(req);
-    return this.service.getMe(userId);
+    return this.factoriesService.getMe(userId);
   }
 
-  @Put()
+  // ✅ PUT /api/factories/me
+  @UseGuards(JwtAuthGuard)
+  @Put('me')
   async upsert(@Req() req: Request, @Body() body: UpsertFactoryBody) {
     const userId = getUserId(req);
-    return this.service.upsertMe(userId, body);
+    return this.factoriesService.upsertMe(userId, body);
+  }
+
+  // ✅ GET /api/factories/me/overview/summary
+  @UseGuards(JwtAuthGuard)
+  @Get('me/overview/summary')
+  overviewSummary() {
+    // aqui no futuro: buscar dados reais por factoryId
+    // por enquanto: mock consistente pro frontend
+    return {
+      ok: true,
+      kpis: {
+        topSellers: {
+          value: 'Top 2',
+          hint: 'Mesa Lua • Cadeira Atlas',
+          delta: '+12%',
+        },
+        mostProblems: {
+          value: 'Alta',
+          hint: 'Rachadura no tampo (lote 24A)',
+          delta: '+3 pts',
+        },
+        reworkRate: {
+          value: '2,8%',
+          hint: 'Retrabalho por instalação',
+          delta: '-0,6%',
+        },
+        satisfaction: {
+          value: '4,6/5',
+          hint: 'Pós-serviço (compra → montagem)',
+          delta: '+0,2',
+        },
+      },
+      signals: [
+        {
+          kind: 'QUALIDADE',
+          title: 'Aumento de reclamações: rachadura no tampo (lote 24A)',
+          meta: 'Impacto: retrabalho • risco: reputação',
+          primaryHref: '/dash/factory/quality',
+          primaryLabel: 'Abrir qualidade',
+          secondaryHref: '/dash/factory/catalog',
+          secondaryLabel: 'Ver modelos',
+        },
+        {
+          kind: 'CAMPO',
+          title: 'Instalação com atraso em SP — falta de peça em 3 ordens',
+          meta: 'Impacto: SLA • ação: revisar embalagem / estoque',
+          primaryHref: '/dash/factory/field',
+          primaryLabel: 'Abrir campo',
+          secondaryHref: '/dash/factory/orders',
+          secondaryLabel: 'Ver pedidos',
+        },
+        {
+          kind: 'CANAL',
+          title: 'Demanda subiu no RJ — oportunidade de representante local',
+          meta: 'Impacto: vendas • ação: abrir região',
+          primaryHref: '/dash/factory/regions',
+          primaryLabel: 'Abrir regiões',
+          secondaryHref: '/dash/factory/representatives',
+          secondaryLabel: 'Ver reps',
+        },
+      ],
+    };
+  }
+
+  // ✅ GET /api/factories/me/orders/summary
+  @UseGuards(JwtAuthGuard)
+  @Get('me/orders/summary')
+  async meOrdersSummary(@Req() req: Request) {
+    const userId = getUserId(req);
+    return this.factoriesService.ordersSummaryForMe(String(userId));
+  }
+
+  // ✅ GET /api/factories/me/catalog/summary
+  @UseGuards(JwtAuthGuard)
+  @Get('me/catalog/summary')
+  async meCatalogSummary(@Req() req: any) {
+    const userId = req.user?.sub ?? req.user?.id;
+    return this.factoriesService.catalogSummaryForMe(String(userId));
+  }
+
+  // ✅ GET /api/factories/me/top-products
+  @UseGuards(JwtAuthGuard)
+  @Get('me/top-products')
+  async meTopProducts(@Req() req: any) {
+    const userId = req.user?.sub ?? req.user?.id;
+    return this.factoriesService.topProductsForMe(String(userId));
   }
 }

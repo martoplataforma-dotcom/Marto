@@ -1,10 +1,53 @@
+// apps/api/src/modules/marto-fund/marto-fund.service.ts
 import { BadRequestException, Injectable } from '@nestjs/common';
-import type { FundEntryType, PointsTxType } from '@prisma/client';
+import { Prisma, type FundEntryType, type PointsTxType } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
 @Injectable()
 export class MartoFundService {
   constructor(private readonly prisma: PrismaService) {}
+
+  // -------------------------
+  // Helpers (tx-safe)
+  // -------------------------
+
+  private async getOrCreateFundId(
+    tx: Prisma.TransactionClient,
+  ): Promise<string> {
+    const existing = await tx.martoFund.findFirst({ select: { id: true } });
+    if (existing?.id) return existing.id;
+
+    const created = await tx.martoFund.create({
+      data: { balance: new Prisma.Decimal(0) },
+      select: { id: true },
+    });
+    return created.id;
+  }
+
+  private async getOrCreatePointsWallet(
+    tx: Prisma.TransactionClient,
+    userId: string,
+  ): Promise<{ id: string; balance: number }> {
+    const existing = await tx.pointsWallet.findUnique({
+      where: { userId },
+      select: { id: true, balance: true },
+    });
+
+    if (existing?.id) {
+      return { id: existing.id, balance: Number(existing.balance ?? 0) };
+    }
+
+    const created = await tx.pointsWallet.create({
+      data: { userId, balance: 0 },
+      select: { id: true, balance: true },
+    });
+
+    return { id: created.id, balance: Number(created.balance ?? 0) };
+  }
+
+  // -------------------------
+  // Read-only
+  // -------------------------
 
   /**
    * 🔹 Retorna o valor atual de 1 ponto
@@ -21,11 +64,16 @@ export class MartoFundService {
     const totalPoints = totalPointsAgg._sum.balance ?? 0;
     if (totalPoints === 0) return 0;
 
-    return Number(fund.balance) / totalPoints;
+    return Number(fund.balance) / Number(totalPoints);
   }
+
+  // -------------------------
+  // Fund entries
+  // -------------------------
 
   /**
    * 🔹 Registra entrada no Fundo Marto
+   * ✅ Sempre inclui fundId na MartoFundEntry
    */
   async addFundEntry(
     amount: number,
@@ -34,48 +82,38 @@ export class MartoFundService {
     refType?: string,
     refId?: string,
   ) {
+    if (!Number.isFinite(amount) || amount === 0) {
+      throw new BadRequestException('amount deve ser número e != 0');
+    }
+
     await this.prisma.$transaction(async (tx) => {
+      const fundId = await this.getOrCreateFundId(tx);
+
       await tx.martoFundEntry.create({
         data: {
-          amount, // Prisma aceita number aqui e converte pro Decimal (Postgres numeric)
+          fundId,
           type,
+          amount: new Prisma.Decimal(amount),
           reason,
           refType,
           refId,
         },
       });
 
-      // garante que existe 1 registro de fundo (singleton)
-      const existing = await tx.martoFund.findFirst({
-        select: { id: true },
+      await tx.martoFund.update({
+        where: { id: fundId },
+        data: { balance: { increment: new Prisma.Decimal(amount) } },
       });
-
-      if (!existing) {
-        await tx.martoFund.create({
-          data: { balance: amount },
-        });
-      } else {
-        await tx.martoFund.update({
-          where: { id: existing.id },
-          data: { balance: { increment: amount } },
-        });
-      }
     });
   }
 
-  /**
-   * 🔹 Garante que o usuário tem carteira de pontos
-   */
-  ensureWallet(userId: string) {
-    return this.prisma.pointsWallet.upsert({
-      where: { userId },
-      update: {},
-      create: { userId },
-    });
-  }
+  // -------------------------
+  // Points
+  // -------------------------
 
   /**
    * 🔹 Emite pontos (ganho)
+   * ✅ PointsTransaction agora usa walletId (não userId)
    */
   async earnPoints(
     userId: string,
@@ -92,30 +130,30 @@ export class MartoFundService {
       throw new BadRequestException('amount deve ser inteiro > 0');
     }
 
-    await this.ensureWallet(userId);
+    await this.prisma.$transaction(async (tx) => {
+      const wallet = await this.getOrCreatePointsWallet(tx, userId);
 
-    await this.prisma.$transaction([
-      this.prisma.pointsTransaction.create({
+      await tx.pointsTransaction.create({
         data: {
-          userId,
+          walletId: wallet.id,
           amount,
           type,
           description,
           refType,
           refId,
         },
-      }),
-      this.prisma.pointsWallet.update({
-        where: { userId },
-        data: {
-          balance: { increment: amount },
-        },
-      }),
-    ]);
+      });
+
+      await tx.pointsWallet.update({
+        where: { id: wallet.id },
+        data: { balance: { increment: amount } },
+      });
+    });
   }
 
   /**
    * 🔹 Gasta pontos (cashback)
+   * ✅ PointsTransaction agora usa walletId (não userId)
    */
   async spendPoints(
     userId: string,
@@ -131,36 +169,28 @@ export class MartoFundService {
       throw new BadRequestException('amount deve ser inteiro > 0');
     }
 
-    const wallet = await this.prisma.pointsWallet.findUnique({
-      where: { userId },
-      select: { balance: true },
-    });
+    await this.prisma.$transaction(async (tx) => {
+      const wallet = await this.getOrCreatePointsWallet(tx, userId);
 
-    if (!wallet) {
-      throw new BadRequestException('wallet não existe para este userId');
-    }
+      if (wallet.balance < amount) {
+        throw new BadRequestException('saldo de pontos insuficiente');
+      }
 
-    if (wallet.balance < amount) {
-      throw new BadRequestException('saldo de pontos insuficiente');
-    }
-
-    await this.prisma.$transaction([
-      this.prisma.pointsTransaction.create({
+      await tx.pointsTransaction.create({
         data: {
-          userId,
+          walletId: wallet.id,
           amount: -amount,
-          type: 'SPEND_CASHBACK' as PointsTxType, // ou PointsTxType.SPEND_CASHBACK se estiver disponível no runtime
+          type: 'SPEND_CASHBACK' as PointsTxType,
           description,
           refType,
           refId,
         },
-      }),
-      this.prisma.pointsWallet.update({
-        where: { userId },
-        data: {
-          balance: { decrement: amount },
-        },
-      }),
-    ]);
+      });
+
+      await tx.pointsWallet.update({
+        where: { id: wallet.id },
+        data: { balance: { decrement: amount } },
+      });
+    });
   }
 }

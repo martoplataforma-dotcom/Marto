@@ -6,19 +6,28 @@ import Image, { type ImageLoader } from 'next/image';
 import { useEffect, useMemo, useState } from 'react';
 import { fetchJSON, type ApiError } from '../../src/lib/api';
 
+import { ConsumerSections } from './_sections/consumer';
+import { MerchantSections } from './_sections/merchant';
+import { ProviderSections } from './_sections/provider';
+import { FactorySections } from './_sections/factory';
+import { RepresentativeSections } from './_sections/representative';
+import { FallbackSections } from './_sections/fallback';
+
 function getToken() {
   if (typeof window === 'undefined') return null;
   return localStorage.getItem('marto_access');
 }
 
+type Home =
+  | 'consumer'
+  | 'merchant'
+  | 'service_provider'
+  | 'representative'
+  | 'factory';
+
 type MeResponse = {
   email?: string;
-  home?:
-    | 'consumer'
-    | 'merchant'
-    | 'service_provider'
-    | 'representative'
-    | 'factory';
+  home?: Home;
   user?: {
     id?: string;
     name?: string | null;
@@ -35,17 +44,6 @@ type MeResponse = {
   };
 };
 
-type UpdateProfileResponse = {
-  ok: boolean;
-  profile: {
-    handle: string | null;
-    displayName: string | null;
-    bio: string | null;
-    avatarUrl: string | null;
-    updatedAt: string;
-  };
-};
-
 function displayNameFromEmail(email?: string) {
   const base = String(email ?? '').split('@')[0] || 'Usuário';
   return base
@@ -54,7 +52,7 @@ function displayNameFromEmail(email?: string) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function dashFromHome(home?: string) {
+function dashFromHome(home?: Home | string) {
   if (home === 'factory') return '/dash/factory';
   if (home === 'merchant') return '/dash/merchant';
   if (home === 'service_provider') return '/dash/provider/services';
@@ -70,18 +68,6 @@ function sanitizeHandle(v: string) {
     .slice(0, 24);
 }
 
-function isValidHttpUrl(url: string) {
-  const v = String(url ?? '').trim();
-  if (!v) return true; // vazio é ok
-  try {
-    const u = new URL(v);
-    return u.protocol === 'http:' || u.protocol === 'https:';
-  } catch {
-    return false;
-  }
-}
-
-// ✅ helper: normaliza avatarUrl pra evitar "null", "undefined" e imagem quebrada
 function normalizeAvatarUrl(v: unknown) {
   const s = String(v ?? '').trim();
   if (!s) return '';
@@ -89,10 +75,6 @@ function normalizeAvatarUrl(v: unknown) {
   return s;
 }
 
-/**
- * ✅ "Image direto" (sem otimização)
- * loader + unoptimized = o next/image não tenta otimizar, só renderiza a URL direto (igual <img>)
- */
 const passthroughLoader: ImageLoader = ({ src }) => src;
 
 function MartoImage({
@@ -119,6 +101,14 @@ function MartoImage({
   );
 }
 
+function Pill({ children }: { children: React.ReactNode }) {
+  return (
+    <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-semibold text-white/80">
+      {children}
+    </span>
+  );
+}
+
 function StatCard({
   label,
   value,
@@ -139,91 +129,109 @@ function StatCard({
   );
 }
 
-function SectionCard({
-  title,
-  subtitle,
-  right,
-  children,
-}: {
-  title: string;
-  subtitle?: string;
-  right?: React.ReactNode;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-      <div className="flex items-start justify-between gap-4">
-        <div>
-          <h2 className="text-base font-semibold text-white/90">{title}</h2>
-          {subtitle ? (
-            <p className="mt-1 text-sm text-white/65">{subtitle}</p>
-          ) : null}
-        </div>
-        {right ? <div className="shrink-0">{right}</div> : null}
-      </div>
-      <div className="mt-5">{children}</div>
-    </section>
-  );
+function homeLabel(home?: Home) {
+  return home === 'factory'
+    ? 'Fabricante'
+    : home === 'merchant'
+      ? 'Negócio'
+      : home === 'service_provider'
+        ? 'Prestador'
+        : home === 'representative'
+          ? 'Representante'
+          : 'Consumidor';
 }
 
-function Pill({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-semibold text-white/80">
-      {children}
-    </span>
-  );
+function primaryActionByHome(home?: Home) {
+  if (home === 'consumer') {
+    return {
+      href: '/dash/consumer/orders',
+      title: 'Minhas compras',
+      desc: 'Seu rastro real: pedidos, entregas, devoluções.',
+    };
+  }
+
+  if (home === 'factory') {
+    return {
+      href: '/dash/factory/overview',
+      title: 'Visão geral',
+      desc: 'Score, sinais e pendências operacionais.',
+    };
+  }
+
+  if (home === 'merchant') {
+    return {
+      href: '/dash/merchant',
+      title: 'Pedidos (lojista)',
+      desc: 'Ações e fluxo de pedidos do seu negócio.',
+    };
+  }
+
+  if (home === 'service_provider') {
+    return {
+      href: '/dash/provider/services',
+      title: 'Meus serviços',
+      desc: 'Agenda, execução e reputação por entregas reais.',
+    };
+  }
+
+  if (home === 'representative') {
+    return {
+      href: '/dash/representative',
+      title: 'Meu território',
+      desc: 'Carteira, oportunidades e resultado por execução.',
+    };
+  }
+
+  return {
+    href: dashFromHome(home),
+    title: 'Meu painel',
+    desc: 'Continue seu fluxo no Marto.',
+  };
 }
 
-function TimelineItem({
-  title,
-  meta,
-  desc,
-}: {
-  title: string;
-  meta: string;
-  desc: string;
-}) {
-  return (
-    <div className="rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-sm font-semibold text-white/90">{title}</div>
-        <div className="text-xs text-white/60">{meta}</div>
-      </div>
-      <div className="mt-1 text-sm text-white/70">{desc}</div>
-    </div>
-  );
-}
+type SectionProps = {
+  me: MeResponse;
+  primaryHref: string;
+  reviewPendenciesCount: number | null;
+};
 
-// ✅ Avatar Marto (placeholder) — usa o SVG do /public (mesmo do login)
-function MartoAvatarPlaceholder({ alt }: { alt?: string }) {
-  return (
-    <MartoImage
-      src="/marto-m.svg"
-      alt={alt ?? 'Marto'}
-      size={64}
-      className="h-full w-full object-cover"
-    />
-  );
+function SectionsByHome({
+  me,
+  primaryHref,
+  reviewPendenciesCount,
+}: SectionProps) {
+  const home = me.home;
+
+  // ✅ registry central (sem ifs espalhados)
+  switch (home) {
+    case 'consumer':
+      return (
+        <ConsumerSections
+          primaryHref={primaryHref}
+          showReviewCta={Boolean(reviewPendenciesCount && reviewPendenciesCount > 0)}
+          reviewPendenciesCount={reviewPendenciesCount}
+        />
+      );
+    case 'merchant':
+      return <MerchantSections me={me} primaryHref={primaryHref} />;
+    case 'service_provider':
+      return <ProviderSections me={me} primaryHref={primaryHref} />;
+    case 'factory':
+      return <FactorySections me={me} primaryHref={primaryHref} />;
+    case 'representative':
+      return <RepresentativeSections me={me} primaryHref={primaryHref} />;
+    default:
+      return <FallbackSections me={me} primaryHref={primaryHref} />;
+  }
 }
 
 export default function MyProfilePage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
   const [me, setMe] = useState<MeResponse | null>(null);
-
-  // Perfil público (backend /me/profile)
-  const [displayName, setDisplayName] = useState('');
-  const [bio, setBio] = useState('');
-  const [avatarUrl, setAvatarUrl] = useState('');
-
-  // ✅ @handle
-  const [handle, setHandle] = useState('');
-  const [savingHandle, setSavingHandle] = useState(false);
-
-  const [savingProfile, setSavingProfile] = useState(false);
-
-  // ✅ Upload/remover da foto
-  const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [reviewPendenciesCount, setReviewPendenciesCount] = useState<
+    number | null
+  >(null);
 
   useEffect(() => {
     (async () => {
@@ -243,27 +251,76 @@ export default function MyProfilePage() {
 
         setMe(data);
 
-        const backendDisplayName = String(
-          data?.profile?.displayName ?? '',
-        ).trim();
-        const backendBio = String(data?.profile?.bio ?? '').trim();
-        const backendAvatarUrl = normalizeAvatarUrl(data?.profile?.avatarUrl);
-        const backendHandle = String(data?.profile?.handle ?? '').trim();
+        if (data?.home === 'consumer') {
+          // MVP: reaproveita a mesma lógica do dash/consumer sem “operar” aqui
+          try {
+            const ordersRes = await fetchJSON<
+              unknown[] | { orders?: unknown[]; items?: unknown[] }
+            >('/orders/me', {
+              method: 'GET',
+              headers: { Authorization: `Bearer ${token}` },
+            });
 
-        setHandle(backendHandle);
+            const list = Array.isArray(ordersRes)
+              ? ordersRes
+              : Array.isArray(ordersRes.orders)
+                ? ordersRes.orders
+                : Array.isArray(ordersRes.items)
+                  ? ordersRes.items
+                  : [];
 
-        const email = String(data?.email ?? '').trim();
-        const fallbackName = displayNameFromEmail(email);
+            const getOrderId = (o: unknown): string | null => {
+              if (!o || typeof o !== 'object') return null;
+              const r = o as Record<string, unknown>;
+              const id = r.id;
+              return typeof id === 'string' && id.trim() ? id.trim() : null;
+            };
 
-        setDisplayName(backendDisplayName || fallbackName);
+            const shipmentResults = await Promise.all(
+              list.map(async (o): Promise<unknown | null> => {
+                const orderId = getOrderId(o);
+                if (!orderId) return null;
 
-        const storedBio = localStorage.getItem('marto_bio') ?? '';
-        setBio(backendBio || storedBio);
+                try {
+                  return await fetchJSON<unknown>(
+                    `/logistics/shipments/by-order/${orderId}`,
+                    {
+                      method: 'GET',
+                      headers: { Authorization: `Bearer ${token}` },
+                    },
+                  );
+                } catch {
+                  return null;
+                }
+              }),
+            );
 
-        setAvatarUrl(backendAvatarUrl);
+            const shipments = shipmentResults
+              .map((r) => {
+                if (!r || typeof r !== 'object') return null;
+                const rr = r as Record<string, unknown>;
+                return rr.shipment ? rr.shipment : r;
+              })
+              .filter(Boolean) as unknown[];
+
+            const pending = shipments.filter((s) => {
+              if (!s || typeof s !== 'object') return false;
+              const sr = s as Record<string, unknown>;
+              const st = String(sr.status ?? '').toUpperCase();
+              if (st !== 'DELIVERED') return false;
+              return !sr.review && !sr.reviewedAt;
+            }).length;
+
+            setReviewPendenciesCount(pending);
+          } catch {
+            setReviewPendenciesCount(null);
+          }
+        } else {
+          setReviewPendenciesCount(null);
+        }
       } catch (e: unknown) {
         const err = e as ApiError;
-        setMsg(err?.message ?? 'Não foi possível carregar seu perfil.');
+        setMsg(err?.message ?? 'Não foi possível carregar sua conta.');
       } finally {
         setLoading(false);
       }
@@ -271,42 +328,47 @@ export default function MyProfilePage() {
   }, []);
 
   const email = String(me?.email ?? '').trim();
-  const name = displayName.trim() || displayNameFromEmail(email);
+  const backendDisplayName = String(me?.profile?.displayName ?? '').trim();
+  const name = backendDisplayName || displayNameFromEmail(email);
 
-  // ✅ avatar normalizado (evita src="null"/"undefined")
-  const avatar = normalizeAvatarUrl(avatarUrl);
+  const bio = String(me?.profile?.bio ?? '').trim();
+  const avatar = normalizeAvatarUrl(me?.profile?.avatarUrl);
 
-  const badge =
-    me?.home === 'factory'
-      ? 'Fabricante'
-      : me?.home === 'merchant'
-        ? 'Negócio'
-        : me?.home === 'service_provider'
-          ? 'Prestador'
-          : me?.home === 'representative'
-            ? 'Representante'
-            : 'Consumidor';
+  const badge = homeLabel(me?.home);
+  const cycleBadge =
+    me?.home === 'consumer'
+      ? reviewPendenciesCount === null
+        ? { text: 'Ciclo: checando…', tone: 'neutral' as const }
+        : reviewPendenciesCount > 0
+          ? {
+              text: `Ciclo: ${reviewPendenciesCount} pendência(s)`,
+              tone: 'emerald' as const,
+            }
+          : { text: 'Ciclo: em dia', tone: 'neutral' as const }
+      : null;
 
-  const effectiveHandle = sanitizeHandle(handle);
+  const effectiveHandle = sanitizeHandle(String(me?.profile?.handle ?? ''));
   const hasPublicProfile = Boolean(effectiveHandle);
+  const needsPublicProfile = !hasPublicProfile;
+
+  const primaryAction = useMemo(
+    () => primaryActionByHome(me?.home),
+    [me?.home],
+  );
 
   const stats = useMemo(() => {
+    // MVP: núcleo “economia” é preview até conectar pontos/cashback de verdade
     return {
       level: 'Bronze',
-      repLabel: 'Prévia de reputação',
-      repValue: '—',
-      repCount: 0,
       points: '0',
       missions: '0/0',
       cashback: 'R$ 0,00',
-      posts: '0',
-      reviews: '0',
-      followers: '0',
-      following: '0',
+      repLabel: 'Reputação (prévia)',
+      repValue: '—',
+      repCount: 0,
     };
   }, []);
 
-  // ✅ Convite: copia um link com ref=handle (ou fallback pelo userId)
   async function onInviteFriends() {
     try {
       const base =
@@ -315,159 +377,39 @@ export default function MyProfilePage() {
           : 'http://localhost:3000';
 
       const code =
-        effectiveHandle || (me?.user?.id ? `u_${me.user.id.slice(0, 6)}` : 'marto');
+        effectiveHandle ||
+        (me?.user?.id ? `u_${me.user.id.slice(0, 6)}` : 'marto');
+
       const link = `${base}/signup?ref=${encodeURIComponent(code)}`;
 
       await navigator.clipboard.writeText(link);
       setMsg('Link de convite copiado! Envie no WhatsApp/Instagram.');
     } catch {
-      setMsg(
-        'Não consegui copiar automaticamente. Seu navegador bloqueou a cópia.',
-      );
+      setMsg('Não consegui copiar automaticamente. Seu navegador bloqueou a cópia.');
     }
   }
 
-  async function uploadPhoto(file: File) {
-    const token = getToken();
-    if (!token) {
-      setMsg('Você precisa entrar novamente.');
-      return;
-    }
-
-    try {
-      setUploadingPhoto(true);
-      setMsg('');
-
-      const form = new FormData();
-      form.append('file', file);
-
-      const res = await fetch('/api/me/avatar', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      });
-
-      const data = (await res.json()) as {
-        ok?: boolean;
-        avatarUrl?: string;
-        message?: string;
-      };
-
-      if (!res.ok || !data?.avatarUrl) {
-        throw new Error(data?.message || 'Não foi possível enviar a foto.');
-      }
-
-      const next = normalizeAvatarUrl(data.avatarUrl);
-      setAvatarUrl(next);
-      setMsg('Foto do perfil atualizada.');
-    } catch (e: unknown) {
-      const err = e as Error;
-      setMsg(err?.message ?? 'Não foi possível enviar a foto.');
-    } finally {
-      setUploadingPhoto(false);
-    }
-  }
-
-  async function removePhotoServer() {
-    const token = getToken();
-    if (!token) {
-      setMsg('Você precisa entrar novamente.');
-      return;
-    }
-
-    const ok = window.confirm('Remover foto do perfil?');
-    if (!ok) return;
-
-    try {
-      setUploadingPhoto(true);
-      setMsg('');
-
-      const res = await fetch('/api/me/avatar', {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      const data = (await res.json()) as { ok?: boolean; message?: string };
-
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.message || 'Não foi possível remover a foto.');
-      }
-
-      setAvatarUrl('');
-      setMsg('Foto removida.');
-    } catch (e: unknown) {
-      const err = e as Error;
-      setMsg(err?.message ?? 'Não foi possível remover a foto.');
-    } finally {
-      setUploadingPhoto(false);
-    }
-  }
-
-  async function onSaveProfile() {
-    try {
-      setSavingProfile(true);
-      setSavingHandle(true);
-      setMsg('');
-
-      const token = getToken();
-      if (!token) {
-        setMsg('Você precisa entrar novamente.');
-        return;
-      }
-
-      if (!isValidHttpUrl(avatar)) {
-        setMsg('Foto do perfil: use um link válido (http/https).');
-        return;
-      }
-
-      const res = await fetchJSON<UpdateProfileResponse>('/me/profile', {
-        method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          handle: sanitizeHandle(handle),
-          displayName: displayName.trim(),
-          bio: bio.trim(),
-          avatarUrl: avatar,
-        }),
-      });
-
-      setMsg('Perfil público salvo.');
-
-      setHandle(res.profile.handle ?? '');
-      setDisplayName(res.profile.displayName ?? '');
-      setBio(res.profile.bio ?? '');
-
-      const next = normalizeAvatarUrl(res.profile.avatarUrl);
-      setAvatarUrl(next);
-
-      localStorage.setItem('marto_bio', res.profile.bio ?? '');
-    } catch (e: unknown) {
-      const err = e as ApiError;
-      setMsg(err?.message ?? 'Não foi possível salvar o perfil.');
-    } finally {
-      setSavingProfile(false);
-      setSavingHandle(false);
-    }
-  }
+  const publicHref = hasPublicProfile
+    ? `/u/${encodeURIComponent(effectiveHandle)}`
+    : '/profile';
 
   return (
-    <main className="relative min-h-screen bg-neutral-950 text-white">
-      {/* fundo Marto */}
-      <div className="pointer-events-none fixed inset-0">
-        <div className="absolute inset-0 bg-[radial-gradient(70%_60%_at_50%_0%,rgba(255,255,255,0.12),transparent_60%)]" />
-        <div className="absolute inset-0 bg-[radial-gradient(60%_50%_at_0%_55%,rgba(255,255,255,0.08),transparent_55%)]" />
-        <div className="absolute inset-0 bg-[radial-gradient(60%_50%_at_100%_60%,rgba(255,255,255,0.08),transparent_55%)]" />
+    <main className="min-h-screen bg-neutral-950 text-white">
+      {/* Fundo Marto (padrão) */}
+      <div className="pointer-events-none fixed inset-0 -z-10 overflow-hidden">
+        <div className="absolute inset-0 bg-neutral-950" />
+        <div className="absolute -top-48 left-1/2 h-[38rem] w-[70rem] -translate-x-1/2 rounded-full bg-white/10 blur-3xl" />
+        <div className="absolute top-[18rem] -left-40 h-[26rem] w-[26rem] rounded-full bg-white/5 blur-3xl" />
+        <div className="absolute top-[22rem] -right-40 h-[26rem] w-[26rem] rounded-full bg-white/5 blur-3xl" />
+        <div className="absolute inset-0 opacity-[0.08] [background-image:linear-gradient(to_right,rgba(255,255,255,0.18)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.18)_1px,transparent_1px)] [background-size:64px_64px]" />
+        <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_top,rgba(255,255,255,0.10),transparent_55%)]" />
       </div>
 
       <div className="mx-auto max-w-6xl p-6">
-        {/* Header / Identidade */}
+        {/* Núcleo fixo (Identidade + Presença + Ações) */}
         <div className="rounded-[2rem] border border-white/15 bg-neutral-950/75 p-7 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
           <div className="flex flex-col gap-6 sm:flex-row sm:items-start sm:justify-between">
             <div className="flex items-start gap-4">
-              {/* Avatar (círculo) */}
               <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-full bg-black/60 ring-1 ring-white/15">
                 {avatar ? (
                   <MartoImage
@@ -477,16 +419,30 @@ export default function MyProfilePage() {
                     className="h-full w-full object-cover"
                   />
                 ) : (
-                  <MartoAvatarPlaceholder alt="Marto" />
+                  <MartoImage
+                    src="/marto-m.svg"
+                    alt="Marto"
+                    size={64}
+                    className="h-full w-full object-cover"
+                  />
                 )}
               </div>
 
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <Pill>{badge}</Pill>
-                  <Pill>
-                    Nível <span className="text-white/60">•</span> {stats.level}
-                  </Pill>
+                  {cycleBadge ? (
+                    <span
+                      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${
+                        cycleBadge.tone === 'emerald'
+                          ? 'border-emerald-500/25 bg-emerald-500/10 text-emerald-200'
+                          : 'border-white/15 bg-white/10 text-white/80'
+                      }`}
+                    >
+                      {cycleBadge.text}
+                    </span>
+                  ) : null}
+                  <Pill>Social por consequência</Pill>
                   <Pill>Porque reputação importa</Pill>
                 </div>
 
@@ -497,16 +453,17 @@ export default function MyProfilePage() {
                 <div className="mt-1 text-sm text-white/65">{email}</div>
 
                 <div className="mt-4 text-sm text-white/80">
-                  {bio?.trim()
+                  {bio
                     ? bio
                     : 'Adicione uma bio curta. No Marto, sua história é feita de ações reais.'}
                 </div>
 
                 {!hasPublicProfile ? (
                   <div className="mt-4 rounded-2xl border border-white/15 bg-black/40 px-4 py-3 text-sm text-white/80 ring-1 ring-white/10">
-                    <span className="font-semibold">Ative seu perfil público:</span>{' '}
-                    crie um <span className="font-semibold">@handle</span>. Ele é
-                    seu link em <span className="font-semibold">/u/seu-handle</span>.
+                    <span className="font-semibold">Perfil público desativado:</span>{' '}
+                    crie seu <span className="font-semibold">@handle</span> para liberar
+                    seu link único <span className="font-semibold">/u/seu-handle</span>.
+                    Sem feed — só histórico real.
                   </div>
                 ) : (
                   <div className="mt-4 text-sm text-white/70">
@@ -519,36 +476,41 @@ export default function MyProfilePage() {
               </div>
             </div>
 
-            {/* Ações principais */}
             <div className="flex flex-wrap gap-2">
-              <Link
-                href={dashFromHome(me?.home)}
-                className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90"
-              >
-                Voltar ao painel
-              </Link>
+              {needsPublicProfile ? (
+                <Link
+                  href="/profile#pub"
+                  className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90"
+                  title="Ative seu @handle para criar seu link público"
+                >
+                  Ativar perfil público
+                </Link>
+              ) : (
+                <Link
+                  href={dashFromHome(me?.home)}
+                  className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90"
+                >
+                  Ir para meu painel
+                </Link>
+              )}
 
-              <Link
-                href={
-                  hasPublicProfile
-                    ? `/u/${encodeURIComponent(effectiveHandle)}`
-                    : '/me'
-                }
-                aria-disabled={!hasPublicProfile}
-                className={[
-                  'rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15',
-                  !hasPublicProfile ? 'pointer-events-none opacity-50' : '',
-                ].join(' ')}
-                title={
-                  hasPublicProfile
-                    ? 'Abrir seu perfil público'
-                    : 'Crie um @handle para ativar'
-                }
-              >
-                Ver perfil público
-              </Link>
+              {needsPublicProfile ? (
+                <Link
+                  href={dashFromHome(me?.home)}
+                  className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
+                >
+                  Ir para meu painel
+                </Link>
+              ) : (
+                <Link
+                  href={publicHref}
+                  className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
+                  title="Abrir seu perfil público"
+                >
+                  Ver perfil público
+                </Link>
+              )}
 
-              {/* ✅ Configurações agora aponta pra /settings */}
               <Link
                 href="/profile"
                 className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
@@ -556,26 +518,12 @@ export default function MyProfilePage() {
                 Configurações
               </Link>
 
-              {/* ✅ NOVO: Notificações */}
               <Link
                 href="/notifications"
                 className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
               >
                 Notificações
               </Link>
-
-              {/* ✅ NOVOS BOTÕES (sem rota nova / sem 404) */}
-              <button
-                type="button"
-                onClick={() =>
-                  setMsg(
-                    'Criar post: em breve (vamos ligar no fluxo de compra real).',
-                  )
-                }
-                className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
-              >
-                Criar post
-              </button>
 
               <button
                 type="button"
@@ -588,7 +536,6 @@ export default function MyProfilePage() {
               <button
                 onClick={() => {
                   localStorage.removeItem('marto_access');
-                  localStorage.removeItem('marto_bio');
                   window.location.href = '/login';
                 }}
                 className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
@@ -605,321 +552,72 @@ export default function MyProfilePage() {
           ) : null}
         </div>
 
-        {/* Placar Marto */}
+        {/* Placar (núcleo economia) */}
         <div className="mt-6 grid gap-3 md:grid-cols-6">
           <div className="md:col-span-2">
-            <StatCard label="Pontos" value={stats.points} hint="Progresso real" />
+            <StatCard label="Pontos" value={stats.points} hint="Progresso real (preview)" />
           </div>
           <div className="md:col-span-2">
-            <StatCard
-              label="Missões"
-              value={stats.missions}
-              hint="Rumo ao próximo nível"
-            />
+            <StatCard label="Missões" value={stats.missions} hint="Rumo ao próximo nível" />
           </div>
           <div className="md:col-span-2">
-            <StatCard
-              label="Cashback"
-              value={stats.cashback}
-              hint="Liberado conforme regras"
-            />
-          </div>
-
-          <div className="md:col-span-2">
-            <StatCard
-              label="Posts"
-              value={stats.posts}
-              hint="Experiências registradas"
-            />
-          </div>
-          <div className="md:col-span-2">
-            <StatCard
-              label="Avaliações"
-              value={stats.reviews}
-              hint="Qualidade > volume"
-            />
-          </div>
-          <div className="md:col-span-2">
-            <StatCard
-              label="Seguidores"
-              value={`${stats.followers} / ${stats.following}`}
-              hint="Seguidores / Seguindo"
-            />
+            <StatCard label="Cashback" value={stats.cashback} hint="Conforme regras do Marto" />
           </div>
         </div>
 
-        {/* Ações rápidas */}
+        {/* Próximo passo (fixo) */}
         <div className="mt-6 grid gap-3 md:grid-cols-3">
           <Link
-            href="/dash/consumer"
+            href={dashFromHome(me?.home)}
             className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur hover:bg-white/10"
           >
             <div className="text-sm font-semibold text-white/90">Meu painel</div>
             <div className="mt-1 text-sm text-white/65">
-              Volte pro seu fluxo: pedidos, timeline, ações.
+              Operação do seu papel fica no /dash.
             </div>
           </Link>
 
           <Link
-            href="/dash/consumer/orders"
+            href={primaryAction.href}
             className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur hover:bg-white/10"
           >
             <div className="text-sm font-semibold text-white/90">
-              Minhas compras
+              {primaryAction.title}
             </div>
-            <div className="mt-1 text-sm text-white/65">
-              Seu rastro real: pedidos, entregas, devoluções.
-            </div>
+            <div className="mt-1 text-sm text-white/65">{primaryAction.desc}</div>
           </Link>
 
           <Link
             href="/catalog"
             className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur hover:bg-white/10"
           >
-            <div className="text-sm font-semibold text-white/90">
-              Explorar catálogo
-            </div>
+            <div className="text-sm font-semibold text-white/90">Explorar catálogo</div>
             <div className="mt-1 text-sm text-white/65">
-              Descubra produtos e crie sua próxima experiência.
+              Próxima experiência começa com ação real.
             </div>
           </Link>
         </div>
 
-        {/* Perfil público (edição) */}
-        <div className="mt-8 grid gap-6 md:grid-cols-3">
-          <div className="md:col-span-2">
-            <SectionCard
-              title="Perfil público"
-              subtitle="Essas informações aparecem no seu perfil público e no seu painel."
-              right={<Pill>MVP</Pill>}
-            >
-              <div className="grid gap-4">
-                {/* ✅ Foto do perfil (UPLOAD) */}
-                <div className="rounded-2xl border border-white/15 bg-black/35 p-4 ring-1 ring-white/10">
-                  <div>
-                    <div className="text-sm font-semibold text-white/85">
-                      Foto do perfil
-                    </div>
-                    <div className="mt-1 text-sm text-white/65">
-                      Agora com upload direto no Marto.
-                    </div>
-                  </div>
-
-                  <div className="mt-4 flex items-start gap-4">
-                    <div className="grid h-14 w-14 place-items-center overflow-hidden rounded-full bg-black/60 ring-1 ring-white/15">
-                      {avatar ? (
-                        <MartoImage
-                          src={avatar}
-                          alt="Foto do perfil (prévia)"
-                          size={56}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <MartoAvatarPlaceholder alt="Marto" />
-                      )}
-                    </div>
-
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <label className="inline-flex cursor-pointer items-center gap-2 rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90">
-                          {uploadingPhoto
-                            ? 'Enviando…'
-                            : avatar
-                              ? 'Trocar foto'
-                              : 'Enviar foto'}
-                          <input
-                            type="file"
-                            accept="image/*"
-                            className="hidden"
-                            disabled={uploadingPhoto}
-                            onChange={(e) => {
-                              const f = e.target.files?.[0];
-                              if (!f) return;
-                              void uploadPhoto(f);
-                              e.currentTarget.value = '';
-                            }}
-                          />
-                        </label>
-
-                        <button
-                          type="button"
-                          className={[
-                            'rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15',
-                            !avatar || uploadingPhoto
-                              ? 'pointer-events-none opacity-50'
-                              : '',
-                          ].join(' ')}
-                          onClick={() => void removePhotoServer()}
-                          disabled={!avatar || uploadingPhoto}
-                        >
-                          Remover foto
-                        </button>
-                      </div>
-
-                      <div className="mt-2 text-sm text-white/65">
-                        Essa foto aparece no seu perfil público e no seu painel.
-                      </div>
-
-                      <div className="mt-2 text-xs text-white/60">
-                        Formatos: JPG, PNG, WEBP • até 5MB
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* @handle */}
-                <label className="grid gap-2">
-                  <span className="text-sm font-semibold text-white/85">
-                    Seu @handle (URL do perfil público)
-                  </span>
-
-                  <div className="flex items-center gap-2 rounded-2xl border border-white/15 bg-black/50 px-4 py-3">
-                    <span className="text-sm text-white/55">@</span>
-                    <input
-                      value={handle}
-                      onChange={(e) => setHandle(sanitizeHandle(e.target.value))}
-                      className="w-full bg-transparent text-white/85 outline-none placeholder:text-white/40"
-                      placeholder="ex: joao.uba"
-                      autoComplete="off"
-                    />
-                  </div>
-
-                  <span className="text-xs text-white/60">
-                    Aparece como:{' '}
-                    <span className="font-semibold text-white/85">
-                      /u/{effectiveHandle || 'seu_handle'}
-                    </span>
-                  </span>
-                </label>
-
-                <label className="grid gap-2">
-                  <span className="text-sm font-semibold text-white/85">
-                    Nome público
-                  </span>
-                  <input
-                    value={displayName}
-                    onChange={(e) => setDisplayName(e.target.value)}
-                    className="rounded-2xl border border-white/15 bg-black/50 px-4 py-3 text-white/85 outline-none placeholder:text-white/40 focus:border-white/40"
-                    placeholder="Ex: João Silva"
-                  />
-                </label>
-
-                <label className="grid gap-2">
-                  <span className="text-sm font-semibold text-white/85">Bio</span>
-                  <textarea
-                    value={bio}
-                    onChange={(e) => setBio(e.target.value)}
-                    className="min-h-[110px] rounded-2xl border border-white/15 bg-black/50 px-4 py-3 text-white/85 outline-none placeholder:text-white/40 focus:border-white/40"
-                    placeholder="Uma frase curta sobre você no Marto."
-                  />
-                  <div className="text-xs text-white/60">
-                    Curta, direta, real. Sem exagero. Sem promessa.
-                  </div>
-                </label>
-
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    onClick={onSaveProfile}
-                    disabled={savingProfile || savingHandle}
-                    className="rounded-2xl bg-white px-6 py-3 text-sm font-semibold text-black hover:opacity-90 disabled:opacity-60"
-                  >
-                    {savingProfile ? 'Salvando…' : 'Salvar perfil'}
-                  </button>
-
-                  <Link
-                    href={
-                      hasPublicProfile
-                        ? `/u/${encodeURIComponent(effectiveHandle)}`
-                        : '/me'
-                    }
-                    aria-disabled={!hasPublicProfile}
-                    className={[
-                      'rounded-2xl border border-white/15 bg-white/10 px-6 py-3 text-sm font-semibold text-white hover:bg-white/15',
-                      !hasPublicProfile ? 'pointer-events-none opacity-50' : '',
-                    ].join(' ')}
-                    title={
-                      hasPublicProfile
-                        ? 'Abrir seu perfil público'
-                        : 'Crie um @handle para ativar'
-                    }
-                  >
-                    Ver perfil público
-                  </Link>
-                </div>
-              </div>
-            </SectionCard>
-          </div>
-
-          {/* Reputação (prévia) */}
-          <div className="md:col-span-1">
-            <SectionCard
-              title={stats.repLabel}
-              subtitle="Em breve: calculada por ações reais."
-              right={<Pill>Prévia</Pill>}
-            >
-              <div className="flex items-baseline gap-2">
-                <div className="text-4xl font-bold text-white/90">
-                  {stats.repValue}
-                </div>
-                <div className="text-sm text-white/60">/ 5</div>
+        {/* Camada B (por papel) */}
+        <div className="mt-6">
+          {me ? (
+            <SectionsByHome
+              me={me}
+              primaryHref={primaryAction.href}
+              reviewPendenciesCount={reviewPendenciesCount}
+            />
+          ) : (
+            <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+              <div className="text-sm font-semibold text-white/85">
+                {loading ? 'Carregando…' : 'Sem dados'}
               </div>
               <div className="mt-2 text-sm text-white/65">
-                {stats.repCount} avaliações registradas
+                {loading
+                  ? 'Lendo seu núcleo de conta.'
+                  : 'Não foi possível montar seu /me.'}
               </div>
-
-              <div className="mt-5 rounded-2xl border border-white/15 bg-black/40 p-4 text-sm text-white/70 ring-1 ring-white/10">
-                Reputação no Marto não é promessa: é histórico.
-              </div>
-            </SectionCard>
-          </div>
-        </div>
-
-        {/* Histórico */}
-        <div className="mt-6">
-          <SectionCard
-            title="Histórico (social do Marto)"
-            subtitle="Aqui aparece o rastro real: compras, serviços e avaliações."
-            right={<Pill>MVP</Pill>}
-          >
-            <div className="grid gap-3">
-              <TimelineItem
-                title="Perfil criado"
-                meta="Conta • agora"
-                desc="Sua reputação começa aqui."
-              />
-              <TimelineItem
-                title="Próxima ação"
-                meta="Fluxo • recomendado"
-                desc="Faça um pedido e registre uma avaliação útil."
-              />
-              <TimelineItem
-                title="Regra Marto"
-                meta="Essencial"
-                desc="Qualidade pesa mais que volume."
-              />
             </div>
-
-            <div className="mt-5 flex flex-wrap gap-2">
-              <Link
-                href="/catalog"
-                className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
-              >
-                Ver catálogo
-              </Link>
-              <Link
-                href="/dash/consumer/orders"
-                className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
-              >
-                Ver pedidos
-              </Link>
-              <Link
-                href="/review"
-                className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
-              >
-                Avaliar
-              </Link>
-            </div>
-          </SectionCard>
+          )}
         </div>
       </div>
     </main>

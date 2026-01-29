@@ -1,5 +1,34 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
+import { Prisma } from '@prisma/client';
+
+function normalizeJson(
+  value: Prisma.InputJsonValue | null | undefined,
+): Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput | undefined {
+  if (typeof value === 'undefined') return undefined; // não envia / não altera
+  if (value === null) return Prisma.DbNull; // limpa no banco (NULL)
+  return value; // valor JSON válido
+}
+
+function normalizeImages(
+  images: unknown,
+): Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput | undefined {
+  if (typeof images === 'undefined') return undefined;
+  if (images === null) return Prisma.DbNull;
+
+  if (Array.isArray(images)) {
+    const next = images
+      .filter((s): s is string => typeof s === 'string')
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+
+    // lista vazia => [] (previsível pro front)
+    return next as unknown as Prisma.InputJsonValue;
+  }
+
+  // inválido => ignora (não altera)
+  return undefined;
+}
 
 @Injectable()
 export class ProductsService {
@@ -26,9 +55,15 @@ export class ProductsService {
         description: true,
         priceCents: true,
         active: true,
-        images: true, // ✅ garante images na listagem
+        images: true,
+        meta: true,
         createdAt: true,
         updatedAt: true,
+
+        // ✅ traz a loja no retorno (tradeName)
+        merchant: {
+          select: { id: true, tradeName: true },
+        },
       },
     });
 
@@ -41,7 +76,8 @@ export class ProductsService {
       title: string;
       description?: string | null;
       priceCents: number;
-      images?: string[] | null;
+      images?: unknown; // pode vir string[] | null do front
+      meta?: Prisma.InputJsonValue | null;
     },
   ) {
     if (!userId) throw new UnauthorizedException('Sem usuário.');
@@ -68,14 +104,8 @@ export class ProductsService {
       return { ok: false, message: 'Perfil de lojista não encontrado.' };
     }
 
-    // ✅ normaliza images (permite /uploads/...)
-    let images: string[] | undefined;
-    if (Array.isArray(body.images)) {
-      images = body.images
-        .map((s) => String(s ?? '').trim())
-        .filter((s) => s.length > 0);
-      if (images.length === 0) images = undefined;
-    }
+    const imagesValue = normalizeImages(body.images);
+    const metaValue = normalizeJson(body.meta);
 
     const created = await this.prisma.product.create({
       data: {
@@ -84,7 +114,8 @@ export class ProductsService {
         description,
         priceCents,
         active: true,
-        ...(images ? { images } : {}),
+        ...(typeof imagesValue !== 'undefined' ? { images: imagesValue } : {}),
+        ...(typeof metaValue !== 'undefined' ? { meta: metaValue } : {}),
       },
       select: {
         id: true,
@@ -92,8 +123,10 @@ export class ProductsService {
         description: true,
         priceCents: true,
         active: true,
-        images: true, // ✅ devolve as imagens
+        images: true,
+        meta: true,
         createdAt: true,
+        merchant: { select: { id: true, tradeName: true } },
       },
     });
 
@@ -108,7 +141,8 @@ export class ProductsService {
       title?: string;
       description?: string | null;
       priceCents?: number;
-      images?: string[] | null;
+      images?: unknown; // pode vir string[] | null
+      meta?: Prisma.InputJsonValue | null;
     },
   ) {
     if (!userId) throw new UnauthorizedException('Sem usuário.');
@@ -134,13 +168,7 @@ export class ProductsService {
       return { ok: false, message: 'Produto não encontrado.' };
     }
 
-    const updateData: {
-      active?: boolean;
-      title?: string;
-      description?: string | null;
-      priceCents?: number;
-      images?: string[];
-    } = {};
+    const updateData: Prisma.ProductUpdateInput = {};
 
     if (typeof body.active === 'boolean') {
       updateData.active = body.active;
@@ -166,12 +194,16 @@ export class ProductsService {
       updateData.priceCents = n;
     }
 
-    // ✅ permite setar images (substitui lista inteira)
-    if (Array.isArray(body.images)) {
-      const next = body.images
-        .map((s) => String(s ?? '').trim())
-        .filter((s) => s.length > 0);
-      updateData.images = next;
+    // ✅ images: aceita string[] ou null; null limpa (DbNull)
+    const imagesValue = normalizeImages(body.images);
+    if (typeof imagesValue !== 'undefined') {
+      updateData.images = imagesValue;
+    }
+
+    // ✅ meta: aceita json ou null; null limpa (DbNull)
+    const metaValue = normalizeJson(body.meta);
+    if (typeof metaValue !== 'undefined') {
+      updateData.meta = metaValue;
     }
 
     if (Object.keys(updateData).length === 0) {
@@ -187,8 +219,10 @@ export class ProductsService {
         description: true,
         priceCents: true,
         active: true,
-        images: true, // ✅ devolve as imagens sempre
+        images: true,
+        meta: true,
         updatedAt: true,
+        merchant: { select: { id: true, tradeName: true } },
       },
     });
 
@@ -224,12 +258,16 @@ export class ProductsService {
 
     const current = Array.isArray(product.images)
       ? (product.images as unknown[])
+          .filter((s): s is string => typeof s === 'string')
+          .map((s) => s.trim())
+          .filter((s) => s.length > 0)
       : [];
+
     const next = [...current, url];
 
     const updated = await this.prisma.product.update({
       where: { id },
-      data: { images: next as any },
+      data: { images: next as unknown as Prisma.InputJsonValue },
       select: {
         id: true,
         images: true,

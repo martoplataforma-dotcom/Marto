@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   Body,
+  ConflictException,
   Controller,
   Get,
   Put,
@@ -11,6 +12,16 @@ import type { Request } from 'express';
 
 import { JwtAuthGuard } from '../identity/auth/jwt-auth.guard';
 import { PrismaService } from '../../common/prisma/prisma.service';
+
+type UpsertMerchantBody = {
+  tradeName: string;
+  document: string;
+  handle?: string | null;
+  city?: string | null;
+  cepPrefix?: string | null;
+  logoUrl?: string | null;
+  coverUrl?: string | null;
+};
 
 @Controller('merchants')
 export class MerchantsController {
@@ -41,10 +52,11 @@ export class MerchantsController {
    * - handle opcional (sem @ no banco) | 3–30 chars | [a-z0-9._]
    * - city opcional
    * - cepPrefix opcional (5 números)
+   * ·
    */
   @UseGuards(JwtAuthGuard)
   @Put('me')
-  async upsertMe(@Req() req: Request, @Body() body: any) {
+  async upsertMe(@Req() req: Request, @Body() body: UpsertMerchantBody) {
     const user = req.user as any;
     const userId = user?.id ?? user?.sub;
 
@@ -95,24 +107,41 @@ export class MerchantsController {
       );
     }
 
-    return this.prisma.merchant.upsert({
-      where: { userId },
-      create: {
-        userId,
-        tradeName,
-        document,
-        city,
-        cepPrefix,
-        status: 'ACTIVE',
-        handle, // ✅ NOVO
-      },
-      update: {
-        tradeName,
-        document,
-        city,
-        cepPrefix,
-        handle, // ✅ NOVO
-      },
-    });
+    try {
+      return await this.prisma.merchant.upsert({
+        where: { userId },
+        create: {
+          userId,
+          tradeName,
+          document,
+          handle,
+          city,
+          cepPrefix,
+          logoUrl: body.logoUrl ?? null,
+          coverUrl: body.coverUrl ?? null,
+          status: 'ACTIVE',
+        },
+        update: {
+          tradeName,
+          document,
+          handle,
+          city,
+          cepPrefix,
+          logoUrl: body.logoUrl ?? null,
+          coverUrl: body.coverUrl ?? null,
+        },
+      });
+    } catch (e: any) {
+      if (
+        e?.code === 'P2002' &&
+        Array.isArray(e?.meta?.target) &&
+        e.meta.target.includes('handle')
+      ) {
+        throw new ConflictException(
+          'Este handle já está em uso. Escolha outro.',
+        );
+      }
+      throw e;
+    }
   }
 }

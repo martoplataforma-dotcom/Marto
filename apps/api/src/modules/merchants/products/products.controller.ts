@@ -16,6 +16,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import * as fs from 'fs';
 import * as path from 'path';
+import { Prisma } from '@prisma/client';
 
 import { JwtAuthGuard } from '../../identity/auth/jwt-auth.guard';
 import { ProductsService } from './products.service';
@@ -53,6 +54,7 @@ export class ProductsController {
       description?: string | null;
       priceCents: number;
       images?: string[] | null;
+      meta?: Prisma.InputJsonValue | null;
     },
   ) {
     const userId = getUserId(req);
@@ -74,6 +76,7 @@ export class ProductsController {
       description?: string | null;
       priceCents?: number;
       images?: string[] | null;
+      meta?: Prisma.InputJsonValue | null;
     },
   ) {
     const userId = getUserId(req);

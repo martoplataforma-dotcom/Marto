@@ -1,14 +1,13 @@
+// apps/api/src/modules/social/social.service.ts
 import {
   BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import {
-  PrismaClient,
-  SocialMediaType,
-  SocialPostStatus,
-} from '@prisma/client';
+import { OrderStatus, SocialMediaType, SocialPostStatus } from '@prisma/client';
+
+import { PrismaService } from '../../common/prisma/prisma.service';
 
 type CreateSocialPostInput = {
   userId: string;
@@ -29,6 +28,7 @@ function startOfToday(): Date {
   const now = new Date();
   return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
 }
+
 function endOfToday(): Date {
   const now = new Date();
   return new Date(
@@ -42,12 +42,50 @@ function endOfToday(): Date {
   );
 }
 
+// ✅ helper: define origem da mídia com base na URL
+function mediaOriginFromUrl(url: string) {
+  const u = String(url ?? '')
+    .trim()
+    .toLowerCase();
+
+  if (u.startsWith('http://') || u.startsWith('https://')) {
+    return 'EXTERNAL' as const;
+  }
+
+  return 'UPLOAD' as const; // padrão: /uploads/...
+}
+
+// ✅ helper: valida formato permitido de media.url
+function assertMediaUrlAllowed(url: string) {
+  const u = String(url ?? '').trim();
+  if (!u) throw new BadRequestException('media.url é obrigatório');
+
+  const lower = u.toLowerCase();
+
+  const isExternal =
+    lower.startsWith('http://') || lower.startsWith('https://');
+
+  const isUpload = u.startsWith('/uploads/');
+
+  if (!isExternal && !isUpload) {
+    throw new BadRequestException(
+      'media.url inválida. Use /uploads/... (UPLOAD) ou https://... (EXTERNAL).',
+    );
+  }
+
+  // reforço: bloquear http externo (recomendado)
+  if (lower.startsWith('http://')) {
+    throw new BadRequestException('Use https:// para mídia externa.');
+  }
+}
+
 @Injectable()
 export class SocialService {
-  private readonly prisma = new PrismaClient();
+  constructor(private readonly prisma: PrismaService) {}
 
   async createPost(input: CreateSocialPostInput) {
     const userId = String(input.userId ?? '').trim();
+
     const orderId = String(input.orderId ?? '').trim();
     const productId = String(input.productId ?? '').trim();
 
@@ -55,14 +93,16 @@ export class SocialService {
     if (!orderId) throw new BadRequestException('orderId é obrigatório');
     if (!productId) throw new BadRequestException('productId é obrigatório');
 
+    // ✅ valida todas as mídias antes de qualquer escrita
+    for (const m of input.media ?? []) {
+      assertMediaUrlAllowed(m.url);
+    }
+
     // ✅ trava Bronze: máx 2 posts/dia por usuário
     const countToday = await this.prisma.socialPost.count({
       where: {
         userId,
-        createdAt: {
-          gte: startOfToday(),
-          lte: endOfToday(),
-        },
+        createdAt: { gte: startOfToday(), lte: endOfToday() },
         deletedAt: null,
         status: SocialPostStatus.ACTIVE,
       },
@@ -93,27 +133,81 @@ export class SocialService {
       );
     }
 
-    // ✅ Regra MVP: só permitir post após entrega (pelo status do pedido)
-    if (order.status !== 'DELIVERED') {
+    // ✅ Regra MVP: permitir post após entrega/finalização
+    const allowed: OrderStatus[] = [
+      OrderStatus.DELIVERED,
+      OrderStatus.COMPLETED,
+    ];
+    if (!allowed.includes(order.status)) {
       throw new ForbiddenException(
-        'Pedido ainda não foi entregue (status != DELIVERED)',
+        'Pedido ainda não foi entregue/finalizado (status não permite post verificado)',
       );
     }
 
-    // ✅ Evita duplicar post do mesmo produto no mesmo pedido (MVP)
-    const existing = await this.prisma.socialPost.findFirst({
-      where: {
-        orderId,
-        productId,
-        status: SocialPostStatus.ACTIVE,
-      },
+    // ✅ REGRA-CHAVE: productId precisa estar dentro do orderId (OrderItem)
+    const hasItem = await this.prisma.orderItem.findFirst({
+      where: { orderId, productId },
       select: { id: true },
     });
 
-    if (existing) {
+    if (!hasItem) {
+      throw new ForbiddenException(
+        'Este produto não pertence a este pedido (post verificado exige vínculo real)',
+      );
+    }
+
+    // ✅ Existe post (ativo ou deletado) com essa assinatura?
+    // Requer unique composto no Prisma:
+    // @@unique([userId, orderId, productId], name: "userId_orderId_productId")
+    const existing = await this.prisma.socialPost.findUnique({
+      where: {
+        userId_orderId_productId: {
+          userId,
+          orderId,
+          productId,
+        },
+      },
+      select: { id: true, status: true },
+    });
+
+    if (existing && existing.status === SocialPostStatus.ACTIVE) {
       return { ok: true, alreadyExists: true, postId: existing.id };
     }
 
+    // ✅ Se existe mas estava DELETED, “revive” e substitui mídia/caption
+    if (existing && existing.status === SocialPostStatus.DELETED) {
+      const revived = await this.prisma.$transaction(async (tx) => {
+        // remove mídia antiga para não acumular lixo
+        await tx.socialMedia.deleteMany({ where: { postId: existing.id } });
+
+        const updated = await tx.socialPost.update({
+          where: { id: existing.id },
+          data: {
+            status: SocialPostStatus.ACTIVE,
+            deletedAt: null,
+            caption: input.caption,
+            media: {
+              create: (input.media ?? []).map((m) => ({
+                type:
+                  m.type === 'VIDEO'
+                    ? SocialMediaType.VIDEO
+                    : SocialMediaType.IMAGE,
+                origin: mediaOriginFromUrl(m.url),
+                url: m.url,
+                durationSec: m.durationSec,
+              })),
+            },
+          },
+          include: { media: true },
+        });
+
+        return updated;
+      });
+
+      return { ok: true, revived: true, post: revived };
+    }
+
+    // ✅ Se não existe, cria normalmente
     const created = await this.prisma.socialPost.create({
       data: {
         userId,
@@ -127,6 +221,7 @@ export class SocialService {
               m.type === 'VIDEO'
                 ? SocialMediaType.VIDEO
                 : SocialMediaType.IMAGE,
+            origin: mediaOriginFromUrl(m.url),
             url: m.url,
             durationSec: m.durationSec,
           })),

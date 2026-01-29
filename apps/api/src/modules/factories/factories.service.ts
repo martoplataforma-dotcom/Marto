@@ -1,4 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { OrderStatus } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 
 type UpsertFactoryBody = {
@@ -59,5 +60,141 @@ export class FactoriesService {
     });
 
     return { ok: true, factory };
+  }
+
+  async ordersSummaryForMe(userId: string) {
+    if (!userId) throw new BadRequestException('Usuário inválido.');
+
+    const merchants = await this.prisma.merchant.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const merchantIds = merchants.map((m) => m.id);
+
+    if (merchantIds.length === 0) {
+      return { ok: true, counts: {}, needsActionCount: 0, needsAction: [] };
+    }
+
+    const grouped = await this.prisma.order.groupBy({
+      by: ['status'],
+      where: { merchantId: { in: merchantIds } },
+      _count: { _all: true },
+    });
+
+    const counts: Record<string, number> = {};
+    for (const g of grouped) {
+      counts[String(g.status)] = g._count?._all ?? 0;
+    }
+
+    const actionStatuses: OrderStatus[] = [
+      'CONFIRMED_BY_SELLER',
+      'READY_FOR_PICKUP',
+      'RETURN_REQUESTED',
+    ];
+
+    const needsAction = await this.prisma.order.findMany({
+      where: {
+        merchantId: { in: merchantIds },
+        status: { in: actionStatuses },
+      },
+      select: {
+        id: true,
+        status: true,
+        createdAt: true,
+        city: true,
+        state: true,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 6,
+    });
+
+    return {
+      ok: true,
+      counts,
+      needsActionCount: needsAction.length,
+      needsAction,
+    };
+  }
+
+  async catalogSummaryForMe(userId: string) {
+    if (!userId) throw new BadRequestException('Usuário inválido.');
+
+    const merchants = await this.prisma.merchant.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const merchantIds = merchants.map((m) => m.id);
+
+    if (merchantIds.length === 0) {
+      return { ok: true, activeCount: 0, inactiveCount: 0, total: 0 };
+    }
+
+    const [activeCount, inactiveCount] = await Promise.all([
+      this.prisma.product.count({
+        where: { merchantId: { in: merchantIds }, active: true },
+      }),
+      this.prisma.product.count({
+        where: { merchantId: { in: merchantIds }, active: false },
+      }),
+    ]);
+
+    return {
+      ok: true,
+      activeCount,
+      inactiveCount,
+      total: activeCount + inactiveCount,
+    };
+  }
+
+  // ✅ ALTERADO: topProductsForMe (conforme pedido)
+  async topProductsForMe(userId: string) {
+    if (!userId) throw new BadRequestException('Usuário inválido.');
+
+    const merchants = await this.prisma.merchant.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const merchantIds = merchants.map((m) => m.id);
+
+    if (merchantIds.length === 0) {
+      return { ok: true, items: [] };
+    }
+
+    const grouped = await this.prisma.orderItem.groupBy({
+      by: ['productId'],
+      where: {
+        order: {
+          merchantId: { in: merchantIds },
+        },
+      },
+      _sum: { quantity: true },
+      orderBy: { _sum: { quantity: 'desc' } },
+      take: 5,
+    });
+
+    const productIds = grouped.map((g) => g.productId);
+
+    const products = await this.prisma.product.findMany({
+      where: { id: { in: productIds } },
+      select: { id: true, title: true, active: true, priceCents: true },
+    });
+
+    const byId = new Map(products.map((p) => [p.id, p]));
+
+    const items = grouped.map((g) => {
+      const p = byId.get(g.productId);
+      return {
+        productId: g.productId,
+        title: p?.title ?? 'Produto',
+        active: Boolean(p?.active ?? false),
+        priceCents: Number(p?.priceCents ?? 0),
+        unitsSold: Number(g._sum?.quantity ?? 0),
+      };
+    });
+
+    return { ok: true, items };
   }
 }

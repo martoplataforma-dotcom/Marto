@@ -54,7 +54,7 @@ function parseBRNumber(raw: unknown): number | null {
   return n;
 }
 
-function totalLabel(order: Order) {
+function totalNumber(order: Order) {
   const items = Array.isArray(order.items) ? order.items : [];
   let sum = 0;
   for (const it of items) {
@@ -62,7 +62,13 @@ function totalLabel(order: Order) {
     const up = parseBRNumber(it.unitPrice) ?? 0;
     sum += q * up;
   }
-  return sum.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  return sum;
+}
+
+function moneyBRL(value: number) {
+  const n = Number(value ?? 0);
+  if (!Number.isFinite(n)) return '—';
+  return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
 type RangeKey = 'ALL' | '7D' | '30D' | '90D';
@@ -72,6 +78,54 @@ function parseTime(value?: string | null) {
   const t = new Date(value).getTime();
   if (Number.isNaN(t)) return null;
   return t;
+}
+
+function MetricCard({
+  label,
+  value,
+  hint,
+}: {
+  label: string;
+  value: string;
+  hint?: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/15 bg-neutral-950/75 px-4 py-3 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+      <div className="text-[11px] font-semibold uppercase tracking-wide text-white/70">
+        {label}
+      </div>
+      <div className="mt-1 text-sm font-semibold text-white/90">{value}</div>
+      {hint ? <div className="mt-1 text-xs text-white/65">{hint}</div> : null}
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: string }) {
+  const s = String(status ?? '').toUpperCase();
+
+  const isGood =
+    s === 'PAID' || s === 'DELIVERED' || s === 'COMPLETED' || s === 'CAPTURED';
+  const isWarn =
+    s === 'PENDING' || s === 'PROCESSING' || s === 'IN_TRANSIT' || s === 'SHIPPED';
+  const isBad =
+    s === 'CANCELLED' || s === 'CANCELED' || s === 'REFUNDED' || s === 'FAILED';
+
+  const cls = isGood
+    ? 'border-emerald-400/25 bg-emerald-400/10 text-emerald-100'
+    : isWarn
+      ? 'border-amber-400/25 bg-amber-400/10 text-amber-100'
+      : isBad
+        ? 'border-red-400/25 bg-red-400/10 text-red-100'
+        : 'border-white/15 bg-white/10 text-white/85';
+
+  return (
+    <span
+      className={`inline-flex items-center rounded-full border px-3 py-1 text-xs font-semibold ${cls}`}
+      title={s}
+    >
+      {s || '—'}
+    </span>
+  );
 }
 
 export default function MerchantOrdersListPage() {
@@ -128,13 +182,13 @@ export default function MerchantOrdersListPage() {
 
         setItems(res.items);
 
-                // ✅ debug no console sempre ajuda a não “ficar no escuro”
-        // (não quebra nada em produção)
-        console.log('[merchant/orders] sales:', {
-          count: res.items.length,
-          ids: res.items.map((x) => x.id),
-        });
-
+        // ✅ log só quando debug=1 (pra não poluir console)
+        if (debug) {
+          // console.log('[merchant/orders] sales:', {
+          //   count: res.items.length,
+          //   ids: res.items.map((x) => x.id),
+          // });
+        }
       } catch (e) {
         if (!alive) return;
         const err = e as ApiError;
@@ -150,6 +204,7 @@ export default function MerchantOrdersListPage() {
     return () => {
       alive = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const statuses = useMemo(() => {
@@ -160,8 +215,7 @@ export default function MerchantOrdersListPage() {
     return ['ALL', ...Array.from(s).sort((a, b) => a.localeCompare(b))];
   }, [items]);
 
-  // ✅ Se o status selecionado não existir mais (p.ex. depois de reload),
-  // volta pra ALL pra não “sumir” tudo.
+  // ✅ Se o status selecionado não existir mais, volta pra ALL
   useEffect(() => {
     if (status !== 'ALL' && !statuses.includes(status)) {
       setStatus('ALL');
@@ -202,6 +256,42 @@ export default function MerchantOrdersListPage() {
     return copy;
   }, [filtered]);
 
+  const summary = useMemo(() => {
+    // KPIs baseados no “sorted” (já com filtros)
+    const byStatus = new Map<string, number>();
+    let revenue = 0;
+
+    for (const o of sorted) {
+      const s = String(o.status ?? '—').toUpperCase();
+      byStatus.set(s, (byStatus.get(s) ?? 0) + 1);
+      revenue += totalNumber(o);
+    }
+
+    // um destaque simples: top 1 status
+    let topStatus = '—';
+    let topCount = 0;
+    for (const [k, v] of byStatus.entries()) {
+      if (v > topCount) {
+        topCount = v;
+        topStatus = k;
+      }
+    }
+
+    return {
+      revenue,
+      topStatus,
+      topCount,
+    };
+  }, [sorted]);
+
+  async function copy(text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      // ignora (browser antigo / permissão)
+    }
+  }
+
   return (
     <main className="min-h-screen bg-neutral-950 text-white">
       {/* fundo Marto */}
@@ -225,6 +315,29 @@ export default function MerchantOrdersListPage() {
             </Link>
           </div>
         </header>
+
+        {/* KPIs rápidos */}
+        <section className="mb-4 grid gap-3 sm:grid-cols-3">
+          <MetricCard
+            label="Recebidos"
+            value={loading ? '…' : String(items.length)}
+            hint="Total bruto (sem filtros)"
+          />
+          <MetricCard
+            label="Após filtros"
+            value={loading ? '…' : String(sorted.length)}
+            hint="O que você está vendo agora"
+          />
+          <MetricCard
+            label="Receita (MVP)"
+            value={loading ? '…' : moneyBRL(summary.revenue)}
+            hint={
+              summary.topCount > 0
+                ? `Maior status: ${summary.topStatus} (${summary.topCount})`
+                : 'Somatório de itens do pedido'
+            }
+          />
+        </section>
 
         <section className="mb-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
@@ -303,11 +416,9 @@ export default function MerchantOrdersListPage() {
           <div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs text-white/70">
             <div>
               Recebidos:{' '}
-              <span className="text-white/85 font-semibold">{items.length}</span>{' '}
+              <span className="font-semibold text-white/85">{items.length}</span>{' '}
               • Após filtros:{' '}
-              <span className="text-white/85 font-semibold">
-                {sorted.length}
-              </span>
+              <span className="font-semibold text-white/85">{sorted.length}</span>
             </div>
 
             <button
@@ -350,51 +461,69 @@ export default function MerchantOrdersListPage() {
           </div>
         ) : (
           <section className="grid gap-3">
-            {sorted.map((o) => (
-              <article
-                key={o.id}
-                className="rounded-2xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur transition hover:bg-neutral-950/80"
-              >
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-white/90">
-                      Pedido • <span className="text-white/80">{o.status}</span>
+            {sorted.map((o) => {
+              const total = moneyBRL(totalNumber(o));
+
+              return (
+                <article
+                  key={o.id}
+                  className="rounded-2xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur transition hover:bg-neutral-950/80"
+                >
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <div className="text-sm font-semibold text-white/90">
+                          Pedido
+                        </div>
+                        <StatusPill status={o.status} />
+                      </div>
+
+                      <div className="mt-3 grid gap-1 text-sm text-white/80">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="text-white/70">ID:</span>
+                          <span className="font-mono text-white/90">{o.id}</span>
+
+                          <button
+                            type="button"
+                            onClick={() => copy(o.id)}
+                            className="rounded-lg border border-white/15 bg-white/10 px-2 py-1 text-[11px] font-semibold text-white/85 hover:bg-white/15"
+                            title="Copiar ID"
+                          >
+                            Copiar
+                          </button>
+                        </div>
+
+                        <div>
+                          <span className="text-white/70">Cidade/UF:</span>{' '}
+                          {(o.city ?? '—') + ' / ' + (o.state ?? '—')}
+                        </div>
+
+                        <div>
+                          <span className="text-white/70">Criado:</span> {fmt(o.createdAt)}
+                          <span className="text-white/60"> • </span>
+                          <span className="text-white/70">Atualizado:</span>{' '}
+                          {fmt(o.updatedAt)}
+                        </div>
+
+                        <div>
+                          <span className="text-white/70">Total:</span>{' '}
+                          <span className="text-white/90">{total}</span>
+                        </div>
+                      </div>
                     </div>
 
-                    <div className="mt-2 grid gap-1 text-sm text-white/80">
-                      <div className="truncate">
-                        <span className="text-white/70">ID:</span>{' '}
-                        <span className="font-mono text-white/90">{o.id}</span>
-                      </div>
-
-                      <div>
-                        <span className="text-white/70">Cidade/UF:</span>{' '}
-                        {(o.city ?? '—') + ' / ' + (o.state ?? '—')}
-                      </div>
-
-                      <div>
-                        <span className="text-white/70">Criado:</span>{' '}
-                        {fmt(o.createdAt)}
-                      </div>
-
-                      <div>
-                        <span className="text-white/70">Total:</span>{' '}
-                        <span className="text-white/90">{totalLabel(o)}</span>
-                      </div>
+                    <div className="flex shrink-0 flex-wrap gap-2">
+                      <Link
+                        href={`/dash/merchant/orders/${o.id}`}
+                        className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-semibold text-white hover:bg-white/15"
+                      >
+                        Ver timeline
+                      </Link>
                     </div>
                   </div>
-
-                  <div className="flex shrink-0 gap-2">
-                    <Link
-                      href={`/dash/merchant/orders/${o.id}`}
-                      className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-semibold text-white hover:bg-white/15"
-                    >
-                      Ver timeline
-                    </Link>
-                  </div>
-                </div>
-              </article>
-            ))}
+                </article>
+              );
+            })}
           </section>
         )}
       </div>

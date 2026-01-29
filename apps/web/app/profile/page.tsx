@@ -2,8 +2,11 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import Image, { type ImageLoader } from 'next/image';
+import { useEffect, useState } from 'react';
 import { fetchJSON, type ApiError } from '../../src/lib/api';
+import { MerchantProfileSection } from './_sections/merchant';
+import { ConsumerPrefsSection } from './_sections/consumer';
 
 function getToken() {
   if (typeof window === 'undefined') return null;
@@ -15,13 +18,6 @@ type Consumer = {
   cepPrefix?: string | null;
 };
 
-type ViaCepResponse = {
-  erro?: boolean;
-  logradouro?: string;
-  bairro?: string;
-  localidade?: string;
-  uf?: string;
-};
 
 type Home =
   | 'consumer'
@@ -31,8 +27,33 @@ type Home =
   | 'factory';
 
 type MeResponse = {
+  email?: string;
   home?: Home;
-  profile?: { handle?: string | null };
+  user?: {
+    id?: string;
+    name?: string | null;
+    email?: string | null;
+    phone?: string | null;
+    status?: string;
+  };
+  profile?: {
+    handle?: string | null;
+    displayName?: string | null;
+    bio?: string | null;
+    avatarUrl?: string | null;
+    updatedAt?: string | null;
+  };
+};
+
+type UpdateProfileResponse = {
+  ok: boolean;
+  profile: {
+    handle: string | null;
+    displayName: string | null;
+    bio: string | null;
+    avatarUrl: string | null;
+    updatedAt: string;
+  };
 };
 
 function dashboardFromHome(home?: Home | null) {
@@ -72,45 +93,97 @@ function sanitizeHandle(raw: string) {
     .slice(0, 24);
 }
 
+function isValidHttpUrl(url: string) {
+  const v = String(url ?? '').trim();
+  if (!v) return true; // vazio é ok
+  try {
+    const u = new URL(v);
+    return u.protocol === 'http:' || u.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
+// ✅ helper: normaliza avatarUrl pra evitar "null", "undefined" e imagem quebrada
+function normalizeAvatarUrl(v: unknown) {
+  const s = String(v ?? '').trim();
+  if (!s) return '';
+  if (s === 'null' || s === 'undefined') return '';
+  return s;
+}
+
+/**
+ * ✅ "Image direto" (sem otimização)
+ */
+const passthroughLoader: ImageLoader = ({ src }) => src;
+
+function MartoImage({
+  src,
+  alt,
+  size,
+  className,
+}: {
+  src: string;
+  alt: string;
+  size: number;
+  className?: string;
+}) {
+  return (
+    <Image
+      loader={passthroughLoader}
+      unoptimized
+      src={src}
+      alt={alt}
+      width={size}
+      height={size}
+      className={className}
+    />
+  );
+}
+
+// ✅ Avatar Marto (placeholder) — usa o SVG do /public (mesmo do login)
+function MartoAvatarPlaceholder({ alt }: { alt?: string }) {
+  return (
+    <MartoImage
+      src="/marto-m.svg"
+      alt={alt ?? 'Marto'}
+      size={64}
+      className="h-full w-full object-cover"
+    />
+  );
+}
+
 export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
+
+  // mensagens
   const [msg, setMsg] = useState('');
 
-  // Preferências atuais (persistidas)
-  const [city, setCity] = useState('');
-  const [cepPrefix, setCepPrefix] = useState('');
-
-  // UX: CEP completo + endereço encontrado
-  const [cep, setCep] = useState('');
-  const [cepLoading, setCepLoading] = useState(false);
-  const [addr, setAddr] = useState<{
-    street: string;
-    district: string;
-    city: string;
-    uf: string;
-  } | null>(null);
-
-  // ✅ guarda o "home" + handle
+  // ✅ home + handle + email
   const [home, setHome] = useState<Home | null>(null);
+
+  // ---------- Perfil público (UNIVERSAL) ----------
+  const [savingPublic, setSavingPublic] = useState(false);
+
   const [handle, setHandle] = useState('');
+  const [displayName, setDisplayName] = useState('');
+  const [bio, setBio] = useState('');
+  const [avatarUrl, setAvatarUrl] = useState('');
 
-  // ✅ ainda validamos internamente (mesmo sem input), pra não mandar lixo pro backend
-  const canSave = useMemo(() => {
-    if (cepPrefix && !/^\d{5}$/.test(cepPrefix)) return false;
-    return true;
-  }, [cepPrefix]);
+  // upload/remover
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
-  const dashboardHref = dashboardFromHome(home);
-  const badge = labelFromHome(home);
+  // ---------- Preferências do Consumidor (CONDICIONAL) ----------
+  const [consumerCity, setConsumerCity] = useState('');
+  const [consumerCepPrefix, setConsumerCepPrefix] = useState('');
 
   const effectiveHandle = sanitizeHandle(handle);
-  const publicHref = effectiveHandle ? `/u/${effectiveHandle}` : '/me';
-  const publicCtaLabel = effectiveHandle
-    ? 'Ver meu perfil público'
-    : 'Ativar perfil público';
+  const hasPublicProfile = Boolean(effectiveHandle);
 
-  const isConsumer = home === 'consumer' || home === null;
+  const badge = labelFromHome(home);
+  const dashboardHref = dashboardFromHome(home);
+
+  const avatar = normalizeAvatarUrl(avatarUrl);
 
   useEffect(() => {
     (async () => {
@@ -123,135 +196,131 @@ export default function ProfilePage() {
       }
 
       try {
-        // ✅ A) buscar home + handle via /me (COM Authorization)
-        const me = await fetchJSON<MeResponse>('/me', {
+        // ✅ 1) /me (fonte da verdade: home + perfil público)
+        const data = await fetchJSON<MeResponse>('/me', {
           method: 'GET',
           headers: { Authorization: `Bearer ${token}` },
         });
 
         const h =
-          me?.home === 'consumer' ||
-          me?.home === 'merchant' ||
-          me?.home === 'service_provider' ||
-          me?.home === 'representative' ||
-          me?.home === 'factory'
-            ? me.home
+          data?.home === 'consumer' ||
+          data?.home === 'merchant' ||
+          data?.home === 'service_provider' ||
+          data?.home === 'representative' ||
+          data?.home === 'factory'
+            ? data.home
             : null;
 
         setHome(h);
-        setHandle(String(me?.profile?.handle ?? ''));
 
-        // ✅ B) este /profile é a Central do Consumidor
-        if (h && h !== 'consumer') {
-          setMsg('Esta central é do Consumidor. Vá para sua central correta.');
-          return;
+        // preenche perfil público (universal)
+        const backendHandle = String(data?.profile?.handle ?? '').trim();
+        const backendDisplayName = String(data?.profile?.displayName ?? '').trim();
+        const backendBio = String(data?.profile?.bio ?? '').trim();
+        const backendAvatar = normalizeAvatarUrl(data?.profile?.avatarUrl);
+
+        setHandle(backendHandle);
+        setDisplayName(backendDisplayName);
+        setBio(backendBio);
+        setAvatarUrl(backendAvatar);
+
+        // ✅ 2) se for consumidor, carrega prefs consumer
+        if (!h || h === 'consumer') {
+          const prefs = await fetchJSON<Consumer>('/consumers/me', {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${token}` },
+          });
+
+          setConsumerCity(prefs.city ?? '');
+          setConsumerCepPrefix(prefs.cepPrefix ?? '');
         }
-
-        // ✅ C) carrega prefs (fonte da verdade) (COM Authorization)
-        const data = await fetchJSON<Consumer>('/consumers/me', {
-          method: 'GET',
-          headers: { Authorization: `Bearer ${token}` },
-        });
-
-        setCity(data.city ?? '');
-        setCepPrefix(data.cepPrefix ?? '');
-
-        // ✅ 1) NÃO preencher o campo “CEP (8 dígitos)” com cepPrefix no load inicial
-        setCep('');
-        setAddr(null);
       } catch (e: unknown) {
         const err = e as ApiError;
-
-        // ✅ Se /me falhar, ainda assim tenta carregar /consumers/me
-        try {
-          const token2 = getToken();
-          if (token2) {
-            const data = await fetchJSON<Consumer>('/consumers/me', {
-              method: 'GET',
-              headers: { Authorization: `Bearer ${token2}` },
-            });
-
-            setCity(data.city ?? '');
-            setCepPrefix(data.cepPrefix ?? '');
-
-            // ✅ 1) também não preenche CEP completo no fallback
-            setCep('');
-            setAddr(null);
-
-            setMsg(
-              err?.message
-                ? `⚠️ /me falhou (${err.message}), mas preferências carregadas.`
-                : '⚠️ /me falhou, mas preferências carregadas.'
-            );
-          } else {
-            setMsg(err?.message ?? 'Não foi possível carregar suas configurações.');
-          }
-        } catch (e2: unknown) {
-          const err2 = e2 as ApiError;
-          setMsg(
-            err2?.message ??
-              err?.message ??
-              'Não foi possível carregar suas configurações.'
-          );
-        }
+        setMsg(err?.message ?? 'Não foi possível carregar suas configurações.');
       } finally {
         setLoading(false);
       }
     })();
   }, []);
 
-  // ✅ prefixo é setado assim que tiver 5 dígitos, antes do fetch
-  async function lookupCep(value: string) {
-    setMsg('');
-    const clean = value.replace(/\D/g, '').slice(0, 8);
-    setCep(clean);
-
-    // ✅ já vai atualizando prefixo conforme digita
-    if (clean.length >= 5) setCepPrefix(clean.slice(0, 5));
-    else setCepPrefix('');
-
-    if (clean.length !== 8) {
-      setAddr(null);
+  // ---------- PERFIL PÚBLICO (UNIVERSAL) ----------
+  async function uploadPhoto(file: File) {
+    const token = getToken();
+    if (!token) {
+      setMsg('Você precisa entrar novamente.');
       return;
     }
 
-    setCepLoading(true);
     try {
-      const r = await fetch(`https://viacep.com.br/ws/${clean}/json/`, {
-        method: 'GET',
-      });
-      const j = (await r.json()) as ViaCepResponse;
+      setUploadingPhoto(true);
+      setMsg('');
 
-      if (j?.erro) {
-        setAddr(null);
-        setMsg('CEP não encontrado.');
-        return;
+      const form = new FormData();
+      form.append('file', file);
+
+      const res = await fetch('/api/me/avatar', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: form,
+      });
+
+      const data = (await res.json()) as {
+        ok?: boolean;
+        avatarUrl?: string;
+        message?: string;
+      };
+
+      if (!res.ok || !data?.avatarUrl) {
+        throw new Error(data?.message || 'Não foi possível enviar a foto.');
       }
 
-      const foundCity = j.localidade ?? '';
-      const foundUf = j.uf ?? '';
-      const foundStreet = j.logradouro ?? '';
-      const foundDistrict = j.bairro ?? '';
-
-      setAddr({
-        street: foundStreet,
-        district: foundDistrict,
-        city: foundCity,
-        uf: foundUf,
-      });
-
-      // ✅ não força cidade se usuário já colocou algo
-      if (!city.trim() && foundCity) setCity(foundCity);
-    } catch {
-      setAddr(null);
-      setMsg('Não foi possível consultar o CEP agora.');
+      const next = normalizeAvatarUrl(data.avatarUrl);
+      setAvatarUrl(next);
+      setMsg('Foto do perfil atualizada.');
+    } catch (e: unknown) {
+      const err = e as Error;
+      setMsg(err?.message ?? 'Não foi possível enviar a foto.');
     } finally {
-      setCepLoading(false);
+      setUploadingPhoto(false);
     }
   }
 
-  // ✅ Salva derivando o prefixo do CEP (sem input separado)
-  async function onSave() {
+  async function removePhotoServer() {
+    const token = getToken();
+    if (!token) {
+      setMsg('Você precisa entrar novamente.');
+      return;
+    }
+
+    const ok = window.confirm('Remover foto do perfil?');
+    if (!ok) return;
+
+    try {
+      setUploadingPhoto(true);
+      setMsg('');
+
+      const res = await fetch('/api/me/avatar', {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      const data = (await res.json()) as { ok?: boolean; message?: string };
+
+      if (!res.ok || !data?.ok) {
+        throw new Error(data?.message || 'Não foi possível remover a foto.');
+      }
+
+      setAvatarUrl('');
+      setMsg('Foto removida.');
+    } catch (e: unknown) {
+      const err = e as Error;
+      setMsg(err?.message ?? 'Não foi possível remover a foto.');
+    } finally {
+      setUploadingPhoto(false);
+    }
+  }
+
+  async function onSavePublicProfile() {
     setMsg('');
     const token = getToken();
     if (!token) {
@@ -259,51 +328,53 @@ export default function ProfilePage() {
       return;
     }
 
-    if (!isConsumer) {
-      setMsg('Esta central é do Consumidor. Vá para sua central correta.');
+    const nextHandle = sanitizeHandle(handle);
+    const nextName = displayName.trim();
+    const nextBio = bio.trim();
+
+    if (!isValidHttpUrl(avatar)) {
+      setMsg('Foto do perfil: use um link válido (http/https).');
       return;
     }
 
-    const digits = String(cep ?? '').replace(/\D/g, '').slice(0, 8);
-    const nextPrefix = digits.length >= 5 ? digits.slice(0, 5) : '';
-
-    if (!nextPrefix) {
-      setMsg('Digite pelo menos 5 números do CEP para salvar preferências.');
-      return;
-    }
-
-    setSaving(true);
+    setSavingPublic(true);
     try {
-      await fetchJSON('/consumers/me', {
+      const res = await fetchJSON<UpdateProfileResponse>('/me/profile', {
         method: 'PUT',
         headers: {
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          city: city.trim() || null,
-          cepPrefix: nextPrefix,
+          handle: nextHandle,
+          displayName: nextName || null,
+          bio: nextBio || null,
+          avatarUrl: avatar || null,
         }),
       });
 
-      // ✅ garante consistência já na hora: busca do backend e atualiza a tela
-      const fresh = await fetchJSON<Consumer>('/consumers/me', {
-        method: 'GET',
-        headers: { Authorization: `Bearer ${token}` },
-      });
+      setHandle(res.profile.handle ?? '');
+      setDisplayName(res.profile.displayName ?? '');
+      setBio(res.profile.bio ?? '');
+      setAvatarUrl(normalizeAvatarUrl(res.profile.avatarUrl));
 
-      setCity(fresh.city ?? city);
-      setCepPrefix(fresh.cepPrefix ?? nextPrefix);
-
-      setMsg('Preferências salvas.');
-      setTimeout(() => setMsg(''), 2500);
+      setMsg('Perfil público salvo.');
+      setTimeout(() => setMsg(''), 2200);
     } catch (e: unknown) {
       const err = e as ApiError;
-      setMsg(err?.message ?? 'Não foi possível salvar.');
+      setMsg(err?.message ?? 'Não foi possível salvar o perfil público.');
     } finally {
-      setSaving(false);
+      setSavingPublic(false);
     }
   }
+
+  const showConsumerPrefs = !home || home === 'consumer';
+
+  // 1) Novas flags de papel (condicionais)
+  const showMerchantModule = home === 'merchant';
+  const showFactoryModule = home === 'factory';
+  const showProviderModule = home === 'service_provider';
+  const showRepModule = home === 'representative';
 
   return (
     <main className="relative min-h-screen overflow-x-hidden bg-neutral-950 text-white">
@@ -326,18 +397,18 @@ export default function ProfilePage() {
           <div className="flex flex-wrap items-start justify-between gap-4">
             <div>
               <div className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-neutral-950/75 px-3 py-1 text-xs font-semibold text-white/85 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-                Conta • Consumidor
+                Configurações • {badge}
                 <span className="opacity-60">•</span>
                 Porque reputação importa
               </div>
 
               <h1 className="mt-4 text-3xl font-bold tracking-tight sm:text-4xl">
-                Central do Consumidor
+                Configurações
               </h1>
 
               <p className="mt-2 max-w-2xl text-sm text-white/70">
-                Preferências e segurança. Seu perfil público é outra coisa:
-                consequência do histórico.
+                Privado por padrão. Público só quando faz sentido: consequência do
+                histórico.
               </p>
             </div>
 
@@ -350,23 +421,15 @@ export default function ProfilePage() {
               </Link>
 
               <Link
-                href={publicHref}
-                className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90"
+                href="/me"
+                className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
               >
-                {publicCtaLabel}
+                Minha conta
               </Link>
-
-              <button
-                onClick={onSave}
-                disabled={loading || saving || !canSave || !isConsumer}
-                className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10 disabled:opacity-60"
-              >
-                {saving ? 'Salvando…' : 'Salvar'}
-              </button>
             </div>
           </div>
 
-          {effectiveHandle ? (
+          {hasPublicProfile ? (
             <div className="mt-4 text-xs text-white/65">
               Seu perfil público:{' '}
               <span className="font-semibold text-white/85">
@@ -375,9 +438,12 @@ export default function ProfilePage() {
             </div>
           ) : (
             <div className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 px-4 py-3 text-sm text-white/80 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-              <span className="font-semibold">Ative seu perfil público:</span>{' '}
-              crie um <span className="font-semibold">@handle</span> na sua conta
-              (/me). Sem handle, não existe link público.
+              <span className="font-semibold">Perfil público desativado:</span>{' '}
+              crie um <span className="font-semibold">@handle</span> em{' '}
+              <a href="#publico" className="font-semibold underline">
+                Perfil público
+              </a>
+              .
             </div>
           )}
 
@@ -391,221 +457,313 @@ export default function ProfilePage() {
 
       {/* CONTENT */}
       <div className="mx-auto max-w-6xl p-6 pb-10">
-        {/* Se não for consumer, trava e guia */}
-        {!isConsumer && home ? (
-          <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-            <div className="text-sm font-semibold text-white/90">
-              Você está logado como: {badge}
-            </div>
-            <div className="mt-2 text-sm text-white/70">
-              Esta central é exclusiva do Consumidor. Cada papel tem sua própria
-              central no Marto.
-            </div>
+        <div className="grid gap-6 lg:grid-cols-12">
+          {/* SIDEBAR */}
+          <aside className="lg:col-span-4">
+            <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+              <div className="text-sm font-semibold text-white/90">Seções</div>
 
-            <div className="mt-5 flex flex-wrap gap-2">
-              <Link
-                href={dashboardFromHome(home)}
-                className="rounded-2xl bg-white px-5 py-2 text-sm font-semibold text-black hover:opacity-90"
-              >
-                Ir para minha central
-              </Link>
+              <div className="mt-4 grid gap-2 text-sm">
+                <a
+                  href="#publico"
+                  className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
+                >
+                  Perfil público
+                  <div className="mt-1 text-xs text-white/65">
+                    @handle, bio, foto
+                  </div>
+                </a>
 
-              <Link
-                href="/me"
-                className="rounded-2xl border border-white/15 bg-white/5 px-5 py-2 text-sm font-semibold text-white hover:bg-white/10"
-              >
-                Minha conta
-              </Link>
-            </div>
-          </div>
-        ) : (
-          <div className="grid gap-6 lg:grid-cols-12">
-            {/* SIDEBAR */}
-            <aside className="lg:col-span-4">
-              <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-                <div className="text-sm font-semibold text-white/90">Seções</div>
+                {/* Módulos por papel */}
+                {showMerchantModule ? (
+                  <a
+                    href="#lojista"
+                    className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
+                  >
+                    Lojista
+                    <div className="mt-1 text-xs text-white/65">
+                      loja, vitrine, identidade comercial
+                    </div>
+                  </a>
+                ) : null}
 
-                <div className="mt-4 grid gap-2 text-sm">
+                {showFactoryModule ? (
+                  <a
+                    href="#fabrica"
+                    className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
+                  >
+                    Fábrica
+                    <div className="mt-1 text-xs text-white/65">
+                      perfil e configurações industriais
+                    </div>
+                  </a>
+                ) : null}
+
+                {showProviderModule ? (
+                  <a
+                    href="#prestador"
+                    className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
+                  >
+                    Prestador
+                    <div className="mt-1 text-xs text-white/65">
+                      perfil profissional e serviços
+                    </div>
+                  </a>
+                ) : null}
+
+                {showRepModule ? (
+                  <a
+                    href="#representante"
+                    className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
+                  >
+                    Representante
+                    <div className="mt-1 text-xs text-white/65">
+                      regiões e carteira
+                    </div>
+                  </a>
+                ) : null}
+
+                {/* (Recomendado) esconder Preferências quando não for consumer */}
+                {showConsumerPrefs ? (
                   <a
                     href="#preferencias"
                     className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
                   >
-                    Preferências
-                    <div className="mt-1 text-xs text-white/65">
-                      CEP + sugestões
-                    </div>
+                    Preferências (Consumidor)
+                    <div className="mt-1 text-xs text-white/65">CEP + sugestões</div>
                   </a>
+                ) : null}
 
-                  <a
-                    href="#pagamentos"
-                    className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
-                  >
-                    Pagamentos
-                    <div className="mt-1 text-xs text-white/65">
-                      Marto Pay (em breve)
-                    </div>
-                  </a>
+                <a
+                  href="#pagamentos"
+                  className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
+                >
+                  Pagamentos
+                  <div className="mt-1 text-xs text-white/65">
+                    Marto Pay (em breve)
+                  </div>
+                </a>
 
-                  <a
-                    href="#documentos"
-                    className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
-                  >
-                    Documentos
-                    <div className="mt-1 text-xs text-white/65">
-                      CPF/telefone (em breve)
-                    </div>
-                  </a>
+                <a
+                  href="#documentos"
+                  className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
+                >
+                  Documentos
+                  <div className="mt-1 text-xs text-white/65">
+                    CPF/telefone (em breve)
+                  </div>
+                </a>
 
-                  <a
-                    href="#seguranca"
-                    className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
-                  >
-                    Segurança
-                    <div className="mt-1 text-xs text-white/65">
-                      email, senha, sessões
-                    </div>
-                  </a>
-                </div>
-
-                <div className="mt-6 rounded-2xl border border-white/15 bg-black/25 p-4 text-xs text-white/70 ring-1 ring-white/5">
-                  Marto: dados da conta são privados. O público é consequência
-                  real — não currículo.
-                </div>
+                <a
+                  href="#seguranca"
+                  className="rounded-2xl border border-white/15 bg-white/5 px-4 py-3 hover:bg-white/10"
+                >
+                  Segurança
+                  <div className="mt-1 text-xs text-white/65">
+                    email, senha, sessões
+                  </div>
+                </a>
               </div>
-            </aside>
 
-            {/* MAIN */}
-            <section className="lg:col-span-8">
-              {/* Preferências */}
-              <div
-                id="preferencias"
-                className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
-              >
+              <div className="mt-6 rounded-2xl border border-white/15 bg-black/25 p-4 text-xs text-white/70 ring-1 ring-white/5">
+                Marto: dados da conta são privados. O público é consequência real —
+                não currículo.
+              </div>
+            </div>
+          </aside>
+
+          {/* MAIN */}
+          <section className="lg:col-span-8">
+            {/* Perfil público (UNIVERSAL) */}
+            <div
+              id="publico"
+              className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h2 className="text-lg font-semibold text-white/90">
-                    Preferências
+                    Perfil público
                   </h2>
                   <p className="mt-1 text-sm text-white/70">
-                    Digite o CEP e o Marto completa automaticamente.
+                    {hasPublicProfile
+                      ? 'Seu link público. Não é currículo: é consequência do histórico.'
+                      : 'Crie seu @handle para ter um link único. Público só quando faz sentido.'}
                   </p>
                 </div>
 
-                <div className="mt-6 grid gap-4">
-                  <label className="grid gap-2">
-                    <span className="text-sm font-semibold text-white/85">
-                      CEP (8 dígitos)
-                    </span>
+                <div className="flex flex-wrap gap-2">
+                  {hasPublicProfile ? (
+                    <Link
+                      href={`/u/${encodeURIComponent(effectiveHandle)}`}
+                      className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                    >
+                      Abrir público
+                    </Link>
+                  ) : (
+                    <a
+                      href="#publico"
+                      className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                    >
+                      Ativar aqui
+                    </a>
+                  )}
+
+                  <button
+                    onClick={onSavePublicProfile}
+                    disabled={
+                      loading || savingPublic || uploadingPhoto || !effectiveHandle
+                    }
+                    className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90 disabled:opacity-60"
+                  >
+                    {savingPublic
+                      ? 'Salvando…'
+                      : hasPublicProfile
+                        ? 'Salvar público'
+                        : 'Criar meu @handle'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="mt-6 grid gap-4">
+                {/* Foto do perfil (UPLOAD) */}
+                <div className="rounded-2xl border border-white/15 bg-black/25 p-4 ring-1 ring-white/5">
+                  <div className="text-sm font-semibold text-white/90">Foto</div>
+                  <div className="mt-1 text-sm text-white/65">
+                    Aparece no público e em partes do ecossistema.
+                  </div>
+
+                  <div className="mt-4 flex items-start gap-4">
+                    <div className="grid h-14 w-14 place-items-center overflow-hidden rounded-full bg-black/60 ring-1 ring-white/15">
+                      {avatar ? (
+                        <MartoImage
+                          src={avatar}
+                          alt="Foto do perfil (prévia)"
+                          size={56}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <MartoAvatarPlaceholder alt="Marto" />
+                      )}
+                    </div>
+
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <label className="inline-flex cursor-pointer items-center gap-2 rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90">
+                          {uploadingPhoto
+                            ? 'Enviando…'
+                            : avatar
+                              ? 'Trocar foto'
+                              : 'Enviar foto'}
+                          <input
+                            type="file"
+                            accept="image/*"
+                            className="hidden"
+                            disabled={uploadingPhoto}
+                            onChange={(e) => {
+                              const f = e.target.files?.[0];
+                              if (!f) return;
+                              void uploadPhoto(f);
+                              e.currentTarget.value = '';
+                            }}
+                          />
+                        </label>
+
+                        <button
+                          type="button"
+                          className={[
+                            'rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15',
+                            !avatar || uploadingPhoto
+                              ? 'pointer-events-none opacity-50'
+                              : '',
+                          ].join(' ')}
+                          onClick={() => void removePhotoServer()}
+                          disabled={!avatar || uploadingPhoto}
+                        >
+                          Remover foto
+                        </button>
+                      </div>
+
+                      <div className="mt-2 text-xs text-white/60">
+                        Formatos: JPG, PNG, WEBP • até 5MB
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* @handle */}
+                <label className="grid gap-2">
+                  <span className="text-sm font-semibold text-white/85">
+                    Seu @handle (URL pública)
+                  </span>
+
+                  <div className="flex items-center gap-2 rounded-2xl border border-white/15 bg-black/80 px-4 py-3">
+                    <span className="text-sm text-white/55">@</span>
                     <input
-                      value={cep}
-                      onChange={(e) => lookupCep(e.target.value)}
-                      placeholder="Ex: 36500000"
-                      className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white outline-none placeholder:text-white/35 focus:border-white/35"
-                      inputMode="numeric"
+                      value={handle}
+                      onChange={(e) => setHandle(sanitizeHandle(e.target.value))}
+                      className="w-full bg-transparent text-white/85 outline-none placeholder:text-white/35"
+                      placeholder="ex: joao.uba"
+                      autoComplete="off"
                       disabled={loading}
                     />
-                    <span className="text-xs text-white/65">
-                      {cepLoading
-                        ? 'Buscando endereço…'
-                        : 'Ao completar 8 dígitos, buscamos automaticamente.'}
+                  </div>
+
+                  <span className="text-xs text-white/60">
+                    Aparece como:{' '}
+                    <span className="font-semibold text-white/85">
+                      /u/{effectiveHandle || 'seu_handle'}
                     </span>
-                  </label>
-
-                  {/* ✅ 2) Card “Região salva” quando existir prefixo */}
-                  {cepPrefix ? (
-                    <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
-                      <div className="text-sm font-semibold text-white">
-                        Região salva
-                      </div>
-                      <div className="mt-2 text-sm text-white/75">
-                        CEP base:{' '}
-                        <span className="font-semibold text-white">
-                          {cepPrefix}
-                        </span>
-                      </div>
-                      <div className="mt-2 text-xs text-white/55">
-                        Por enquanto o Marto salva só o prefixo (5 primeiros
-                        dígitos) para sugestões. Para ver endereço completo,
-                        digite o CEP (8 dígitos).
-                      </div>
+                  </span>
+                  {!effectiveHandle ? (
+                    <div className="text-xs text-white/60">
+                      Defina um @handle para ativar seu link público.
                     </div>
                   ) : null}
+                </label>
 
-                  {addr ? (
-                    <div className="rounded-2xl border border-white/15 bg-black/25 p-4 text-white/80 ring-1 ring-white/5">
-                      <div className="text-sm font-semibold text-white">
-                        Endereço encontrado
-                      </div>
-                      <div className="mt-2 text-sm text-white/75">
-                        {addr.street ? `${addr.street}` : '—'}
-                        {addr.district ? ` • ${addr.district}` : ''}
-                        <br />
-                        {addr.city}/{addr.uf}
-                      </div>
+                <label className="grid gap-2">
+                  <span className="text-sm font-semibold text-white/85">
+                    Nome público
+                  </span>
+                  <input
+                    value={displayName}
+                    onChange={(e) => setDisplayName(e.target.value)}
+                    className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white/85 outline-none placeholder:text-white/35 focus:border-white/35"
+                    placeholder="Ex: João Silva"
+                    disabled={loading}
+                  />
+                </label>
 
-                      <div className="mt-3 text-xs text-white/65">
-                        Por enquanto salvamos só o prefixo do CEP (5 primeiros
-                        dígitos). Endereço completo vem depois.
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <div className="grid gap-4 sm:grid-cols-2">
-                    <label className="grid gap-2">
-                      <span className="text-sm font-semibold text-white/85">
-                        Cidade (opcional)
-                      </span>
-                      <input
-                        value={city}
-                        onChange={(e) => setCity(e.target.value)}
-                        placeholder="Ex: Ubá"
-                        className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white outline-none placeholder:text-white/35 focus:border-white/35"
-                        disabled={loading}
-                      />
-                      <div className="text-xs text-white/65">
-                        Usamos isso para sugestões — não pra te travar.
-                      </div>
-                    </label>
+                <label className="grid gap-2">
+                  <span className="text-sm font-semibold text-white/85">Bio</span>
+                  <textarea
+                    value={bio}
+                    onChange={(e) => setBio(e.target.value)}
+                    className="min-h-[110px] rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-white/85 outline-none placeholder:text-white/35 focus:border-white/35"
+                    placeholder="Uma frase curta sobre você no Marto."
+                    disabled={loading}
+                  />
+                  <div className="text-xs text-white/60">
+                    Curta, direta, real. Sem exagero. Sem promessa.
                   </div>
-
-                  <div className="mt-2 flex flex-wrap gap-2">
-                    <button
-                      onClick={onSave}
-                      disabled={loading || saving || cepLoading}
-                      className="rounded-2xl bg-white px-5 py-2 text-sm font-semibold text-black disabled:opacity-60"
-                    >
-                      {saving ? 'Salvando…' : 'Salvar preferências'}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCep('');
-                        setAddr(null);
-                        setCepPrefix('');
-                        setMsg('CEP limpo.');
-                        setTimeout(() => setMsg(''), 1800);
-                      }}
-                      className="rounded-2xl border border-white/15 bg-white/5 px-5 py-2 text-sm font-semibold text-white hover:bg-white/10 disabled:opacity-60"
-                      disabled={loading || saving}
-                    >
-                      Limpar CEP
-                    </button>
-                  </div>
-                </div>
+                </label>
               </div>
+            </div>
 
-              {/* Pagamentos (em breve) */}
+            {/* Lojista (CONDICIONAL) */}
+            {showMerchantModule ? <MerchantProfileSection /> : null}
+
+            {/* (Opcional) Placeholders para evitar link morto */}
+            {showFactoryModule ? (
               <div
-                id="pagamentos"
+                id="fabrica"
                 className="mt-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h2 className="text-lg font-semibold text-white/90">
-                      Pagamentos
-                    </h2>
+                    <h2 className="text-lg font-semibold text-white/90">Fábrica</h2>
                     <p className="mt-1 text-sm text-white/70">
-                      Cartões e métodos no Marto Pay. Sem fricção, sem gambiarra.
+                      Configurações industriais e identidade do fabricante.
                     </p>
                   </div>
                   <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/75">
@@ -614,22 +772,31 @@ export default function ProfilePage() {
                 </div>
 
                 <div className="mt-5 rounded-2xl border border-white/15 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
-                  Quando ativarmos o Marto Pay, você gerencia seus métodos aqui.
+                  Este módulo vai consolidar dados do fabricante (marca, políticas,
+                  qualidade e presença). Por enquanto, use o painel.
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Link
+                    href="/dash/factory"
+                    className="rounded-2xl border border-white/15 bg-white/5 px-5 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                  >
+                    Abrir painel da fábrica
+                  </Link>
                 </div>
               </div>
+            ) : null}
 
-              {/* Documentos (em breve) */}
+            {showProviderModule ? (
               <div
-                id="documentos"
+                id="prestador"
                 className="mt-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <h2 className="text-lg font-semibold text-white/90">
-                      Documentos
-                    </h2>
+                    <h2 className="text-lg font-semibold text-white/90">Prestador</h2>
                     <p className="mt-1 text-sm text-white/70">
-                      CPF e dados sensíveis ficam aqui — privados.
+                      Perfil profissional, serviços e disponibilidade.
                     </p>
                   </div>
                   <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/75">
@@ -638,23 +805,33 @@ export default function ProfilePage() {
                 </div>
 
                 <div className="mt-5 rounded-2xl border border-white/15 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
-                  Isso não aparece no seu perfil público. Serve para compras,
-                  notas e segurança.
+                  Este módulo vai centralizar identidade do prestador e parâmetros
+                  de serviço. Por enquanto, use o painel.
+                </div>
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Link
+                    href="/dash/provider/services"
+                    className="rounded-2xl border border-white/15 bg-white/5 px-5 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                  >
+                    Abrir painel do prestador
+                  </Link>
                 </div>
               </div>
+            ) : null}
 
-              {/* Segurança */}
+            {showRepModule ? (
               <div
-                id="seguranca"
+                id="representante"
                 className="mt-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <h2 className="text-lg font-semibold text-white/90">
-                      Segurança
+                      Representante
                     </h2>
                     <p className="mt-1 text-sm text-white/70">
-                      Em breve: confirmar email, trocar senha e sessões.
+                      Regiões, carteira e presença comercial.
                     </p>
                   </div>
                   <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/75">
@@ -662,30 +839,123 @@ export default function ProfilePage() {
                   </span>
                 </div>
 
-                <div className="mt-5 grid gap-3 sm:grid-cols-2">
-                  <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
-                    <div className="text-sm font-semibold text-white/90">
-                      Confirmação de email
-                    </div>
-                    <div className="mt-1 text-sm text-white/70">
-                      Vai virar requisito para recursos sensíveis (carteira,
-                      saque, etc).
-                    </div>
-                  </div>
+                <div className="mt-5 rounded-2xl border border-white/15 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
+                  Este módulo vai consolidar regiões, metas e carteira. Por
+                  enquanto, use o painel.
+                </div>
 
-                  <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
-                    <div className="text-sm font-semibold text-white/90">
-                      Sessões e dispositivos
-                    </div>
-                    <div className="mt-1 text-sm text-white/70">
-                      Em breve: ver onde sua conta está logada.
-                    </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Link
+                    href="/dash/representative"
+                    className="rounded-2xl border border-white/15 bg-white/5 px-5 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                  >
+                    Abrir painel do representante
+                  </Link>
+                </div>
+              </div>
+            ) : null}
+
+            {/* Preferências do Consumidor (CONDICIONAL) */}
+            {showConsumerPrefs ? (
+              <ConsumerPrefsSection
+                home={home ?? null}
+                loading={loading}
+                onMsg={setMsg}
+                initialCity={consumerCity}
+                initialCepPrefix={consumerCepPrefix}
+              />
+            ) : null}
+
+            {/* Pagamentos (em breve) */}
+            <div
+              id="pagamentos"
+              className="mt-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-white/90">
+                    Pagamentos
+                  </h2>
+                  <p className="mt-1 text-sm text-white/70">
+                    Cartões e métodos no Marto Pay. Sem fricção.
+                  </p>
+                </div>
+                <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/75">
+                  em breve
+                </span>
+              </div>
+
+              <div className="mt-5 rounded-2xl border border-white/15 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
+                Quando ativarmos o Marto Pay, você gerencia seus métodos aqui.
+              </div>
+            </div>
+
+            {/* Documentos (em breve) */}
+            <div
+              id="documentos"
+              className="mt-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-white/90">
+                    Documentos
+                  </h2>
+                  <p className="mt-1 text-sm text-white/70">
+                    CPF e dados sensíveis ficam aqui — privados.
+                  </p>
+                </div>
+                <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/75">
+                  em breve
+                </span>
+              </div>
+
+              <div className="mt-5 rounded-2xl border border-white/15 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
+                Isso não aparece no seu perfil público. Serve para compras,
+                notas e segurança.
+              </div>
+            </div>
+
+            {/* Segurança (em breve) */}
+            <div
+              id="seguranca"
+              className="mt-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold text-white/90">
+                    Segurança
+                  </h2>
+                  <p className="mt-1 text-sm text-white/70">
+                    Em breve: confirmar email, trocar senha e sessões.
+                  </p>
+                </div>
+                <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/75">
+                  em breve
+                </span>
+              </div>
+
+              <div className="mt-5 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
+                  <div className="text-sm font-semibold text-white/90">
+                    Confirmação de email
+                  </div>
+                  <div className="mt-1 text-sm text-white/70">
+                    Vai virar requisito para recursos sensíveis (carteira, saque).
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
+                  <div className="text-sm font-semibold text-white/90">
+                    Sessões e dispositivos
+                  </div>
+                  <div className="mt-1 text-sm text-white/70">
+                    Em breve: ver onde sua conta está logada.
                   </div>
                 </div>
               </div>
-            </section>
-          </div>
-        )}
+            </div>
+          </section>
+        </div>
       </div>
     </main>
   );
