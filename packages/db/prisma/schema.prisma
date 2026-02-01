@@ -887,3 +887,23 @@ enum FactoryStatus {
   INACTIVE
   SUSPENDED
 }
+
+model PublicLink {
+  id          String      @id @default(cuid())
+  code        String      @unique
+  kind        String      // MVP: "SHOP" etc
+  targetPath  String      // ex: "/@store5"
+  ownerUserId String?     // opcional
+  createdAt   DateTime    @default(now())
+  scans       PublicScan[]
+}
+
+model PublicScan {
+  id        String     @id @default(cuid())
+  linkId    String
+  link      PublicLink @relation(fields: [linkId], references: [id], onDelete: Cascade)
+  createdAt DateTime   @default(now())
+  userAgent String?
+  referer   String?
+  ipHash    String?
+}

@@ -23,6 +23,9 @@ import { RepresentativesModule } from './modules/representatives/representatives
 // ✅ NOVO
 import { PublicModule } from './modules/public/public.module';
 
+// ✅ NOVO (short links)
+import { ShortLinksModule } from './modules/short-links/short-links.module';
+
 // ✅ NOVO (pedido)
 import { UploadsController } from './common/uploads/uploads.controller';
 
@@ -54,10 +57,9 @@ import { TransportModule } from './modules/transport/transport.module';
     ConsumersModule,
     RepresentativesModule,
 
-    // ✅ adicionado aqui
-    TransportModule,
-
     PublicModule,
+    ShortLinksModule,
+    TransportModule,
   ],
   controllers: [UploadsController],
 })

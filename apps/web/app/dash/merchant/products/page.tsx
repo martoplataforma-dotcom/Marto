@@ -1543,6 +1543,7 @@ export default function MerchantProductsPage() {
       const res = await fetchJSON<ProductsResponse>('/merchants/me/products', {
         method: 'GET',
         headers: { Authorization: `Bearer ${token}` },
+        cache: 'no-store',
       });
 
       setProducts(res.items ?? []);

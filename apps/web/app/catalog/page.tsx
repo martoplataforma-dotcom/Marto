@@ -363,7 +363,7 @@ export default function CatalogPage() {
         ) : (
           <ul className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {filtered.map((it) => {
-              const href = `/shop/${encodeURIComponent(it.id)}`;
+              const href = `/shop/p/${encodeURIComponent(it.id)}`;
               const title = (it.title ?? it.name ?? 'Produto').toString();
               const img = toAbsoluteUrl(coverFromImages(it.images));
 

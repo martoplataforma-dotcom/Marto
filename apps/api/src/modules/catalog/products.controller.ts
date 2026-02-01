@@ -81,36 +81,6 @@ export class ProductsController {
     }));
   }
 
-  // ✅ GET /api/products/:id (detalhe público)
-  @Get(':id')
-  async getOne(@Param('id') id: string) {
-    const p = await this.prisma.product.findFirst({
-      where: { id, active: true },
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        priceCents: true,
-        merchantId: true,
-        images: true,
-      },
-    });
-
-    if (!p) return { ok: false, message: 'Produto não encontrado' };
-
-    return {
-      ok: true,
-      product: {
-        id: p.id,
-        name: p.title,
-        description: p.description,
-        price: p.priceCents,
-        merchantId: p.merchantId,
-        images: p.images ?? [],
-      },
-    };
-  }
-
   @Get('resolve')
   async resolve(
     @Query('merchant') merchantQ: string,
@@ -133,10 +103,16 @@ export class ProductsController {
       return { ok: false, message: 'Loja não encontrada.' };
     }
 
+    const {
+      id: merchantId,
+      handle: merchantHandleValue,
+      tradeName: merchantTradeNameValue,
+    } = merchant;
+
     // 2) pega produtos do merchant que têm o bloco "Identidade (Marto)"
     const candidates = await this.prisma.product.findMany({
       where: {
-        merchantId: merchant.id,
+        merchantId: merchantId,
         description: { contains: '### Identidade (Marto)' }, // só pra reduzir universo
       },
       select: {
@@ -164,11 +140,57 @@ export class ProductsController {
     return {
       ok: true,
       merchant: {
-        id: merchant.id,
-        handle: merchant.handle,
-        tradeName: merchant.tradeName,
+        id: merchantId,
+        handle: merchantHandleValue,
+        tradeName: merchantTradeNameValue,
       },
       product: found,
+    };
+  }
+
+  // ✅ GET /api/products/:id (detalhe público)
+  @Get(':id')
+  async getOne(@Param('id') id: string) {
+    const p = await this.prisma.product.findFirst({
+      where: { id, active: true },
+      select: {
+        id: true,
+        title: true,
+        description: true,
+        priceCents: true,
+        merchantId: true,
+        images: true,
+        merchant: {
+          select: {
+            id: true,
+            handle: true,
+            tradeName: true,
+          },
+        },
+      },
+    });
+
+    if (!p) return { ok: false, message: 'Produto não encontrado' };
+
+    const productHandle = extractProductHandleFromDescription(
+      p.description ?? '',
+    );
+    const merchantHandle = p.merchant?.handle ?? null;
+
+    return {
+      ok: true,
+      product: {
+        id: p.id,
+        name: p.title,
+        description: p.description,
+        price: p.priceCents,
+        merchantId: p.merchantId,
+        images: p.images ?? [],
+        // ✅ novos:
+        productHandle,
+        merchantHandle,
+        merchantTradeName: p.merchant?.tradeName ?? null,
+      },
     };
   }
 

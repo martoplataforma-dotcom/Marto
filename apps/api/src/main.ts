@@ -33,6 +33,24 @@ if (!process.env.DATABASE_URL) {
 async function bootstrap(): Promise<void> {
   const app = await NestFactory.create(AppModule);
 
+  // ✅ 1) desativa ETag (evita 304 Not Modified)
+  const expressInstance = app.getHttpAdapter().getInstance();
+  if (expressInstance && typeof expressInstance.set === 'function') {
+    expressInstance.set('etag', false);
+  }
+
+  // ✅ 2) proíbe cache em API (painéis, auth, dados dinâmicos)
+  app.use((req: unknown, res: any, next: () => void) => {
+    res.setHeader(
+      'Cache-Control',
+      'no-store, no-cache, must-revalidate, proxy-revalidate',
+    );
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.setHeader('Surrogate-Control', 'no-store');
+    next();
+  });
+
   // ✅ Prefixo global da API
   app.setGlobalPrefix('api');
 

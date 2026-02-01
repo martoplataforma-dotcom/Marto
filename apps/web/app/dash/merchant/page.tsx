@@ -69,6 +69,23 @@ type MerchantOrdersSummaryResponse = {
   }>;
 };
 
+type ShortLinksMetrics = {
+  ok: boolean;
+  link?: {
+    code?: string;
+    targetPath?: string;
+    createdAt?: string;
+  };
+  totals?: {
+    all?: number;
+    last7?: number;
+    last30?: number;
+  };
+  series14d?: { date: string; count: number }[];
+  last10?: { at: string; referer: string | null; ua: string | null }[];
+  message?: string;
+};
+
 function statusLabel(status?: string | null) {
   const s = String(status ?? '').toUpperCase();
   if (s === 'ACTIVE') return 'Ativa';
@@ -158,6 +175,32 @@ function cleanHandle(raw?: string | null) {
     .replace(/^@+/, '')
     .toLowerCase()
     .replace(/[^a-z0-9._-]/g, '');
+}
+
+function sparklinePoints(values: number[], w = 120, h = 28, pad = 2) {
+  const max = Math.max(1, ...values);
+  const n = Math.max(1, values.length);
+  const dx = (w - pad * 2) / Math.max(1, n - 1);
+
+  const pts = values.map((v, i) => {
+    const x = pad + i * dx;
+    const y = h - pad - (v / max) * (h - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+
+  return pts.join(' ');
+}
+
+function sum(nums: number[]) {
+  return nums.reduce((acc, n) => acc + (Number(n) || 0), 0);
+}
+
+function pctChange(current: number, previous: number) {
+  if (previous <= 0) {
+    if (current <= 0) return 0;
+    return 100;
+  }
+  return ((current - previous) / previous) * 100;
 }
 
 // ✅ helper p/ decidir unoptimized no <Image />
@@ -298,6 +341,11 @@ export default function MerchantDash() {
   const [ordersLoading, setOrdersLoading] = useState(true);
   const [ordersMsg, setOrdersMsg] = useState('');
 
+  const [metrics, setMetrics] = useState<ShortLinksMetrics | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(false);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
+  const [origin, setOrigin] = useState('');
+
   const [pTitle, setPTitle] = useState('');
   const [pPrice, setPPrice] = useState('');
   const [pSaving, setPSaving] = useState(false);
@@ -414,6 +462,50 @@ export default function MerchantDash() {
         setLoading(false);
       }
     })();
+  }, []);
+
+  useEffect(() => {
+    setOrigin(window.location.origin);
+  }, []);
+
+  useEffect(() => {
+    const token = getToken();
+    if (!token) return;
+
+    let alive = true;
+
+    (async () => {
+      try {
+        setMetricsLoading(true);
+        setMetricsError(null);
+
+        const res = await fetchJSON<ShortLinksMetrics>('/short-links/me/metrics', {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (!alive) return;
+
+        if (!res?.ok) {
+          setMetrics(res ?? null);
+          setMetricsError(res?.message ?? 'Falha ao carregar métricas.');
+          return;
+        }
+
+        setMetrics(res);
+      } catch (e: unknown) {
+        if (!alive) return;
+        const msg = e instanceof Error ? e.message : 'Erro ao carregar métricas.';
+        setMetricsError(msg);
+      } finally {
+        if (!alive) return;
+        setMetricsLoading(false);
+      }
+    })();
+
+    return () => {
+      alive = false;
+    };
   }, []);
 
   // ✅ fecha com ESC
@@ -680,6 +772,12 @@ export default function MerchantDash() {
     return score;
   }, [ordersSummary]);
 
+  const series = (metrics?.series14d ?? []).map((x) => Number(x.count ?? 0));
+  const prev7 = sum(series.slice(0, 7));
+  const last7 = sum(series.slice(7, 14));
+  const delta7 = pctChange(last7, prev7);
+  const deltaLabel = delta7 === 0 ? '0%' : `${delta7 > 0 ? '+' : ''}${Math.round(delta7)}%`;
+
   return (
     <main className="relative min-h-screen overflow-x-hidden bg-neutral-950 text-white">
       {/* fundo Marto */}
@@ -842,6 +940,143 @@ export default function MerchantDash() {
             </div>
           </div>
         </div>
+
+        <section className="mt-6">
+          <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <h2 className="text-base font-semibold text-white">Alcance • QR</h2>
+                <p className="text-sm text-white/65">
+                  Escaneios do link curto da sua vitrine.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs text-white/70">
+                  {metricsLoading
+                    ? 'Carregando…'
+                    : metrics?.ok
+                      ? `/${metrics.link?.code ?? '—'}`
+                      : '—'}
+                </span>
+
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const code = String(metrics?.link?.code ?? '');
+                    if (!origin || !code) return;
+                    await navigator.clipboard.writeText(`${origin}/s/${code}`);
+                  }}
+                  className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/15 disabled:opacity-50"
+                  disabled={!metrics?.ok || !origin || !metrics?.link?.code}
+                  title="Copiar link curto"
+                >
+                  Copiar link
+                </button>
+
+                <a
+                  href={
+                    metrics?.ok && origin && metrics?.link?.code
+                      ? `${origin}/s/${metrics.link.code}`
+                      : '#'
+                  }
+                  target="_blank"
+                  rel="noreferrer"
+                  className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-white/15"
+                  title="Abrir link curto"
+                  onClick={(e) => {
+                    if (!metrics?.ok || !origin || !metrics?.link?.code) e.preventDefault();
+                  }}
+                >
+                  Abrir
+                </a>
+              </div>
+            </div>
+
+            {metricsError ? (
+              <div className="rounded-2xl border border-white/10 bg-white/5 p-4 text-sm text-white/70">
+                {metricsError}
+              </div>
+            ) : (
+              <div className="grid gap-3 md:grid-cols-4">
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs text-white/65">Total</div>
+                  <div className="mt-1 text-2xl font-semibold text-white">
+                    {Number(metrics?.totals?.all ?? 0)}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs text-white/65">Últimos 7 dias</div>
+                  <div className="mt-1 text-2xl font-semibold text-white">
+                    {Number(metrics?.totals?.last7 ?? 0)}
+                  </div>
+                  <div className="mt-2 text-xs text-white/55">
+                    vs 7 dias anteriores: <span className="text-white/75">{deltaLabel}</span>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="text-xs text-white/65">Últimos 30 dias</div>
+                  <div className="mt-1 text-2xl font-semibold text-white">
+                    {Number(metrics?.totals?.last30 ?? 0)}
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="text-xs text-white/65">Tendência (14d)</div>
+                    <div className="text-xs text-white/55">
+                      {metrics?.series14d?.length ? 'diário' : '—'}
+                    </div>
+                  </div>
+
+                  <div className="mt-2">
+                    <svg width="120" height="28" viewBox="0 0 120 28" className="block">
+                      <polyline
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        className="text-white/70"
+                        points={sparklinePoints(
+                          (metrics?.series14d ?? []).map((x) => Number(x.count ?? 0)),
+                          120,
+                          28,
+                          2,
+                        )}
+                      />
+                    </svg>
+                  </div>
+
+                  <div className="mt-2 text-xs text-white/55">
+                    {metrics?.series14d?.slice(-1)?.[0]?.count ?? 0} hoje
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {metrics?.ok && metrics?.last10?.length ? (
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
+                <div className="mb-2 text-sm font-semibold text-white">Últimos acessos</div>
+                <div className="space-y-2">
+                  {metrics.last10.slice(0, 6).map((x, idx) => (
+                    <div
+                      key={`${x.at}-${idx}`}
+                      className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2 last:border-b-0 last:pb-0"
+                    >
+                      <div className="text-xs text-white/70">
+                        {new Date(x.at).toLocaleString('pt-BR')}
+                      </div>
+                      <div className="max-w-[520px] truncate text-xs text-white/55">
+                        {x.referer || '—'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </section>
 
         {/* Inbox do dia */}
         <div className="mt-5 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">

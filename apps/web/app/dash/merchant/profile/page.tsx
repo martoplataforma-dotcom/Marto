@@ -413,12 +413,12 @@ export default function MerchantProfilePage() {
   // ✅ usa o handle digitado (normalizado) para preview imediato
   const previewHandle = normalizedHandle || (data?.handle ?? '');
   const publicShopHref = previewHandle
-    ? `/loja/${previewHandle}`
+    ? `/@${previewHandle}`
     : data?.id
       ? `/shop/merchant/${data.id}`
       : '/catalog';
 
-  const publicLinkLabel = previewHandle ? `/loja/${previewHandle}` : '/loja/seu-handle';
+  const publicLinkLabel = previewHandle ? `/@${previewHandle}` : '/@seu-handle';
 
   const previewProducts = useMemo(() => {
     const active = products.filter((p) => p.active);
@@ -466,7 +466,7 @@ export default function MerchantProfilePage() {
 
   async function copyPublicLink() {
     try {
-      const path = previewHandle ? `/loja/${previewHandle}` : '/loja/seu-handle';
+      const path = previewHandle ? `/@${previewHandle}` : '/@seu-handle';
       // não invento domínio — usa o origin atual
       const full = typeof window !== 'undefined' ? `${window.location.origin}${path}` : path;
       await navigator.clipboard.writeText(full);

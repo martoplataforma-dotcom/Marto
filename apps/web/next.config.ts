@@ -35,8 +35,22 @@ const nextConfig: NextConfig = {
     ],
   },
 
+  async redirects() {
+    return [
+      {
+        source: '/loja/:handle',
+        destination: '/@:handle',
+        permanent: true,
+      },
+    ];
+  },
+
   async rewrites() {
     return [
+      {
+        source: '/s/:code',
+        destination: 'http://localhost:3001/api/s/:code',
+      },
       {
         source: '/api/:path*',
         destination: 'http://localhost:3001/api/:path*',

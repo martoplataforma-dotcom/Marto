@@ -1,21 +1,20 @@
-// apps/web/app/shop/merchant/[id]/page.tsx
+// apps/web/app/loja/[handle]/page.tsx
 'use client';
 
 import Image from 'next/image';
 import Link from 'next/link';
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { useParams } from 'next/navigation';
-import { fetchJSON, type ApiError } from '../../../../src/lib/api';
-import { resolveAsset } from '../../../../src/lib/urls';
+import { Copy, Instagram, MessageCircle, QrCode } from 'lucide-react';
+import QRCode from 'qrcode';
+import { use, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { fetchJSON, type ApiError } from '../../src/lib/api';
 
 type PublicMerchant = {
   id: string;
+  handle?: string | null;
   tradeName?: string | null;
   city?: string | null;
   cepPrefix?: string | null;
   status?: string | null;
-
-  // (FUTURO) quando você criar no backend
   logoUrl?: string | null;
   coverUrl?: string | null;
 };
@@ -28,8 +27,27 @@ type ProductItem = {
   images?: string[] | null;
 };
 
+// ✅ API pode vir como http://localhost:3001/api
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001/api';
+// ✅ assets NÃO podem usar /api (uploads ficam em /uploads)
+const ASSETS_URL = API_URL.replace(/\/api\/?$/, '');
+
 function isRemoteHttp(src: string) {
   return /^https?:\/\//i.test(src);
+}
+
+// ✅ resolve de assets (idêntico ao padrão do resto do projeto)
+function resolveAsset(urlOrPath?: string | null) {
+  const v = String(urlOrPath ?? '').trim();
+  if (!v) return null;
+
+  // já é absoluto
+  if (isRemoteHttp(v)) return v;
+
+  // relativo do backend: /uploads/...
+  if (v.startsWith('/uploads/')) return `${ASSETS_URL}${v}`;
+
+  return null;
 }
 
 function moneyFromCentsBRL(cents: number) {
@@ -87,28 +105,6 @@ function SectionTitle({
   );
 }
 
-function Pillar({
-  title,
-  desc,
-  status,
-}: {
-  title: string;
-  desc: string;
-  status: 'MVP' | 'Em breve';
-}) {
-  return (
-    <div className="rounded-2xl border border-white/15 bg-white/10 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-      <div className="flex items-center justify-between gap-3">
-        <div className="text-sm font-semibold text-white/90">{title}</div>
-        <span className="rounded-full border border-white/15 bg-black/30 px-3 py-1 text-[11px] font-semibold text-white/80">
-          {status}
-        </span>
-      </div>
-      <div className="mt-1 text-xs text-white/75">{desc}</div>
-    </div>
-  );
-}
-
 function Badge({ children }: { children: ReactNode }) {
   return (
     <span className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-xs font-semibold text-white/85">
@@ -117,42 +113,43 @@ function Badge({ children }: { children: ReactNode }) {
   );
 }
 
-function PlaceholderCover() {
-  return (
-    <>
-      <div className="absolute inset-0 bg-[radial-gradient(900px_320px_at_20%_10%,rgba(255,255,255,0.10),transparent_55%),radial-gradient(900px_320px_at_80%_0%,rgba(255,255,255,0.06),transparent_60%),linear-gradient(to_bottom,rgba(0,0,0,0.15),rgba(0,0,0,0.75))]" />
-      <div className="absolute inset-0 opacity-[0.22] [background-image:linear-gradient(to_right,rgba(255,255,255,0.08)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.08)_1px,transparent_1px)] [background-size:48px_48px]" />
-    </>
-  );
-}
-
-export default function MerchantPublicPage() {
-  const params = useParams<{ id: string }>();
-  const merchantId = String(params?.id ?? '').trim();
+export default function PublicShopByHandlePage({
+  params,
+}: {
+  params: Promise<{ merchant: string }>;
+}) {
+  const { merchant } = use(params);
+  const handle = merchant.replace(/^@/, '');
+  const raw = String(merchant ?? handle ?? '');
+  const decoded = decodeURIComponent(raw);
+  const clean = decoded.replace(/^@+/, '').trim();
 
   const [loading, setLoading] = useState(true);
   const [errMsg, setErrMsg] = useState('');
   const [m, setM] = useState<PublicMerchant | null>(null);
   const [products, setProducts] = useState<ProductItem[]>([]);
+  const [origin, setOrigin] = useState('');
+  const [qrOpen, setQrOpen] = useState(false);
+  const [qrDataUrl, setQrDataUrl] = useState<string>('');
 
   useEffect(() => {
     (async () => {
       setLoading(true);
       setErrMsg('');
 
-      if (!merchantId) {
+      if (!handle) {
         setErrMsg('Loja inválida.');
         setLoading(false);
         return;
       }
 
       try {
-        const merchant = await fetchJSON<PublicMerchant>(`/shops/${merchantId}`, {
+        const merchant = await fetchJSON<PublicMerchant>(`/shops/handle/${handle}`, {
           method: 'GET',
         });
 
         const items = await fetchJSON<{ ok: boolean; items: ProductItem[] }>(
-          `/shops/${merchantId}/products`,
+          `/shops/handle/${handle}/products`,
           { method: 'GET' },
         );
 
@@ -167,30 +164,40 @@ export default function MerchantPublicPage() {
         setLoading(false);
       }
     })();
-  }, [merchantId]);
+  }, [handle]);
 
   const showName = m?.tradeName || (loading ? 'Carregando…' : 'Loja');
   const showCity = m?.city || '—';
   const showCep = m?.cepPrefix || '—';
+  const canonicalPath = clean ? `/@${clean}` : '';
+  const shortPath = clean ? `/s/${clean}` : '';
+  const canonicalUrl = origin && canonicalPath ? `${origin}${canonicalPath}` : '';
+  const shortUrl = origin && shortPath ? `${origin}${shortPath}` : '';
+  const waHref = shortUrl
+    ? `https://wa.me/?text=${encodeURIComponent(`Veja a vitrine da ${showName}: ${shortUrl}`)}`
+    : '#';
+
+  useEffect(() => {
+    setOrigin(window.location.origin);
+  }, []);
+
+  useEffect(() => {
+    const run = async () => {
+      if (!qrOpen || !shortUrl) return;
+      const dataUrl = await QRCode.toDataURL(shortUrl, {
+        errorCorrectionLevel: 'H',
+        margin: 2,
+        scale: 8,
+      });
+      setQrDataUrl(dataUrl);
+    };
+    run();
+  }, [qrOpen, shortUrl]);
 
   const visibleProducts = useMemo(
     () => products.filter((p) => p.active).slice(0, 24),
     [products],
   );
-
-  const reputationBand = useMemo(() => {
-    if (loading) return '—';
-
-    const withPhoto = visibleProducts.filter((p) => {
-      const img = resolveAsset(p.images?.[0] ?? null);
-      return Boolean(img);
-    }).length;
-
-    if (visibleProducts.length === 0) return 'Iniciando';
-    if (withPhoto >= 3) return 'Boa (MVP)';
-    if (withPhoto >= 1) return 'Atenção (MVP)';
-    return 'Em construção';
-  }, [loading, visibleProducts]);
 
   const coverUrl = resolveAsset(m?.coverUrl ?? null);
   const logoUrl = resolveAsset(m?.logoUrl ?? null);
@@ -213,7 +220,7 @@ export default function MerchantPublicPage() {
           </div>
         </div>
 
-        {/* HERO com banner + avatar */}
+        {/* HERO */}
         <div className="overflow-hidden rounded-3xl border border-white/15 bg-neutral-950/75 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
           <div className="relative h-40 w-full">
             {coverUrl ? (
@@ -227,7 +234,10 @@ export default function MerchantPublicPage() {
                 unoptimized={isRemoteHttp(coverUrl)}
               />
             ) : (
-              <PlaceholderCover />
+              <>
+                <div className="absolute inset-0 bg-[radial-gradient(900px_320px_at_20%_10%,rgba(255,255,255,0.10),transparent_55%),radial-gradient(900px_320px_at_80%_0%,rgba(255,255,255,0.06),transparent_60%),linear-gradient(to_bottom,rgba(0,0,0,0.15),rgba(0,0,0,0.75))]" />
+                <div className="absolute inset-0 opacity-[0.22] [background-image:linear-gradient(to_right,rgba(255,255,255,0.08)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.08)_1px,transparent_1px)] [background-size:48px_48px]" />
+              </>
             )}
             <div className="absolute inset-x-0 bottom-0 h-16 bg-gradient-to-t from-black/70 to-transparent" />
           </div>
@@ -256,24 +266,80 @@ export default function MerchantPublicPage() {
 
                 <div>
                   <div className="flex flex-wrap items-center gap-2">
-                    <Badge>{showName}</Badge>
+                    <Badge>@{handle}</Badge>
                     <Badge>
-                      <span className="text-white/65">Faixa:</span>{' '}
-                      <span className="text-white/90">{reputationBand}</span>
-                    </Badge>
-                    <Badge>
-                      <span className="text-white/65">Prova real</span>{' '}
-                      <span className="text-white/90">MVP</span>
+                      <span className="text-white/65">Status:</span>{' '}
+                      <span className="text-white/90">{statusLabel(m?.status)}</span>
                     </Badge>
                   </div>
 
-                  <h1 className="mt-3 text-3xl font-bold tracking-tight sm:text-4xl">
-                    {showName}
-                  </h1>
+                  <div className="mt-3 flex items-center gap-3">
+                    <h1 className="text-2xl font-semibold text-white">{showName}</h1>
+
+                    <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-medium text-white/70">
+                      @{clean}
+                    </span>
+
+                    <a
+                      href={waHref}
+                      target="_blank"
+                      rel="noreferrer"
+                      aria-disabled={waHref === '#'}
+                      onClick={(e) => {
+                        if (waHref === '#') e.preventDefault();
+                      }}
+                      className="inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/5 p-2 text-white/60 transition hover:bg-white/10 hover:text-white"
+                      title="Compartilhar no WhatsApp"
+                    >
+                      <MessageCircle className="h-4 w-4" />
+                    </a>
+
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!shortUrl) return;
+                        await navigator.clipboard.writeText(shortUrl);
+                      }}
+                      className="inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/5 p-2 text-white/60 transition hover:bg-white/10 hover:text-white"
+                      title="Copiar link"
+                      aria-label="Copiar link"
+                      disabled={!shortUrl}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!shortUrl) return;
+
+                        await navigator.clipboard.writeText(shortUrl);
+
+                        // abre Instagram
+                        window.open('https://www.instagram.com/', '_blank');
+                      }}
+                      className="inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/5 p-2 text-white/60 transition hover:bg-white/10 hover:text-white"
+                      title="Compartilhar no Instagram"
+                      aria-label="Compartilhar no Instagram"
+                    >
+                      <Instagram className="h-4 w-4" />
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setQrOpen(true)}
+                      className="inline-flex items-center justify-center rounded-lg border border-white/10 bg-white/5 p-2 text-white/60 transition hover:bg-white/10 hover:text-white"
+                      title="QR Code"
+                      aria-label="QR Code"
+                      disabled={!shortUrl}
+                    >
+                      <QrCode className="h-4 w-4" />
+                    </button>
+                  </div>
 
                   <p className="mt-2 max-w-2xl text-sm leading-relaxed text-white/75">
-                    Loja pública no Marto. Aqui reputação nasce da experiência real —
-                    não de promessa.
+                    Loja pública no Marto. Aqui reputação nasce da experiência real — não
+                    de promessa.
                   </p>
 
                   {errMsg ? (
@@ -291,80 +357,16 @@ export default function MerchantPublicPage() {
                 >
                   Ver produtos
                 </a>
-
-                <a
-                  href="#reputacao"
-                  className="rounded-2xl border border-white/15 bg-white/10 px-6 py-3 text-sm font-semibold text-white hover:bg-white/15"
-                >
-                  Como a reputação funciona
-                </a>
               </div>
             </div>
 
             <div className="mt-6 grid w-full gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <Chip label="Status" value={statusLabel(m?.status)} />
               <Chip label="Cidade" value={String(showCity)} />
               <Chip label="CEP (prefixo)" value={String(showCep)} />
               <Chip
                 label="Produtos ativos"
                 value={loading ? '…' : String(visibleProducts.length)}
               />
-            </div>
-          </div>
-        </div>
-
-        {/* Reputação */}
-        <div
-          id="reputacao"
-          className="mt-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
-        >
-          <SectionTitle
-            title="Reputação (prova real)"
-            desc="A reputação da loja nasce da experiência real. No MVP, esta área vira seu painel público de confiança."
-            right={
-              <span className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white/85">
-                MVP
-              </span>
-            }
-          />
-
-          <div className="mt-4 grid gap-3 md:grid-cols-2">
-            <Pillar
-              title="📦 Qualidade do produto"
-              desc="Compatibilidade com descrição, defeitos e recorrência."
-              status="MVP"
-            />
-            <Pillar
-              title="🚚 Logística e entrega"
-              desc="Prazo prometido vs real, ocorrências, integridade."
-              status="MVP"
-            />
-            <Pillar
-              title="🤝 Atendimento"
-              desc="Tempo de resposta, clareza e postura."
-              status="MVP"
-            />
-            <Pillar
-              title="⭐ Avaliação do cliente"
-              desc="Notas e comentários ao longo do tempo (não um caso)."
-              status="MVP"
-            />
-            <Pillar
-              title="⚖️ Conduta no ecossistema"
-              desc="Disputas, transparência e regras (fraude pesa muito)."
-              status="Em breve"
-            />
-            <div className="rounded-2xl border border-white/15 bg-white/5 p-4">
-              <div className="text-sm font-semibold text-white/90">
-                O que o Marto faz diferente?
-              </div>
-              <div className="mt-1 text-xs text-white/75">
-                Aqui reputação pesa mais que preço. O cliente vê sinais de risco e
-                confiança de forma clara.
-              </div>
-              <div className="mt-3 rounded-xl border border-white/15 bg-black/40 px-3 py-2 text-xs text-white/80">
-                Em breve: faixa pública baseada em avaliações, prazos e pós-venda.
-              </div>
             </div>
           </div>
         </div>
@@ -401,7 +403,7 @@ export default function MerchantPublicPage() {
                   return (
                     <Link
                       key={p.id}
-                      href={`/shop/${p.id}`}
+                      href={`/shop/p/${p.id}`}
                       className="group overflow-hidden rounded-3xl border border-white/15 bg-neutral-950/75 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur transition hover:bg-neutral-950/80"
                     >
                       <div className="relative aspect-[16/11] w-full overflow-hidden rounded-t-3xl bg-black">
@@ -410,9 +412,9 @@ export default function MerchantPublicPage() {
                             src={img}
                             alt={p.title}
                             fill
-                            sizes="(min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
-                            unoptimized={isRemoteHttp(img)}
+                            sizes="(max-width: 640px) 100vw, 33vw"
                             className="object-cover"
+                            unoptimized={isRemoteHttp(img)}
                           />
                         ) : (
                           <div className="flex h-full w-full items-center justify-center">
@@ -456,6 +458,88 @@ export default function MerchantPublicPage() {
           </div>
         </div>
       </div>
+      {qrOpen ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          {/* backdrop */}
+          <button
+            type="button"
+            onClick={() => setQrOpen(false)}
+            className="absolute inset-0 bg-black/70"
+            aria-label="Fechar"
+          />
+
+          {/* card */}
+          <div className="relative w-full max-w-sm rounded-2xl border border-white/15 bg-neutral-950/80 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+            <div className="mb-3 flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-white">QR da sua vitrine</div>
+                <div className="text-xs text-white/65">Escaneie para abrir no Marto</div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setQrOpen(false)}
+                className="rounded-lg border border-white/10 bg-white/5 px-2 py-1 text-xs text-white/70 hover:bg-white/10"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <div className="flex flex-col items-center gap-3">
+              <div className="relative rounded-2xl border border-white/15 bg-white p-3 shadow-[0_0_0_1px_rgba(0,0,0,0.06)]">
+                {qrDataUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={qrDataUrl} alt="QR Code" className="h-56 w-56" />
+                ) : (
+                  <div className="flex h-56 w-56 items-center justify-center text-sm text-neutral-600">
+                    Gerando…
+                  </div>
+                )}
+
+                {/* marca Marto (centro) */}
+                <div className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+                  <div className="grid h-12 w-12 place-items-center rounded-2xl border border-black/10 bg-white shadow-[0_6px_30px_rgba(0,0,0,0.18)]">
+                    <span className="text-sm font-black tracking-tight text-neutral-950">M</span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/70">
+                {shortUrl || '—'}
+              </div>
+
+              <div className="flex w-full gap-2">
+                <button
+                  type="button"
+                  onClick={async () => {
+                    if (!shortUrl) return;
+                    await navigator.clipboard.writeText(shortUrl);
+                  }}
+                  className="flex-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/70 hover:bg-white/10"
+                  disabled={!shortUrl}
+                >
+                  Copiar link
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!qrDataUrl) return;
+                    const a = document.createElement('a');
+                    a.href = qrDataUrl;
+                    a.download = `marto-${String(clean || 'vitrine')}.png`;
+                    a.click();
+                  }}
+                  className="flex-1 rounded-xl border border-white/10 bg-white/5 px-3 py-2 text-xs font-semibold text-white/70 hover:bg-white/10"
+                  disabled={!qrDataUrl}
+                >
+                  Baixar PNG
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }
