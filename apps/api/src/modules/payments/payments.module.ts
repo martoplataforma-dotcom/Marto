@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { PaymentsController } from './payments.controller';
 import { PixService } from './pix.service';
+import { PaymentsService } from './payments.service';
 import { WalletModule } from '../wallet/wallet.module';
 import { OrdersModule } from '../orders/orders.module';
 
@@ -10,7 +11,7 @@ import { OrdersModule } from '../orders/orders.module';
     OrdersModule, // fornece OrdersService
   ],
   controllers: [PaymentsController],
-  providers: [PixService],
+  providers: [PixService, PaymentsService],
   exports: [PixService],
 })
 export class PaymentsModule {}

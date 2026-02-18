@@ -1,0 +1,43 @@
+  async function loadPosts(productId: string) {
+    setPostsLoading(true);
+    setPostsErr('');
+
+    try {
+      const res = await fetch(
+        `${apiOrigin()}/api/social/products/${encodeURIComponent(productId)}/posts`,
+      );
+
+      const data: unknown = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        throw new Error(
+          extractErrorMessage(data, 'Não foi possível carregar experiências.'),
+        );
+      }
+
+      if (!isSocialPostsByProductOk(data)) {
+        throw new Error(socialPostsErrorMessage(data));
+      }
+
+      setPosts(data.posts);
+    } catch (e) {
+      setPostsErr(
+        e instanceof Error ? e.message : 'Erro ao carregar experiências.',
+      );
+    } finally {
+      setPostsLoading(false);
+    }
+  }
+
+  // ✅ buscar posts verificados do produto (NestJS 3001)
+  // endpoint retorna { ok: true, posts }
+  useEffect(() => {
+    if (!id) return;
+    let alive = true;
+
+    (async () => {
+      if (!alive) return;
+      await loadPosts(id);
+    })();
+
+  

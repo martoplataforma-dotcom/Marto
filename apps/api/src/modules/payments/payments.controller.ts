@@ -1,11 +1,11 @@
-import { Body, Controller, Post, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Param, Post, Req, UseGuards } from '@nestjs/common';
 import type { Request } from 'express';
 
 import { JwtAuthGuard } from '../identity/auth/jwt-auth.guard';
 import { PixService } from './pix.service';
 import { SettlementService } from '../wallet/settlement.service';
 import { OrdersService } from '../orders/orders.service';
-import { OrderStatus } from '@prisma/client';
+import { PaymentsService } from './payments.service';
 
 function getUserId(req: Request): string {
   const u = req.user as { id?: string; sub?: string } | undefined;
@@ -18,7 +18,38 @@ export class PaymentsController {
     private readonly pix: PixService,
     private readonly settlement: SettlementService,
     private readonly orders: OrdersService,
+    private readonly paymentsService: PaymentsService,
   ) {}
+
+  /**
+   * ✅ POST /api/payments/order/:orderId
+   * Cria cobrança pendente (sandbox), sem marcar como paga.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post('order/:orderId')
+  async createForOrder(
+    @Req() req: Request,
+    @Param('orderId') orderId: string,
+    @Body() body: { method?: 'PIX' | 'CARD' },
+  ) {
+    const userId = getUserId(req);
+    return this.paymentsService.createForOrder(
+      userId,
+      orderId,
+      body?.method ?? 'PIX',
+    );
+  }
+
+  /**
+   * ✅ POST /api/payments/:paymentId/confirm
+   * Simula confirmação/aprovação e liquida o pedido para PAID.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post(':paymentId/confirm')
+  async confirm(@Req() req: Request, @Param('paymentId') paymentId: string) {
+    const userId = getUserId(req);
+    return this.paymentsService.confirmPayment(userId, paymentId);
+  }
 
   /**
    * 🔒 MOCK de pagamento genérico (CARD / PIX abstrato)
@@ -51,40 +82,21 @@ export class PaymentsController {
 
   /**
    * ✅ POST /api/payments/mock
-   * Mock do checkout: marca o pedido como PAID + cria OrderEvent
-   *
-   * ✅ trava: só o comprador pode pagar (neste mock)
-   * (explica na cara quando o token está “no usuário errado”)
+   * Mantido por compatibilidade. Agora apenas cria cobrança pendente.
    */
   @UseGuards(JwtAuthGuard)
   @Post('mock')
-  async mock(@Req() req: Request, @Body() body: { orderId: string }) {
-    const actorUserId = getUserId(req);
+  async mock(
+    @Req() req: Request,
+    @Body() body: { orderId: string; method?: 'PIX' | 'CARD' },
+  ) {
+    const userId = getUserId(req);
     const orderId = String(body?.orderId ?? '').trim();
-
-    if (!actorUserId) return { ok: false, message: 'Sem actorUserId no token' };
-    if (!orderId) return { ok: false, message: 'orderId não informado' };
-
-    const order = await this.orders.getOrderById(orderId);
-    if (!order) return { ok: false, message: 'Pedido não encontrado' };
-
-    // ✅ trava: só o comprador pode pagar (neste mock)
-    if (!order.userId || String(order.userId) !== actorUserId) {
-      return {
-        ok: false,
-        message: 'Somente o comprador pode pagar este pedido.',
-      };
-    }
-
-    await this.orders.transitionStatus({
+    return this.paymentsService.createForOrder(
+      userId,
       orderId,
-      toStatus: OrderStatus.PAID,
-      actorUserId,
-      message: 'pagou',
-      meta: { provider: 'mock', at: new Date().toISOString() },
-    });
-
-    return { ok: true, orderId, status: 'PAID' };
+      body?.method ?? 'PIX',
+    );
   }
 
   /**

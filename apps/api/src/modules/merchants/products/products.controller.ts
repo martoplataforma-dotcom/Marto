@@ -54,6 +54,7 @@ export class ProductsController {
       description?: string | null;
       priceCents: number;
       images?: string[] | null;
+      imageCaptions?: string[] | null;
       meta?: Prisma.InputJsonValue | null;
     },
   ) {
@@ -76,6 +77,7 @@ export class ProductsController {
       description?: string | null;
       priceCents?: number;
       images?: string[] | null;
+      imageCaptions?: string[] | null;
       meta?: Prisma.InputJsonValue | null;
     },
   ) {

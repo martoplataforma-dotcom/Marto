@@ -2,8 +2,10 @@
 'use client';
 
 import Link from 'next/link';
-import { use, useEffect, useMemo, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { use, useEffect, useMemo, useRef, useState } from 'react';
 import { VerifiedSocialSummary } from '../../../../components/marto/VerifiedSocialSummary';
+import { ImageWithCaption } from './ImageWithCaption';
 
 type Product = {
   id: string;
@@ -13,10 +15,33 @@ type Product = {
   priceCents?: number | null;
   merchantId: string;
   images?: string[];
+  /**
+   * (opcional) Permite definir uma legenda rápida para cada foto do produto.
+   * Exemplo: ["Fabricada em MDF de alta qualidade", "Detalhe do acabamento em couro"].
+   * Se omitido ou menor que o número de fotos, nenhuma legenda aparecerá.
+   */
+  imageCaptions?: (string | null)[];
+  imageInsights?: ProductImageInsight[] | null;
   productHandle?: string | null;
   merchantHandle?: string | null;
   merchantTradeName?: string | null;
 };
+
+type ProductImageInsight = {
+  overview?: string[] | null;
+  hotspots?: ImageHotspot[] | null;
+};
+
+type ImageHotspot = {
+  x: number; // 0..100
+  y: number; // 0..100
+  title: string;
+  description?: string | null;
+};
+
+function clamp(n: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, n));
+}
 
 type ProductDetailResponse =
   | { ok: true; product: Product }
@@ -488,6 +513,7 @@ function ShippingEstimator({ description }: { description?: string | null }) {
    PAGE
    =========================== */
 
+
 export default function ShopProductPage({
   params,
 }: {
@@ -496,22 +522,50 @@ export default function ShopProductPage({
 }) {
   const { id: rawId } = use(params);
   const id = useMemo(() => decodeURIComponent(rawId), [rawId]);
+  const router = useRouter();
 
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [p, setP] = useState<Product | null>(null);
 
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryIndex, setGalleryIndex] = useState(0);
+  const [hoverHotspot, setHoverHotspot] = useState<ImageHotspot | null>(null);
+  const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(
+    null,
+  );
+
+  const hoverTimer = useRef<number | null>(null);
+  const hideTimer = useRef<number | null>(null);
+
+  // “Mais deste perfil”
+  const [more, setMore] = useState<Product[]>([]);
+  const [moreLoading, setMoreLoading] = useState(false);
+  const [moreErr, setMoreErr] = useState('');
+
   const [buying, setBuying] = useState(false);
   const [createdOrderId, setCreatedOrderId] = useState<string | null>(null);
 
   // ✅ novos states (pagamento)
-  const [paying, setPaying] = useState(false);
   const [paidOrderId, setPaidOrderId] = useState<string | null>(null);
+  const [paymentId, setPaymentId] = useState<string | null>(null);
+  const [payOpen, setPayOpen] = useState(false);
+  const [payStatus, setPayStatus] = useState<
+    'IDLE' | 'PENDING' | 'PAID' | 'FAILED'
+  >('IDLE');
+  const [payMsg, setPayMsg] = useState<string>('');
 
   // ✅ novos states (posts do produto)
   const [posts, setPosts] = useState<SocialPost[]>([]);
   const [postsLoading, setPostsLoading] = useState(true);
   const [postsErr, setPostsErr] = useState('');
+
+  useEffect(() => {
+    return () => {
+      if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
+      if (hideTimer.current) window.clearTimeout(hideTimer.current);
+    };
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -588,6 +642,81 @@ export default function ShopProductPage({
     }
   }
 
+  function isProductsListOk(
+    x: unknown,
+  ): x is { ok: true; products: Product[] } {
+    const r = asRecord(x);
+    if (!r) return false;
+    if (r.ok !== true) return false;
+    return Array.isArray(r.products);
+  }
+
+  async function loadMoreFromSameMerchant(
+    merchantId: string,
+    excludeId: string,
+  ) {
+    setMoreLoading(true);
+    setMoreErr('');
+
+    const endpoints = [
+      // 1) mais provável (catalog)
+      `${apiOrigin()}/api/products?merchantId=${encodeURIComponent(merchantId)}`,
+      // 2) variações comuns (shops)
+      `${apiOrigin()}/api/shops/${encodeURIComponent(merchantId)}/products`,
+      `${apiOrigin()}/api/merchants/shops/${encodeURIComponent(merchantId)}/products`,
+      `${apiOrigin()}/api/public/shops/${encodeURIComponent(merchantId)}/products`,
+    ];
+
+    for (const url of endpoints) {
+      try {
+        const res = await fetch(url);
+        const data: unknown = await res.json().catch(() => null);
+
+        if (!res.ok) continue;
+
+        // formato A: { ok:true, products:[...] }
+        if (isProductsListOk(data)) {
+          const items = data.products
+            .filter((x) => x && x.id !== excludeId)
+            .slice(0, 4);
+          setMore(items);
+          setMoreLoading(false);
+          return;
+        }
+
+        // formato B: { ok:true, items:[...] } ou { products:[...] }
+        const r = asRecord(data);
+        const arr =
+          (Array.isArray(r?.items) ? (r?.items as unknown[]) : null) ??
+          (Array.isArray(r?.products) ? (r?.products as unknown[]) : null);
+
+        if (arr) {
+          const items = arr
+            .map((x) => x as Product)
+            .filter((x) => x && x.id && x.id !== excludeId)
+            .slice(0, 4);
+          if (items.length) {
+            setMore(items);
+            setMoreLoading(false);
+            return;
+          }
+        }
+      } catch {
+        // tenta próximo endpoint
+      }
+    }
+
+    setMore([]);
+    setMoreErr('Não foi possível carregar mais produtos desta loja (MVP).');
+    setMoreLoading(false);
+  }
+
+  useEffect(() => {
+    if (!p?.merchantId || !p?.id) return;
+    loadMoreFromSameMerchant(p.merchantId, p.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [p?.id]);
+
   // ✅ buscar posts verificados do produto (NestJS 3001)
   // endpoint retorna { ok: true, posts }
   useEffect(() => {
@@ -609,6 +738,10 @@ export default function ShopProductPage({
       setBuying(true);
       setCreatedOrderId(null);
       setPaidOrderId(null);
+      setPaymentId(null);
+      setPayOpen(false);
+      setPayStatus('IDLE');
+      setPayMsg('');
       setErr(null);
 
       const token = getToken();
@@ -709,85 +842,81 @@ export default function ShopProductPage({
     }
   }
 
-  async function payNow() {
+  async function confirmPay() {
+    if (!paymentId) return;
+    setPayMsg('');
     try {
-      setPaying(true);
-      setErr(null);
-
       const token = getToken();
-      if (!token) {
-        setErr('Você precisa estar logado como consumidor para pagar.');
-        return;
-      }
+      if (!token) throw new Error('Sem token');
 
-      const orderId = createdOrderId;
-      if (!orderId) return;
-
-      const res = await fetch(`http://localhost:3001/api/payments/mock`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${token}`,
+      const res = await fetch(
+        `http://localhost:3001/api/payments/${encodeURIComponent(paymentId)}/confirm`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${token}`,
+          },
         },
-        body: JSON.stringify({ orderId }),
-      });
-
-      const text = await res.text().catch(() => '');
-      let data: unknown = null;
-
-      try {
-        data = text ? (JSON.parse(text) as unknown) : null;
-      } catch {
-        data = text;
-      }
-
-      console.log(
-        'PAY MOCK status=',
-        res.status,
-        'orderId=',
-        orderId,
-        'response=',
-        data,
       );
 
-      if (!res.ok) {
-        const msg = extractErrorMessage(data, `HTTP ${res.status}`);
-        throw new Error(String(msg));
+      const data = (await res.json()) as {
+        ok?: boolean;
+        status?: 'PAID' | 'PENDING' | 'FAILED';
+        orderId?: string;
+        message?: string;
+      };
+
+      if (!res.ok || data.ok === false || data.status !== 'PAID') {
+        throw new Error(data.message || `Falha ao confirmar (${res.status})`);
       }
 
-      // ✅ marcou como pago (mock)
-      setPaidOrderId(orderId);
+      setPayStatus('PAID');
+      setPaidOrderId(createdOrderId);
+      window.setTimeout(() => setPayOpen(false), 600);
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Erro ao pagar');
-    } finally {
-      setPaying(false);
+      setPayMsg(e instanceof Error ? e.message : 'Falha ao confirmar');
+      setPayStatus('FAILED');
     }
   }
 
-  return (
+    return (
     <main className="min-h-screen bg-neutral-950 text-white">
-      <div className="mx-auto max-w-6xl p-6">
+      {/* Marto background (sutil, sem poluir) */}
+      <div className="pointer-events-none fixed inset-0">
+        <div className="absolute inset-0 bg-[radial-gradient(900px_circle_at_15%_10%,rgba(255,255,255,0.10),transparent_60%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(700px_circle_at_85%_20%,rgba(255,255,255,0.06),transparent_55%)]" />
+        <div className="absolute inset-0 bg-[radial-gradient(900px_circle_at_40%_95%,rgba(255,255,255,0.05),transparent_60%)]" />
+        <div className="absolute inset-0 opacity-[0.14] [background-image:linear-gradient(to_right,rgba(255,255,255,0.06)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.06)_1px,transparent_1px)] [background-size:60px_60px]" />
+      </div>
+
+      <div className="relative mx-auto max-w-6xl p-6">
         <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-          <div>
-            <div className="text-xs font-semibold text-white/60">
-              Rastro do Produto
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-white/60">
+              <Link href="/catalog" className="hover:text-white/80">
+                Catálogo
+              </Link>
+              <span className="text-white/35">/</span>
+              <span className="text-white/70">Produto</span>
+              {p?.name ? (
+                <>
+                  <span className="text-white/35">/</span>
+                  <span className="truncate text-white/80">{p.name}</span>
+                </>
+              ) : null}
             </div>
-            <h1 className="mt-1 text-2xl font-semibold text-white/90">
+
+            <h1 className="mt-2 text-2xl font-semibold text-white/90">
               {p?.name ?? 'Produto'}
             </h1>
+
             <p className="mt-1 text-sm text-white/70">
-              Compra real → experiência → reputação. Marto como consequência.
+              Ciclo completo: compra → serviço → avaliação → social → dados.
             </p>
           </div>
 
           <div className="flex items-center gap-2">
-            <Link
-              href="/catalog"
-              className="rounded-xl border border-white/15 bg-black/40 px-3 py-2 text-sm font-semibold text-white/80 hover:bg-black/55"
-            >
-              Voltar ao catálogo
-            </Link>
-
             <Link
               href="/dash/consumer"
               className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-semibold text-white hover:bg-white/15"
@@ -799,97 +928,312 @@ export default function ShopProductPage({
 
         {loading ? (
           <p className="text-sm text-white/70">Carregando...</p>
-        ) : err ? (
-          <div className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">
-            {err}
-          </div>
-        ) : !p ? (
+        ) : err ? null : !p ? (
           <p className="text-sm text-white/70">Produto não encontrado.</p>
         ) : (
           <>
-            <div className="overflow-hidden rounded-2xl border border-white/15 bg-neutral-950/75 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-              {/* ✅ imagem do produto */}
-              <div className="relative">
-                {toAbsoluteUrl(coverFromImages(p.images)) ? (
-                  <div className="h-56 w-full bg-black/40">
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={toAbsoluteUrl(coverFromImages(p.images)) as string}
-                      alt={p.name}
-                      className="h-56 w-full object-cover"
-                      loading="lazy"
-                      onError={() => {
-                        console.log(
-                          'SHOP IMG ERROR:',
-                          toAbsoluteUrl(coverFromImages(p.images)),
+            {/* ===========================
+               HERO (galeria + controle)
+               =========================== */}
+            <section className="overflow-hidden rounded-2xl border border-white/15 bg-neutral-950/75 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+              <div className="grid gap-0 md:grid-cols-2">
+                {/* LEFT: Galeria com navegação e miniaturas */}
+                <div className="border-b border-white/10 md:border-b-0 md:border-r">
+                  <div className="relative">
+                    {(() => {
+                      const urls = (p.images ?? [])
+                        .map((x) => toAbsoluteUrl(String(x ?? '').trim()))
+                        .filter(Boolean) as string[];
+
+                      function pickOverview3(v: unknown): string[] | null {
+                        if (!Array.isArray(v)) return null;
+                        const out = v
+                          .map((x) => String(x ?? '').trim())
+                          .filter(Boolean)
+                          .slice(0, 3);
+                        return out.length ? out : null;
+                      }
+
+                      const imagesWithOverview = urls.map((url, i) => ({
+                        url,
+                        overview: pickOverview3(p.imageInsights?.[i]?.overview),
+                      }));
+                      if (!imagesWithOverview.length) {
+                        return (
+                          <div className="grid h-72 w-full place-items-center bg-white/5 text-sm font-semibold text-white/60 sm:h-80">
+                            Sem foto
+                          </div>
                         );
-                      }}
-                    />
-                  </div>
-                ) : (
-                  <div className="grid h-56 w-full place-items-center bg-white/5 text-sm font-semibold text-white/60">
-                    Sem foto
-                  </div>
-                )}
+                      }
 
-                <div className="absolute left-4 top-4 rounded-full border border-white/15 bg-black/60 px-3 py-1 text-xs font-semibold text-white/80 backdrop-blur">
-                  Verificado pelo rastro
+                      const safeIndex = Math.min(
+                        galleryIndex,
+                        imagesWithOverview.length - 1,
+                      );
+                      const current =
+                        imagesWithOverview[safeIndex] ??
+                        imagesWithOverview[0];
+                      const hotspots: ImageHotspot[] =
+                        (p?.imageInsights?.[safeIndex]?.hotspots as
+                          | ImageHotspot[]
+                          | undefined) ?? [];
+
+                      return (
+                        <>
+                          {/* imagem principal com overlay Marto */}
+                          <div className="relative group overflow-hidden rounded-3xl border border-white/10 bg-black">
+                            <div
+                              className="relative"
+                              onMouseLeave={() => {
+                                if (hoverTimer.current)
+                                  window.clearTimeout(hoverTimer.current);
+                                if (hideTimer.current)
+                                  window.clearTimeout(hideTimer.current);
+                                setHoverHotspot(null);
+                                setHoverPos(null);
+                              }}
+                            >
+                              <ImageWithCaption
+                                url={current.url}
+                                alt={p.name}
+                                lines={current.overview}
+                              />
+
+                              {/* Hotspots */}
+                              {hotspots.map((hs, i) => {
+                                const left = `${clamp(hs.x, 0, 100)}%`;
+                                const top = `${clamp(hs.y, 0, 100)}%`;
+
+                                return (
+                                  <button
+                                    key={`${i}-${hs.x}-${hs.y}`}
+                                    type="button"
+                                    className="group absolute -translate-x-1/2 -translate-y-1/2"
+                                    style={{ left, top }}
+                                    aria-label={hs.title}
+                                    onMouseEnter={() => {
+                                      if (hoverTimer.current)
+                                        window.clearTimeout(
+                                          hoverTimer.current,
+                                        );
+                                      if (hideTimer.current)
+                                        window.clearTimeout(
+                                          hideTimer.current,
+                                        );
+
+                                      hoverTimer.current = window.setTimeout(
+                                        () => {
+                                          setHoverHotspot(hs);
+
+                                          setHoverPos({
+                                            x: clamp(hs.x, 8, 92),
+                                            y: clamp(hs.y, 8, 92),
+                                          });
+
+                                          hideTimer.current =
+                                            window.setTimeout(() => {
+                                              setHoverHotspot(null);
+                                              setHoverPos(null);
+                                            }, 2600);
+                                        },
+                                        450,
+                                      );
+                                    }}
+                                  >
+                                    {/* ponto */}
+                                    <span className="relative block h-3 w-3">
+                                      <span className="absolute inset-0 rounded-full bg-white/25 blur-[2px] opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
+                                      <span className="absolute inset-0 rounded-full bg-white/35" />
+                                      <span className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/85" />
+                                    </span>
+                                  </button>
+                                );
+                              })}
+
+                              {/* Tooltip (delay + auto-hide) */}
+                              {hoverHotspot && hoverPos ? (
+                                <div
+                                  className="pointer-events-none absolute z-20 w-[260px] -translate-x-1/2 rounded-2xl border border-white/15 bg-neutral-950/70 p-3 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+                                  style={{
+                                    left: `${hoverPos.x}%`,
+                                    top: `${hoverPos.y}%`,
+                                  }}
+                                >
+                                  <div className="text-[10px] font-semibold uppercase tracking-wide text-white/70">
+                                    detalhe
+                                  </div>
+                                  <div className="mt-1 text-sm font-semibold text-white/90">
+                                    {hoverHotspot.title}
+                                  </div>
+                                  {hoverHotspot.description ? (
+                                    <div className="mt-1 text-xs text-white/75">
+                                      {hoverHotspot.description}
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : null}
+                            </div>
+
+                            {/* botão anterior */}
+                            {imagesWithOverview.length > 1 ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setGalleryIndex(
+                                    (prev) =>
+                                      (prev - 1 + imagesWithOverview.length) %
+                                      imagesWithOverview.length,
+                                  )
+                                }
+                                className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 hover:bg-black/60"
+                                aria-label="Foto anterior"
+                              >
+                                ‹
+                              </button>
+                            ) : null}
+
+                            {/* botão próximo */}
+                            {imagesWithOverview.length > 1 ? (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setGalleryIndex(
+                                    (prev) =>
+                                      (prev + 1) % imagesWithOverview.length,
+                                  )
+                                }
+                                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 hover:bg-black/60"
+                                aria-label="Próxima foto"
+                              >
+                                ›
+                              </button>
+                            ) : null}
+
+                            {/* indicador de posição */}
+                            {imagesWithOverview.length > 1 ? (
+                              <div className="absolute bottom-2 right-2 rounded-full bg-black/50 px-2 py-1 text-xs text-white">
+                                {safeIndex + 1} / {imagesWithOverview.length}
+                              </div>
+                            ) : null}
+
+                            {/* selo de verificação */}
+                            <div className="absolute left-4 top-4 rounded-full border border-white/15 bg-black/60 px-3 py-1 text-xs font-semibold text-white/80">
+                              Verificado pelo rastro
+                            </div>
+                          </div>
+
+                          {/* miniaturas */}
+                          {imagesWithOverview.length > 1 ? (
+                            <div className="mt-3 flex gap-2 overflow-x-auto">
+                              {imagesWithOverview.map((img, idx) => (
+                                <button
+                                  key={`${img.url}-${idx}`}
+                                  type="button"
+                                  onClick={() => setGalleryIndex(idx)}
+                                  className={[
+                                    'h-14 w-14 rounded-md border',
+                                    idx === safeIndex
+                                      ? 'border-white/50'
+                                      : 'border-white/20 hover:border-white/40',
+                                  ].join(' ')}
+                                  aria-label={`Miniatura ${idx + 1}`}
+                                >
+                                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                                  <img
+                                    src={img.url}
+                                    alt=""
+                                    className="h-full w-full object-cover"
+                                  />
+                                </button>
+                              ))}
+                            </div>
+                          ) : null}
+
+                          {/* botão de tela cheia / zoom */}
+                          <button
+                            type="button"
+                            onClick={() => setGalleryOpen(true)}
+                            className="mt-3 rounded-xl border border-white/15 bg-black/40 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-black/55"
+                          >
+                          {imagesWithOverview.length > 1
+                            ? 'Tela cheia'
+                            : 'Ampliar'}
+                          </button>
+                        </>
+                      );
+                    })()}
+                  </div>
                 </div>
-              </div>
 
-              <div className="p-5">
-                <div className="flex flex-col gap-2">
+                {/* RIGHT: Identidade + ações */}
+                <div className="p-5">
                   {(() => {
                     const ident = extractIdentity(p.description ?? '');
                     const cat = extractCatalog(p.description ?? '');
                     const handle = ident.handle ? `@${ident.handle}` : '';
 
+                    const cents =
+                      typeof p.priceCents === 'number'
+                        ? p.priceCents
+                        : typeof p.price === 'number'
+                          ? p.price
+                          : 0;
+
+                    const priceBRL = (Number(cents ?? 0) / 100).toLocaleString(
+                      'pt-BR',
+                      { style: 'currency', currency: 'BRL' },
+                    );
+
                     return (
-                      <div className="flex flex-col gap-2">
-                        <div className="text-xl font-semibold">{p.name}</div>
-                        {p.merchantHandle && p.productHandle ? (
-                          <div className="mt-2 flex flex-wrap items-center gap-2">
-                            <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
-                              Link público:
-                            </span>
-
-                            <code className="rounded-md bg-black/60 px-2 py-1 text-xs text-white/85">
-                              /shop/@{p.merchantHandle}/p/@{p.productHandle}
-                            </code>
-
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const url = `${window.location.origin}/shop/@${p.merchantHandle}/p/@${p.productHandle}`;
-                                navigator.clipboard.writeText(url);
-                              }}
-                              className="rounded-xl bg-white/10 px-3 py-1 text-xs font-semibold text-white hover:bg-white/15"
-                            >
-                              Copiar
-                            </button>
-                          </div>
-                        ) : null}
-
+                      <div className="flex flex-col gap-4">
+                        {/* status line */}
                         <div className="flex flex-wrap items-center gap-2">
-                          <div className="text-sm text-white/70">
-                            {(() => {
-                              const cents =
-                                typeof p.priceCents === 'number'
-                                  ? p.priceCents
-                                  : typeof p.price === 'number'
-                                    ? p.price
-                                    : 0;
+                          <span className="rounded-full border border-white/15 bg-black/50 px-3 py-1 text-[11px] font-semibold text-white/80">
+                            Produto ativo no Marto
+                          </span>
+                          <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/70">
+                            Verificado pelo rastro
+                          </span>
+                          {cat.inventario ? (
+                            <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/70">
+                              Inventário: {cat.inventario}
+                            </span>
+                          ) : null}
+                        </div>
 
-                              const v = cents / 100;
-                              return v.toLocaleString('pt-BR', {
-                                style: 'currency',
-                                currency: 'BRL',
-                              });
-                            })()}
+                        {/* name + price */}
+                        <div className="flex flex-col gap-1">
+                          <div className="text-xl font-semibold text-white/90">
+                            {p.name}
+                          </div>
+
+                          <div className="flex flex-wrap items-baseline gap-3">
+                            <div className="text-lg font-semibold text-white/90">
+                              {priceBRL}
+                            </div>
+
+                            {cat.preparoDias ? (
+                              <div className="text-xs text-white/65">
+                                preparo ~{' '}
+                                <span className="font-semibold text-white/80">
+                                  {cat.preparoDias} dias
+                                </span>
+                              </div>
+                            ) : null}
+
+                            {cat.estoque ? (
+                              <div className="text-xs text-white/65">
+                                estoque:{' '}
+                                <span className="font-semibold text-white/80">
+                                  {cat.estoque}
+                                </span>
+                              </div>
+                            ) : null}
                           </div>
                         </div>
 
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
+                        {/* identity chips */}
+                        <div className="flex flex-wrap items-center gap-2">
                           {handle ? (
                             <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
                               {handle}
@@ -902,91 +1246,292 @@ export default function ShopProductPage({
                             </span>
                           ) : null}
 
-                          {cat.inventario ? (
+                          {p.merchantTradeName ? (
                             <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/70">
-                              Inventário: {cat.inventario}
-                            </span>
-                          ) : null}
-
-                          {cat.preparoDias ? (
-                            <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/70">
-                              Preparo: {cat.preparoDias} dias
-                            </span>
-                          ) : null}
-
-                          {cat.estoque ? (
-                            <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/70">
-                              Estoque: {cat.estoque}
+                              Loja: {p.merchantTradeName}
                             </span>
                           ) : null}
                         </div>
+
+                        {/* public link (se tiver handle) */}
+                        {p.merchantHandle && p.productHandle ? (
+                          <div className="rounded-2xl border border-white/15 bg-black/40 p-4">
+                            <div className="text-xs font-semibold text-white/70">
+                              Link público
+                            </div>
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <code className="rounded-md bg-black/60 px-2 py-1 text-xs text-white/85">
+                                /shop/@{p.merchantHandle}/p/@{p.productHandle}
+                              </code>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const url = `${window.location.origin}/shop/@${p.merchantHandle}/p/@${p.productHandle}`;
+                                  navigator.clipboard.writeText(url);
+                                }}
+                                className="rounded-xl bg-white/10 px-3 py-1 text-xs font-semibold text-white hover:bg-white/15"
+                              >
+                                Copiar
+                              </button>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        {/* CTA block */}
+                        <div className="rounded-2xl border border-white/15 bg-black/40 p-4">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-semibold text-white/85">
+                                Iniciar compra pelo Marto
+                              </div>
+                              <div className="mt-1 text-xs text-white/65">
+                                Fluxo completo: compra → serviço → avaliação →
+                                social → dados.
+                              </div>
+                            </div>
+
+                            <button
+                              onClick={buyNow}
+                              disabled={buying}
+                              className="rounded-xl bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15 disabled:opacity-60"
+                            >
+                              {buying ? 'Iniciando…' : 'Iniciar ciclo Marto'}
+                            </button>
+                          </div>
+
+                          {createdOrderId ? (
+                            <div className="mt-3 rounded-xl border border-white/10 bg-black/40 p-3">
+                              <div className="flex flex-wrap items-center justify-between gap-3">
+                                <div className="text-sm text-white/80">
+                                  ✅ Pedido criado:{' '}
+                                  <span className="font-semibold">
+                                    {createdOrderId}
+                                  </span>
+                                </div>
+
+                                {!paidOrderId ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (!createdOrderId) return;
+                                      router.push(
+                                        `/dash/consumer/orders/${encodeURIComponent(createdOrderId)}`,
+                                      );
+                                    }}
+                                    disabled={!createdOrderId}
+                                    className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    Ir para pagamento →
+                                  </button>
+                                ) : (
+                                  <Link
+                                    href={`/dash/consumer/orders/${encodeURIComponent(
+                                      paidOrderId,
+                                    )}`}
+                                    className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                                  >
+                                    Ver pedido →
+                                  </Link>
+                                )}
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+
+                        {/* ✅ Mais deste perfil (continuidade Marto) */}
+                        <section className="mt-6 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                          <div className="flex items-baseline justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-semibold text-white/85">
+                                Mais deste perfil
+                              </div>
+                              <div className="mt-1 text-sm text-white/70">
+                                Continuidade da loja no Marto (sem recomendação
+                                genérica).
+                              </div>
+                            </div>
+
+                            {p.merchantHandle ? (
+                              <Link
+                                href={`/loja/${encodeURIComponent(
+                                  p.merchantHandle,
+                                )}`}
+                                className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15"
+                              >
+                                Ver loja →
+                              </Link>
+                            ) : null}
+                          </div>
+
+                          {moreLoading ? (
+                            <div className="mt-4 text-sm text-white/70">
+                              Carregando…
+                            </div>
+                          ) : moreErr ? (
+                            <div className="mt-4 text-sm text-white/75">
+                              {moreErr}
+                            </div>
+                          ) : more.length === 0 ? (
+                            <div className="mt-4 text-sm text-white/70">
+                              Sem mais produtos desta loja por enquanto.
+                            </div>
+                          ) : (
+                            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                              {more.map((it) => {
+                                const img = toAbsoluteUrl(
+                                  coverFromImages(it.images ?? []),
+                                );
+                                const cents =
+                                  typeof it.priceCents === 'number'
+                                    ? it.priceCents
+                                    : typeof it.price === 'number'
+                                      ? it.price
+                                      : 0;
+
+                                const priceBRL = (
+                                  Number(cents ?? 0) / 100
+                                ).toLocaleString('pt-BR', {
+                                  style: 'currency',
+                                  currency: 'BRL',
+                                });
+
+                                return (
+                                  <Link
+                                    key={it.id}
+                                    href={`/shop/p/${encodeURIComponent(
+                                      it.id,
+                                    )}`}
+                                    className="group overflow-hidden rounded-2xl border border-white/15 bg-black/40 hover:bg-black/55"
+                                  >
+                                    <div className="h-28 w-full bg-white/5">
+                                      {img ? (
+                                        // eslint-disable-next-line @next/next/no-img-element
+                                        <img
+                                          src={img}
+                                          alt={it.name}
+                                          className="h-28 w-full object-cover"
+                                          loading="lazy"
+                                        />
+                                      ) : null}
+                                    </div>
+
+                                    <div className="p-3">
+                                      <div className="line-clamp-2 text-sm font-semibold text-white/85">
+                                        {it.name}
+                                      </div>
+                                      <div className="mt-1 text-xs text-white/65">
+                                        {priceBRL}
+                                      </div>
+                                      <div className="mt-2 text-[11px] text-white/55">
+                                        rastro ativo • marto
+                                      </div>
+                                    </div>
+                                  </Link>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </section>
                       </div>
                     );
                   })()}
-
-                  {/* ✅ Frete (MVP) — perto do preço/botões */}
-                  <ShippingEstimator description={p.description ?? null} />
-
-                  {(() => {
-                    const clean = stripMartoBlocks(p.description ?? '');
-                    return clean ? (
-                      <div className="whitespace-pre-wrap text-sm text-white/75">
-                        {clean}
-                      </div>
-                    ) : (
-                      <div className="text-sm text-white/65">Sem descrição.</div>
-                    );
-                  })()}
-
-                  <div className="mt-2 text-xs text-white/60">ID: {p.id}</div>
-                </div>
-
-                <div className="mt-5 flex flex-wrap items-center gap-3">
-                  <button
-                    onClick={buyNow}
-                    disabled={buying}
-                    className="rounded-lg bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:opacity-60"
-                  >
-                    {buying ? 'Comprando...' : 'Comprar (1 unidade)'}
-                  </button>
-
-                  {createdOrderId ? (
-                    <>
-                      <div className="text-sm text-white/80">
-                        ✅ Pedido criado:{' '}
-                        <span className="font-semibold">{createdOrderId}</span>
-                      </div>
-
-                      {!paidOrderId ? (
-                        <button
-                          onClick={payNow}
-                          disabled={paying}
-                          className="rounded-lg bg-white/10 px-4 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:opacity-60"
-                        >
-                          {paying ? 'Pagando...' : 'Pagar agora'}
-                        </button>
-                      ) : (
-                        <Link
-                          href={`/dash/consumer/orders/${encodeURIComponent(
-                            paidOrderId,
-                          )}`}
-                          className="rounded-lg border border-white/15 bg-white/5 px-4 py-2 text-sm font-medium text-white hover:bg-white/10"
-                        >
-                          Ver pedido →
-                        </Link>
-                      )}
-                    </>
-                  ) : null}
                 </div>
               </div>
-            </div>
+            </section>
 
-            {/* ✅ Resumo “Social verificado” (componente) */}
+            {/* ✅ Entrega (MVP) — seção própria (não infla o Hero) */}
+            <section className="mt-6">
+              <ShippingEstimator description={p.description ?? null} />
+            </section>
+
+            {/* ✅ Descrição — seção própria (controle) */}
+            <section className="mt-6 rounded-2xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+              <div className="text-sm font-semibold text-white/85">
+                Descrição
+              </div>
+              {(() => {
+                const clean = stripMartoBlocks(p.description ?? '');
+                return clean ? (
+                  <div className="mt-3 whitespace-pre-wrap text-sm text-white/75">
+                    {clean}
+                  </div>
+                ) : (
+                  <div className="mt-3 text-sm text-white/65">
+                    Sem descrição.
+                  </div>
+                );
+              })()}
+            </section>
+
+            {/* ===========================
+               VERIFIED SOCIAL (resumo)
+               =========================== */}
             <section className="mt-8">
               <VerifiedSocialSummary productId={p.id} />
             </section>
 
-            {/* ✅ Experiências reais */}
+            {/* ===========================
+               IMPACT (discreto, sem hype)
+               =========================== */}
+            <section className="mt-8 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+              <div className="flex flex-wrap items-baseline justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-white/85">
+                    Impacto no ecossistema
+                  </div>
+                  <div className="mt-1 text-sm text-white/70">
+                    Recompensa é consequência do fluxo bem feito.
+                  </div>
+                </div>
+
+                <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/70">
+                  MVP • sem números finais ainda
+                </span>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
+                  <div className="text-xs font-semibold text-white/65">
+                    Experiências verificadas
+                  </div>
+                  <div className="mt-2 text-lg font-semibold text-white/90">
+                    {postsLoading ? '—' : String(posts.length)}
+                  </div>
+                  <div className="mt-1 text-xs text-white/55">
+                    Baseado nos posts ligados ao produto.
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
+                  <div className="text-xs font-semibold text-white/65">
+                    Entrega (MVP)
+                  </div>
+                  <div className="mt-2 text-lg font-semibold text-white/90">
+                    estimativa
+                  </div>
+                  <div className="mt-1 text-xs text-white/55">
+                    Cotação real entra na fase Transportadoras.
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
+                  <div className="text-xs font-semibold text-white/65">
+                    Reputação
+                  </div>
+                  <div className="mt-2 text-lg font-semibold text-white/90">
+                    progressiva
+                  </div>
+                  <div className="mt-1 text-xs text-white/55">
+                    O rastro vira confiança ao longo do ciclo.
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* ===========================
+               EXPERIÊNCIAS REAIS (posts)
+               =========================== */}
             <section className="mt-8 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
               <div className="flex items-baseline justify-between gap-3">
                 <div>
@@ -1018,14 +1563,13 @@ export default function ShopProductPage({
                   Ainda não há experiências verificadas para este produto.
                 </div>
               ) : (
-                <div className="mt-4 space-y-3">
-                  {posts.slice(0, 3).map((post) => {
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  {posts.slice(0, 4).map((post) => {
                     const rawMediaUrl =
                       post.media?.[0]?.url != null
                         ? String(post.media[0].url)
                         : '';
                     const media0 = toAbsoluteUrl(rawMediaUrl) ?? '';
-
                     const mediaType = String(
                       post.media?.[0]?.type ?? 'IMAGE',
                     ).toUpperCase();
@@ -1033,7 +1577,7 @@ export default function ShopProductPage({
                     return (
                       <div
                         key={post.id}
-                        className="rounded-xl border border-white/15 bg-black/60 p-3"
+                        className="rounded-2xl border border-white/15 bg-black/60 p-4"
                       >
                         <div className="flex items-center justify-between gap-3">
                           <div className="text-xs text-white/65">
@@ -1061,25 +1605,190 @@ export default function ShopProductPage({
                           </div>
                         ) : null}
 
-                        <div className="mt-2 whitespace-pre-wrap text-sm text-white/85">
+                        <div className="mt-3 whitespace-pre-wrap text-sm text-white/85">
                           {post.caption || '(sem texto)'}
                         </div>
                       </div>
                     );
                   })}
 
-                  <Link
-                    href={`/shop/p/${encodeURIComponent(p.id)}/posts`}
-                    className="mt-3 inline-flex items-center rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
-                  >
-                    Ver todos →
-                  </Link>
+                  <div className="md:col-span-2">
+                    <Link
+                      href={`/shop/p/${encodeURIComponent(p.id)}/posts`}
+                      className="inline-flex items-center rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
+                    >
+                      Ver todos →
+                    </Link>
+                  </div>
                 </div>
               )}
             </section>
+
+            {payOpen ? (
+              <div
+                className="fixed inset-0 z-50"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Marto Pay"
+              >
+                <button
+                  type="button"
+                  onClick={() => setPayOpen(false)}
+                  className="absolute inset-0 cursor-default bg-black/70"
+                  aria-label="Fechar"
+                />
+
+                <div className="absolute left-1/2 top-1/2 w-[min(560px,92vw)] -translate-x-1/2 -translate-y-1/2">
+                  <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-base font-semibold text-white/90">
+                          Marto Pay
+                        </div>
+                        <div className="mt-1 text-sm text-white/70">
+                          Sandbox - fechando o ciclo de pagamento antes do
+                          provedor.
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setPayOpen(false)}
+                        className="rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-sm font-semibold text-white/85 hover:bg-white/10"
+                      >
+                        Fechar
+                      </button>
+                    </div>
+
+                    <div className="mt-4 rounded-2xl border border-white/15 bg-black/40 p-3">
+                      <div className="text-xs font-semibold text-white/60">
+                        Status
+                      </div>
+                      <div className="mt-1 text-sm font-semibold text-white/85">
+                        {payStatus === 'PENDING' ? 'Aguardando pagamento' : null}
+                        {payStatus === 'PAID' ? 'Pago' : null}
+                        {payStatus === 'FAILED' ? 'Falhou' : null}
+                      </div>
+
+                      <div className="mt-2 text-xs text-white/65">
+                        Payment:{' '}
+                        <span className="font-semibold text-white/80">
+                          {paymentId}
+                        </span>
+                      </div>
+
+                      {payMsg ? (
+                        <div className="mt-2 text-xs font-semibold text-white/70">
+                          {payMsg}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void confirmPay()}
+                        disabled={payStatus !== 'PENDING'}
+                        className="rounded-2xl border border-white/15 bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15 disabled:opacity-60"
+                      >
+                        Simular aprovado
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {/* ✅ Modal da galeria (Apple minimal) */}
+            {(() => {
+              const imgs = (p.images ?? [])
+                .map((x) => toAbsoluteUrl(String(x ?? '').trim()))
+                .filter(Boolean) as string[];
+
+              const cover = toAbsoluteUrl(coverFromImages(p.images));
+              const list = imgs.length ? imgs : cover ? [cover] : [];
+
+              if (!galleryOpen || list.length === 0) return null;
+
+              const idx = Math.min(galleryIndex, list.length - 1);
+              const current = list[idx] ?? list[0];
+
+              return (
+                <div
+                  className="fixed inset-0 z-50 grid place-items-center bg-black/80 p-4"
+                  onClick={() => setGalleryOpen(false)}
+                  role="dialog"
+                  aria-modal="true"
+                >
+                  <div
+                    className="w-full max-w-5xl overflow-hidden rounded-2xl border border-white/15 bg-neutral-950/90 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <div className="flex items-center justify-between gap-3 border-b border-white/10 p-4">
+                      <div className="min-w-0">
+                        <div className="truncate text-sm font-semibold text-white/85">
+                          {p.name}
+                        </div>
+                        <div className="mt-1 text-xs text-white/60">
+                          {idx + 1} / {list.length}
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setGalleryOpen(false)}
+                        className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15"
+                      >
+                        Fechar
+                      </button>
+                    </div>
+
+                    <div className="grid gap-0 md:grid-cols-[1fr_260px]">
+                      <div className="bg-black/50">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={current}
+                          alt=""
+                          className="h-[60vh] w-full object-contain"
+                        />
+                      </div>
+
+                      <div className="max-h-[60vh] overflow-auto border-l border-white/10 p-4">
+                        <div className="grid grid-cols-2 gap-2">
+                          {list.map((src, i) => {
+                            const is = i === idx;
+                            return (
+                              <button
+                                key={`${src}-${i}`}
+                                type="button"
+                                onClick={() => setGalleryIndex(i)}
+                                className={[
+                                  'overflow-hidden rounded-xl border bg-black/40',
+                                  is
+                                    ? 'border-white/30'
+                                    : 'border-white/10 hover:border-white/20',
+                                ].join(' ')}
+                                aria-label={`Foto ${i + 1}`}
+                              >
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img
+                                  src={src}
+                                  alt=""
+                                  className="h-20 w-full object-cover"
+                                />
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
           </>
         )}
       </div>
     </main>
-  );
-}
+  );}
+

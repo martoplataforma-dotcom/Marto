@@ -18,6 +18,8 @@ type ProductItem = {
   priceCents: number;
   active: boolean;
   images?: string[] | null;
+  imageCaptions?: string[] | null;
+  imageInsights?: ImageInsight[] | null;
   meta?: {
     tech?: Partial<TechSpec> | null;
     catalog?: Partial<CatalogSpec> | null;
@@ -41,6 +43,11 @@ type CreateProductResponse =
 type UpdateProductResponse =
   | { ok: true; updated: ProductItem }
   | { ok: false; message: string };
+
+type ImageInsight = {
+  overview?: string[]; // 3 linhas
+  hotspots?: unknown[]; // vamos ignorar agora
+};
 
 function toRelativeUploadsPath(urlOrPath: string) {
   if (!urlOrPath) return null;
@@ -73,6 +80,65 @@ function brlFromCents(cents: number) {
 
 function classNames(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(' ');
+}
+
+function normalizeCaptions(len: number, prev?: string[] | null): string[] {
+  const base = Array.isArray(prev) ? prev.slice(0, len) : [];
+  while (base.length < len) base.push('');
+  return base;
+}
+
+function normalizeOverview3(lines: unknown): [string, string, string] {
+  if (!Array.isArray(lines)) return ['', '', ''];
+  const a = String(lines?.[0] ?? '').trim();
+  const b = String(lines?.[1] ?? '').trim();
+  const c = String(lines?.[2] ?? '').trim();
+  return [a, b, c];
+}
+
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+}
+
+function normalizeInsightsForLen(
+  len: number,
+  existing: unknown,
+): ImageInsight[] {
+  const base: ImageInsight[] = Array.isArray(existing)
+    ? existing.map((it) => {
+        const r = asRecord(it);
+        return {
+          overview: normalizeOverview3(r?.overview),
+          hotspots: Array.isArray(r?.hotspots) ? (r.hotspots as unknown[]) : [],
+        };
+      })
+    : [];
+
+  const next = [...base];
+  while (next.length < len) next.push({ overview: ['', '', ''], hotspots: [] });
+  if (next.length > len) next.length = len;
+
+  // força overview sempre com 3 linhas
+  for (let i = 0; i < next.length; i++) {
+    next[i] = {
+      ...next[i],
+      overview: normalizeOverview3(next[i]?.overview),
+      hotspots: Array.isArray(next[i]?.hotspots) ? next[i]!.hotspots : [],
+    };
+  }
+
+  return next;
+}
+
+function moveItem<T>(arr: T[], from: number, to: number) {
+  const next = [...arr];
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+}
+
+function removeAt<T>(arr: T[], idx: number) {
+  return arr.filter((_, i) => i !== idx);
 }
 
 function catalogLabelKind(kind?: ProductKind | null) {
@@ -710,6 +776,8 @@ function FilesDropzone({
   hint,
   files,
   setFiles,
+  insights,
+  setInsights,
   disabled,
   maxFiles = 10,
 }: {
@@ -717,15 +785,21 @@ function FilesDropzone({
   hint?: string;
   files: File[];
   setFiles: (next: File[]) => void;
+  insights?: ImageInsight[];
+  setInsights?: (next: ImageInsight[]) => void;
   disabled?: boolean;
   maxFiles?: number;
 }) {
-  const [dragOver, setDragOver] = useState(false);
+  const [dragFrom, setDragFrom] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState<number | null>(null);
+  const [dragZoneOver, setDragZoneOver] = useState(false);
 
   const previews = useMemo(() => {
     const out = files.map((f) => ({ file: f, url: URL.createObjectURL(f) }));
     return out;
   }, [files]);
+
+  const ins = insights ?? [];
 
   useEffect(() => {
     return () => {
@@ -757,28 +831,28 @@ function FilesDropzone({
       <div
         className={classNames(
           'rounded-2xl border border-white/15 bg-black/80 p-4 transition',
-          dragOver ? 'border-white/30 bg-black/70' : '',
+          dragZoneOver ? 'border-white/30 bg-black/70' : '',
           disabled ? 'opacity-70' : '',
         )}
         onDragEnter={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          if (!disabled) setDragOver(true);
+          if (!disabled) setDragZoneOver(true);
         }}
         onDragOver={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          if (!disabled) setDragOver(true);
+          if (!disabled) setDragZoneOver(true);
         }}
         onDragLeave={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          setDragOver(false);
+          setDragZoneOver(false);
         }}
         onDrop={(e) => {
           e.preventDefault();
           e.stopPropagation();
-          setDragOver(false);
+          setDragZoneOver(false);
           if (disabled) return;
 
           const arr = Array.from(e.dataTransfer.files ?? []);
@@ -810,65 +884,112 @@ function FilesDropzone({
             {previews.map((p, idx) => (
               <div
                 key={`${p.file.name}-${idx}`}
-                className="group relative overflow-hidden rounded-2xl border border-white/10 bg-black"
+                draggable={!disabled}
+                onDragStart={() => setDragFrom(idx)}
+                onDragEnter={() => setDragOver(idx)}
+                onDragOver={(e) => e.preventDefault()}
+                onDragEnd={() => {
+                  setDragFrom(null);
+                  setDragOver(null);
+                }}
+                onDrop={() => {
+                  if (disabled) return;
+                  if (dragFrom === null) return;
+                  if (dragOver === null) return;
+                  if (dragFrom === dragOver) return;
+
+                  const nextFiles = moveItem(files, dragFrom, dragOver);
+                  setFiles(nextFiles);
+
+                  if (setInsights) {
+                    const nextIns = moveItem(ins, dragFrom, dragOver);
+                    setInsights(nextIns);
+                  }
+
+                  setDragFrom(null);
+                  setDragOver(null);
+                }}
+                className={[
+                  'group relative overflow-hidden rounded-2xl border bg-black',
+                  dragOver === idx ? 'border-white/40' : 'border-white/10',
+                ].join(' ')}
+                style={{ cursor: disabled ? 'default' : 'grab' }}
               >
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={p.url}
-                  alt={p.file.name}
-                  className="h-24 w-full object-cover"
-                />
+                <div className="absolute left-2 top-2 z-10 rounded-full border border-white/15 bg-black/45 px-2 py-1 text-[10px] font-semibold text-white/80 backdrop-blur">
+                  Arraste
+                </div>
+                <div className="overflow-hidden rounded-2xl">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    src={p.url}
+                    alt={p.file.name}
+                    className="h-24 w-full object-cover"
+                  />
+                </div>
 
-                <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-black/60 px-2 py-1">
-                  <span className="truncate text-[10px] font-semibold text-white/80">
-                    {idx === 0 ? 'CAPA' : `#${idx + 1}`}
-                  </span>
+                <div className="p-2">
+                  {/* Visão rápida */}
+                  {setInsights ? (
+                    <div className="px-2 pb-2">
+                      <div className="mb-1 text-[10px] font-semibold text-white/70">
+                        Visão rápida (3 linhas)
+                      </div>
 
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (idx <= 0) return;
-                        const next = [...files];
-                        const a = next[idx - 1]!;
-                        next[idx - 1] = next[idx]!;
-                        next[idx] = a;
-                        setFiles(next);
-                      }}
-                      className="rounded-lg bg-white/10 px-2 py-1 text-[10px] font-semibold text-white hover:bg-white/15 disabled:opacity-50"
-                      disabled={disabled || idx === 0}
-                      title="Subir (virar CAPA)"
-                    >
-                      ↑
-                    </button>
+                      {[0, 1, 2].map((lineIdx) => {
+                        const ov = normalizeOverview3(ins[idx]?.overview);
+                        const val = ov[lineIdx] ?? '';
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        if (idx >= files.length - 1) return;
-                        const next = [...files];
-                        const a = next[idx + 1]!;
-                        next[idx + 1] = next[idx]!;
-                        next[idx] = a;
-                        setFiles(next);
-                      }}
-                      className="rounded-lg bg-white/10 px-2 py-1 text-[10px] font-semibold text-white hover:bg-white/15 disabled:opacity-50"
-                      disabled={disabled || idx === files.length - 1}
-                      title="Descer"
-                    >
-                      ↓
-                    </button>
+                        return (
+                          <input
+                            key={`ov-${idx}-${lineIdx}`}
+                            value={val}
+                            onChange={(e) => {
+                              const v = e.target.value;
 
-                    <button
-                      type="button"
-                      onClick={() => setFiles(files.filter((_, i) => i !== idx))}
-                      className="rounded-lg bg-white/10 px-2 py-1 text-[10px] font-semibold text-white hover:bg-white/15"
-                      disabled={disabled}
-                      title="Remover"
-                    >
-                      Remover
-                    </button>
-                  </div>
+                              const next = Array.isArray(ins) ? [...ins] : [];
+                              const cur = next[idx] ?? { overview: ['', '', ''], hotspots: [] };
+                              const nextOv = normalizeOverview3(cur.overview);
+                              nextOv[lineIdx] = v;
+
+                              next[idx] = { ...cur, overview: nextOv };
+                              setInsights(next);
+                            }}
+                            maxLength={42}
+                            placeholder={
+                              lineIdx === 0
+                                ? 'Ex: MDF de alta densidade'
+                                : lineIdx === 1
+                                  ? 'Ex: Acabamento nogueira'
+                                  : 'Ex: Resistente a riscos'
+                            }
+                            className="mb-2 w-full rounded-xl border border-white/15 bg-black/80 px-3 py-2 text-xs text-white/85 outline-none placeholder:text-white/50"
+                            disabled={disabled}
+                          />
+                        );
+                      })}
+
+                      <div className="mt-1 text-[10px] text-white/60">
+                        Aparece no botão “i” na página do produto.
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+
+                <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-2 bg-black/60 px-2 py-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFiles(removeAt(files, idx));
+                      if (setInsights) {
+                        setInsights(removeAt(normalizeInsightsForLen(files.length, ins), idx));
+                      }
+                    }}
+                    className="rounded-lg bg-white/10 px-2 py-1 text-[10px] font-semibold text-white hover:bg-white/15"
+                    disabled={disabled}
+                    title="Remover"
+                  >
+                    Remover
+                  </button>
                 </div>
               </div>
             ))}
@@ -1410,6 +1531,7 @@ export default function MerchantProductsPage() {
 
   // ✅ Fotos múltiplas (novo)
   const [files, setFiles] = useState<File[]>([]);
+  const [imageInsights, setImageInsights] = useState<ImageInsight[]>([]);
   const [uploading, setUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(''); // ex.: "2/5"
 
@@ -1458,11 +1580,17 @@ export default function MerchantProductsPage() {
 
   // ✅ Fotos múltiplas (edição)
   const [eFiles, setEFiles] = useState<File[]>([]);
+  const [eKeepInsights, setEKeepInsights] = useState<ImageInsight[]>([]);
+  const [eInsights, setEInsights] = useState<ImageInsight[]>([]);
+  const [eOpenInsightIdx, setEOpenInsightIdx] = useState<number | null>(null);
   const [eUploading, setEUploading] = useState(false);
   const [eUploadProgress, setEUploadProgress] = useState('');
 
   // ✅ NOVO: controle de imagens atuais (remover na edição)
   const [eKeepImages, setEKeepImages] = useState<string[]>([]);
+  const [eKeepCaptions, setEKeepCaptions] = useState<string[]>([]);
+  const [dragFromIdx, setDragFromIdx] = useState<number | null>(null);
+  const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
 
   // Ficha técnica (edição)
   const [eSpec, setESpec] = useState<TechSpec>({
@@ -1706,10 +1834,12 @@ useEffect(() => {
 
     setSaving(true);
     try {
-      const images = await uploadMany(files, setUploadProgress);
-      if (files.length && !images) return;
+    const images = await uploadMany(files, setUploadProgress);
+    if (files.length && !images) return;
 
-      const baseDesc = description.trim();
+    const insightsToSend = normalizeInsightsForLen(images?.length ?? 0, imageInsights);
+
+    const baseDesc = description.trim();
 
       // 1) descrição + ficha técnica
       const withTech = mergeDescriptionWithTech(baseDesc, spec);
@@ -1736,6 +1866,7 @@ useEffect(() => {
           description: finalDesc,
           priceCents,
           images: images ?? null,
+          imageInsights: insightsToSend,
           meta: {
             tech: hasAnyTech(spec) ? spec : null,
             catalog: cat ?? null,
@@ -1752,6 +1883,7 @@ useEffect(() => {
       setDescription('');
       setPrice('');
       setFiles([]);
+      setImageInsights([]);
       setSpec({
         weightKg: '',
         lengthCm: '',
@@ -1871,6 +2003,15 @@ useEffect(() => {
 
     // ✅ inicializa keepImages com imagens atuais
     setEKeepImages(Array.isArray(p.images) ? p.images : []);
+    setEKeepCaptions(
+      normalizeCaptions((p.images ?? []).length, p.imageCaptions ?? []),
+    );
+
+    setEKeepInsights(
+      normalizeInsightsForLen((p.images ?? []).length, p.imageInsights ?? []),
+    );
+    setEInsights(normalizeInsightsForLen(0, []));
+    setEOpenInsightIdx(null);
 
     setSheetProductTitle(p.title ?? 'Editar produto');
     setSheetOpen(true);
@@ -1889,6 +2030,9 @@ useEffect(() => {
     });
     setEFiles([]);
     setEKeepImages([]);
+    setEKeepCaptions([]);
+    setEKeepInsights([]);
+    setEInsights([]);
     setESpec({
       weightKg: '',
       lengthCm: '',
@@ -1965,6 +2109,8 @@ useEffect(() => {
       ? `${stripCatalogBlock(withDna ?? '')}\n\n${buildCatalogBlock(eCat)}`
       : buildCatalogBlock(eCat);
 
+    const insightsToSend = normalizeInsightsForLen(baseImgs.length, eKeepInsights);
+
     setESaving(true);
     try {
       const res = await fetchJSON<UpdateProductResponse>(
@@ -1980,6 +2126,7 @@ useEffect(() => {
             description: finalDesc,
             priceCents,
             images: imagesToSend ?? undefined,
+            imageInsights: insightsToSend,
             meta: {
               tech: hasAnyTech(eSpec) ? eSpec : null,
               catalog: eCat ?? null,
@@ -2332,7 +2479,13 @@ useEffect(() => {
                 label="Fotos do produto"
                 hint="Recomendado: 1024px+. Formatos: WEBP/PNG/JPEG/GIF. A 1ª vira capa."
                 files={files}
-                setFiles={setFiles}
+                setFiles={(next) => {
+                  setFiles(next);
+                  // insights acompanha as fotos (cria vazios / corta)
+                  setImageInsights(normalizeInsightsForLen(next.length, imageInsights));
+                }}
+                insights={imageInsights}
+                setInsights={setImageInsights}
                 disabled={saving || uploading}
                 maxFiles={10}
               />
@@ -3154,71 +3307,139 @@ useEffect(() => {
                         return (
                           <div
                             key={`${src}-${idx}`}
-                            className="group relative overflow-hidden rounded-2xl border border-white/10 bg-black"
+                            draggable={!eSaving && !eUploading}
+                            onDragStart={() => setDragFromIdx(idx)}
+                            onDragEnter={() => setDragOverIdx(idx)}
+                            onDragOver={(e) => e.preventDefault()}
+                            onDragEnd={() => {
+                              setDragFromIdx(null);
+                              setDragOverIdx(null);
+                            }}
+                            onDrop={() => {
+                              if (eSaving || eUploading) return;
+                              if (dragFromIdx === null || dragOverIdx === null) return;
+                              if (dragFromIdx === dragOverIdx) return;
+
+                              setEKeepImages((prev) =>
+                                moveItem(prev, dragFromIdx, dragOverIdx),
+                              );
+                              setEKeepCaptions((prev) =>
+                                moveItem(prev, dragFromIdx, dragOverIdx),
+                              );
+                              setEKeepInsights((prev) =>
+                                moveItem(prev, dragFromIdx, dragOverIdx),
+                              );
+
+                              setDragFromIdx(null);
+                              setDragOverIdx(null);
+                            }}
+                            className={[
+                              'group relative overflow-hidden rounded-2xl border bg-black',
+                              dragOverIdx === idx ? 'border-white/40' : 'border-white/10',
+                            ].join(' ')}
+                            style={{ cursor: eSaving || eUploading ? 'default' : 'grab' }}
+                            title="Arraste para reordenar"
                           >
                             {/* eslint-disable-next-line @next/next/no-img-element */}
-                            <img
-                              src={url}
-                              alt={`Foto ${idx + 1}`}
-                              className="h-24 w-full object-cover"
-                            />
+                            <img src={url} alt={`Foto ${idx + 1}`} className="h-24 w-full object-cover" />
 
-                            <div className="absolute inset-x-0 bottom-0 flex items-center justify-between gap-2 bg-black/60 px-2 py-1">
-                              <span className="truncate text-[10px] font-semibold text-white/80">
-                                {idx === 0 ? 'CAPA' : `#${idx + 1}`}
-                              </span>
+                            <div className="absolute left-2 top-2 z-10 rounded-full border border-white/15 bg-black/45 px-2 py-1 text-[10px] font-semibold text-white/80 backdrop-blur">
+                              {idx === 0 ? 'CAPA' : `#${idx + 1}`}
+                            </div>
 
-                              <div className="flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setEKeepImages((prev) => {
-                                      if (idx <= 0) return prev;
-                                      const next = [...prev];
-                                      const a = next[idx - 1]!;
-                                      next[idx - 1] = next[idx]!;
-                                      next[idx] = a;
-                                      return next;
-                                    });
-                                  }}
-                                  className="rounded-lg bg-white/10 px-2 py-1 text-[10px] font-semibold text-white hover:bg-white/15 disabled:opacity-50"
-                                  disabled={eSaving || eUploading || idx === 0}
-                                  title="Subir (virar capa se for 1ª)"
-                                >
-                                  ↑
-                                </button>
-
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setEKeepImages((prev) => {
-                                      if (idx >= prev.length - 1) return prev;
-                                      const next = [...prev];
-                                      const a = next[idx + 1]!;
-                                      next[idx + 1] = next[idx]!;
-                                      next[idx] = a;
-                                      return next;
-                                    });
-                                  }}
-                                  className="rounded-lg bg-white/10 px-2 py-1 text-[10px] font-semibold text-white hover:bg-white/15 disabled:opacity-50"
-                                  disabled={eSaving || eUploading || idx === eKeepImages.length - 1}
-                                  title="Descer"
-                                >
-                                  ↓
-                                </button>
-
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setEKeepImages((prev) => prev.filter((_, i) => i !== idx));
-                                  }}
-                                  className="rounded-lg bg-white/10 px-2 py-1 text-[10px] font-semibold text-white hover:bg-white/15"
-                                  disabled={eSaving || eUploading}
-                                  title="Remover"
-                                >
-                                  Remover
-                                </button>
+                            <div className="p-2">
+                              <div className="mb-1 text-[10px] font-semibold text-white/70">
+                                Legenda curta
                               </div>
+
+                              <input
+                                value={eKeepCaptions[idx] ?? ''}
+                                onChange={(e) => {
+                                  const v = e.target.value;
+                                  setEKeepCaptions((prev) => {
+                                    const next = [...prev];
+                                    next[idx] = v;
+                                    return next;
+                                  });
+                                }}
+                                maxLength={120}
+                                placeholder="Ex: detalhe do acabamento, cor nogueira..."
+                                className="w-full rounded-xl border border-white/15 bg-black/80 px-3 py-2 text-xs text-white/85 outline-none placeholder:text-white/50"
+                                disabled={eSaving || eUploading}
+                              />
+
+                              <div className="mt-2">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setEOpenInsightIdx(
+                                      eOpenInsightIdx === idx ? null : idx,
+                                    )
+                                  }
+                                  className="w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/15"
+                                  disabled={eSaving || eUploading}
+                                >
+                                  Visão rápida
+                                </button>
+
+                                {eOpenInsightIdx === idx ? (
+                                  <div className="mt-2 rounded-2xl border border-white/15 bg-black/60 p-3 backdrop-blur">
+                                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-white/70">
+                                      VISÃO RÁPIDA (3 linhas)
+                                    </div>
+
+                                    {[0, 1, 2].map((k) => (
+                                      <input
+                                        key={k}
+                                        value={eKeepInsights[idx]?.overview?.[k] ?? ''}
+                                        onChange={(e) => {
+                                          const v = e.target.value;
+
+                                          setEKeepInsights((prev) => {
+                                            const next = [...prev];
+                                            const cur =
+                                              next[idx] ?? ({
+                                                overview: ['', '', ''],
+                                                hotspots: [],
+                                              } as ImageInsight);
+                                            const ov = normalizeOverview3(cur.overview);
+                                            ov[k] = v;
+                                            next[idx] = { ...cur, overview: ov };
+                                            return next;
+                                          });
+                                        }}
+                                        maxLength={60}
+                                        placeholder={
+                                          k === 0 ? 'Linha 1' : k === 1 ? 'Linha 2' : 'Linha 3'
+                                        }
+                                        className="mb-2 w-full rounded-xl border border-white/15 bg-black/80 px-3 py-2 text-xs text-white/85 outline-none placeholder:text-white/50"
+                                        disabled={eSaving || eUploading}
+                                      />
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEKeepImages((prev) =>
+                                    prev.filter((_, i) => i !== idx),
+                                  );
+                                  setEKeepCaptions((prev) =>
+                                    prev.filter((_, i) => i !== idx),
+                                  );
+                                  setEKeepInsights((prev) =>
+                                    prev.filter((_, i) => i !== idx),
+                                  );
+                                  if (eOpenInsightIdx === idx)
+                                    setEOpenInsightIdx(null);
+                                }}
+                                className="mt-2 w-full rounded-xl border border-white/15 bg-black/60 px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/10"
+                                disabled={eSaving || eUploading}
+                              >
+                                Remover
+                              </button>
                             </div>
                           </div>
                         );
@@ -3235,8 +3456,13 @@ useEffect(() => {
                   label="Adicionar fotos (opcional)"
                   hint="Se selecionar novas fotos, elas serão adicionadas às atuais."
                   files={eFiles}
-                  setFiles={setEFiles}
-                  disabled={eSaving || eUploading}
+                  setFiles={(next) => {
+                  setEFiles(next);
+                  setEInsights(normalizeInsightsForLen(next.length, eInsights));
+                }}
+                insights={eInsights}
+                setInsights={setEInsights}
+                disabled={eSaving || eUploading}
                   maxFiles={10}
                 />
               </>

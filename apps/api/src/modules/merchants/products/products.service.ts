@@ -30,6 +30,74 @@ function normalizeImages(
   return undefined;
 }
 
+function normalizeCaptions(captions: unknown): string[] | undefined {
+  if (typeof captions === 'undefined') return undefined;
+  if (captions === null) return [];
+
+  if (Array.isArray(captions)) {
+    return captions
+      .filter((s): s is string => typeof s === 'string')
+      .map((s) => s.trim())
+      .map((s) => (s.length > 0 ? s : ''));
+  }
+
+  return undefined;
+}
+
+function normalizeImageInsights(
+  v: unknown,
+): Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput | undefined {
+  if (typeof v === 'undefined') return undefined;
+  if (v === null) return Prisma.DbNull;
+
+  // se vier string JSON, tenta parse
+  if (typeof v === 'string') {
+    const s = v.trim();
+    if (!s) return Prisma.DbNull;
+    try {
+      return JSON.parse(s) as Prisma.InputJsonValue;
+    } catch {
+      return undefined; // inválido => ignora (não altera)
+    }
+  }
+
+  // object/array => JSON válido
+  if (typeof v === 'object') return v as Prisma.InputJsonValue;
+
+  return undefined;
+}
+
+function ensureInsightsAligned(
+  imagesValue: unknown,
+  insightsValue: unknown,
+): { ok: true } | { ok: false; message: string } {
+  // se insights não veio, ok
+  if (typeof insightsValue === 'undefined') return { ok: true };
+  // se insights veio como DbNull (limpar), ok
+  if (insightsValue === Prisma.DbNull) return { ok: true };
+
+  // precisa existir imagens (array) para alinhar 1:1
+  if (!Array.isArray(imagesValue)) {
+    return {
+      ok: false,
+      message: 'imageInsights enviado, mas images não é um array.',
+    };
+  }
+  if (!Array.isArray(insightsValue)) {
+    return {
+      ok: false,
+      message: 'imageInsights deve ser um array (1 item por imagem).',
+    };
+  }
+  if (insightsValue.length !== imagesValue.length) {
+    return {
+      ok: false,
+      message: 'imageInsights deve ter o mesmo tamanho de images.',
+    };
+  }
+  return { ok: true };
+}
+
 @Injectable()
 export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -56,6 +124,8 @@ export class ProductsService {
         priceCents: true,
         active: true,
         images: true,
+        imageCaptions: true,
+        imageInsights: true,
         meta: true,
         createdAt: true,
         updatedAt: true,
@@ -77,6 +147,8 @@ export class ProductsService {
       description?: string | null;
       priceCents: number;
       images?: unknown; // pode vir string[] | null do front
+      imageCaptions?: unknown; // pode vir string[] | null do front
+      imageInsights?: unknown; // pode vir json | null do front
       meta?: Prisma.InputJsonValue | null;
     },
   ) {
@@ -105,7 +177,12 @@ export class ProductsService {
     }
 
     const imagesValue = normalizeImages(body.images);
+    const captionsValue = normalizeCaptions(body.imageCaptions);
+    const insightsValue = normalizeImageInsights(body.imageInsights);
     const metaValue = normalizeJson(body.meta);
+
+    const v = ensureInsightsAligned(imagesValue, insightsValue);
+    if (!v.ok) return { ok: false, message: v.message };
 
     const created = await this.prisma.product.create({
       data: {
@@ -115,6 +192,12 @@ export class ProductsService {
         priceCents,
         active: true,
         ...(typeof imagesValue !== 'undefined' ? { images: imagesValue } : {}),
+        ...(typeof captionsValue !== 'undefined'
+          ? { imageCaptions: captionsValue }
+          : {}),
+        ...(typeof insightsValue !== 'undefined'
+          ? { imageInsights: insightsValue }
+          : {}),
         ...(typeof metaValue !== 'undefined' ? { meta: metaValue } : {}),
       },
       select: {
@@ -124,6 +207,8 @@ export class ProductsService {
         priceCents: true,
         active: true,
         images: true,
+        imageCaptions: true,
+        imageInsights: true,
         meta: true,
         createdAt: true,
         merchant: { select: { id: true, tradeName: true } },
@@ -142,6 +227,8 @@ export class ProductsService {
       description?: string | null;
       priceCents?: number;
       images?: unknown; // pode vir string[] | null
+      imageCaptions?: unknown; // pode vir string[] | null
+      imageInsights?: unknown; // pode vir json | null
       meta?: Prisma.InputJsonValue | null;
     },
   ) {
@@ -161,7 +248,12 @@ export class ProductsService {
 
     const existing = await this.prisma.product.findFirst({
       where: { id, merchantId: merchant.id },
-      select: { id: true },
+      select: {
+        id: true,
+        images: true,
+        imageCaptions: true,
+        imageInsights: true,
+      },
     });
 
     if (!existing) {
@@ -200,6 +292,74 @@ export class ProductsService {
       updateData.images = imagesValue;
     }
 
+    // ✅ Se o front mandou "images", ele pode ter removido/reordenado.
+    // Então realinhamos captions/insights seguindo a URL da imagem.
+    if (typeof imagesValue !== 'undefined' && Array.isArray(imagesValue)) {
+      const prevImages = Array.isArray(existing.images)
+        ? (existing.images as unknown[]).filter(
+            (x): x is string => typeof x === 'string',
+          )
+        : [];
+
+      const prevCaptions = Array.isArray(existing.imageCaptions)
+        ? (existing.imageCaptions as unknown[]).map((x) =>
+            typeof x === 'string' ? x : '',
+          )
+        : [];
+
+      const prevInsights = Array.isArray(existing.imageInsights)
+        ? (existing.imageInsights as unknown[])
+        : [];
+
+      const captionByUrl = new Map<string, string>();
+      const insightByUrl = new Map<string, unknown>();
+
+      for (let i = 0; i < prevImages.length; i++) {
+        const url = prevImages[i];
+        captionByUrl.set(url, prevCaptions[i] ?? '');
+        insightByUrl.set(
+          url,
+          prevInsights[i] ?? { overview: [], hotspots: [] },
+        );
+      }
+
+      const nextImages = (imagesValue as unknown[]).filter(
+        (x): x is string => typeof x === 'string',
+      );
+
+      const nextCaptions = nextImages.map((url) => captionByUrl.get(url) ?? '');
+      const nextInsights = nextImages.map(
+        (url) => insightByUrl.get(url) ?? { overview: [], hotspots: [] },
+      );
+
+      // Só aplica auto-realign se o front NÃO mandou explicitamente captions/insights.
+      if (typeof body.imageCaptions === 'undefined') {
+        updateData.imageCaptions = { set: nextCaptions };
+      }
+      // IMPORTANTE: imageInsights é JSON (não é { set: ... })
+      if (typeof body.imageInsights === 'undefined') {
+        updateData.imageInsights =
+          nextInsights as unknown as Prisma.InputJsonValue;
+      }
+    }
+
+    const insightsValue = normalizeImageInsights(body.imageInsights);
+
+    const imagesBase =
+      typeof imagesValue !== 'undefined' ? imagesValue : existing.images;
+
+    const v = ensureInsightsAligned(imagesBase, insightsValue);
+    if (!v.ok) return { ok: false, message: v.message };
+
+    if (typeof insightsValue !== 'undefined') {
+      updateData.imageInsights = insightsValue;
+    }
+
+    const captionsValue = normalizeCaptions(body.imageCaptions);
+    if (typeof captionsValue !== 'undefined') {
+      updateData.imageCaptions = { set: captionsValue };
+    }
+
     // ✅ meta: aceita json ou null; null limpa (DbNull)
     const metaValue = normalizeJson(body.meta);
     if (typeof metaValue !== 'undefined') {
@@ -220,6 +380,8 @@ export class ProductsService {
         priceCents: true,
         active: true,
         images: true,
+        imageCaptions: true,
+        imageInsights: true,
         meta: true,
         updatedAt: true,
         merchant: { select: { id: true, tradeName: true } },
@@ -246,7 +408,12 @@ export class ProductsService {
 
     const product = await this.prisma.product.findFirst({
       where: { id, merchantId: merchant.id },
-      select: { id: true, images: true },
+      select: {
+        id: true,
+        images: true,
+        imageCaptions: true,
+        imageInsights: true,
+      },
     });
 
     if (!product) {
@@ -265,12 +432,32 @@ export class ProductsService {
 
     const next = [...current, url];
 
+    const currentCaptions = Array.isArray(product.imageCaptions)
+      ? (product.imageCaptions as unknown[]).map((s) =>
+          typeof s === 'string' ? s : '',
+        )
+      : [];
+
+    const captionsNext = [...currentCaptions, ''];
+
+    const currentInsights = Array.isArray(product.imageInsights)
+      ? (product.imageInsights as unknown[])
+      : [];
+
+    const insightsNext = [...currentInsights, { overview: [], hotspots: [] }];
+
     const updated = await this.prisma.product.update({
       where: { id },
-      data: { images: next as unknown as Prisma.InputJsonValue },
+      data: {
+        images: next as unknown as Prisma.InputJsonValue,
+        imageCaptions: { set: captionsNext },
+        imageInsights: insightsNext as unknown as Prisma.InputJsonValue,
+      },
       select: {
         id: true,
         images: true,
+        imageCaptions: true,
+        imageInsights: true,
         updatedAt: true,
       },
     });

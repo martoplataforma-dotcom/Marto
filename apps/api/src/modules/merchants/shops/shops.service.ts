@@ -50,6 +50,7 @@ export class ShopsService {
         priceCents: true,
         active: true,
         images: true,
+        imageCaptions: true,
         createdAt: true,
       },
     });

@@ -55,6 +55,7 @@ export class ProductsController {
         priceCents: true,
         merchantId: true,
         images: true, // ✅ NOVO: inclui imagens na listagem
+        imageCaptions: true,
         merchant: {
           select: {
             id: true,
@@ -78,6 +79,7 @@ export class ProductsController {
           }
         : null,
       images: p.images ?? [], // ✅ NOVO
+      imageCaptions: p.imageCaptions ?? [],
     }));
   }
 
@@ -121,6 +123,7 @@ export class ProductsController {
         description: true,
         priceCents: true,
         images: true,
+        imageCaptions: true,
         merchantId: true,
         active: true,
       },
@@ -160,6 +163,8 @@ export class ProductsController {
         priceCents: true,
         merchantId: true,
         images: true,
+        imageCaptions: true,
+        imageInsights: true, // ✅ NOVO
         merchant: {
           select: {
             id: true,
@@ -186,6 +191,8 @@ export class ProductsController {
         price: p.priceCents,
         merchantId: p.merchantId,
         images: p.images ?? [],
+        imageCaptions: p.imageCaptions ?? [],
+        imageInsights: (p as any).imageInsights ?? [], // ✅ NOVO
         // ✅ novos:
         productHandle,
         merchantHandle,

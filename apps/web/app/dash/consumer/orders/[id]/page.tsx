@@ -297,6 +297,19 @@ function statusLabelPT(status: string) {
   return s;
 }
 
+function normStatus(s: unknown): string {
+  return String(s ?? '').trim().toUpperCase();
+}
+
+function isPaidStatus(s: unknown): boolean {
+  return normStatus(s) === 'PAID';
+}
+
+function needsPaymentGate(s: unknown): boolean {
+  const st = normStatus(s);
+  return st === 'CREATED' || st === 'PENDING_PAYMENT';
+}
+
 function parseBRNumber(raw: unknown): number | null {
   if (raw === null || raw === undefined) return null;
   const s = String(raw).trim();
@@ -384,6 +397,71 @@ async function postMockPayment(orderId: string) {
   }
 
   return data;
+}
+
+async function postCreatePaymentForOrder(
+  orderId: string,
+): Promise<{ paymentId: string }> {
+  const token = getToken();
+  if (!token) throw new Error('Sem token. Faça login novamente.');
+
+  const res = await fetchJSON<{
+    ok?: boolean;
+    paymentId?: string;
+    status?: string;
+    message?: string;
+  }>(`/payments/order/${encodeURIComponent(orderId)}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({ method: 'PIX' }),
+  });
+
+  if (
+    (res as Record<string, unknown> | null)?.ok === false ||
+    !(res as Record<string, unknown> | null)?.paymentId
+  ) {
+    throw new Error(
+      ((res as Record<string, unknown> | null)?.message as string) ||
+        'Falha ao criar cobrança',
+    );
+  }
+
+  return {
+    paymentId: String((res as Record<string, unknown>).paymentId),
+  };
+}
+
+async function postConfirmPayment(paymentId: string): Promise<void> {
+  const token = getToken();
+  if (!token) throw new Error('Sem token. Faça login novamente.');
+
+  const res = await fetchJSON<{
+    ok?: boolean;
+    status?: string;
+    message?: string;
+  }>(`/payments/${encodeURIComponent(paymentId)}/confirm`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'content-type': 'application/json',
+    },
+  });
+
+  const status = String(
+    (res as Record<string, unknown> | null)?.status ?? '',
+  ).toUpperCase();
+  if (
+    (res as Record<string, unknown> | null)?.ok === false ||
+    status !== 'PAID'
+  ) {
+    throw new Error(
+      ((res as Record<string, unknown> | null)?.message as string) ||
+        'Falha ao confirmar pagamento',
+    );
+  }
 }
 
 // ✅ helper único de copiar texto
@@ -846,26 +924,23 @@ export default function ConsumerOrderDetailsPage({
   async function confirmPay() {
     if (!order?.id) return;
 
-    setActionError(null);
-    setActionLoading('PAY');
+  setActionError(null);
+  setActionLoading('PAY');
+  setToast('⏳ Iniciando Marto Pay…');
 
     try {
-      if (PAY_MODE === 'PAYMENTS_MOCK') {
-        await postMockPayment(order.id);
-      } else {
-        await postOrderStatus(order.id, 'PAID');
-      }
+      const { paymentId } = await postCreatePaymentForOrder(order.id);
+      await postConfirmPayment(paymentId);
 
-      // ✅ feedback imediato
-      setToast('✅ Pagamento registrado. Atualizando status…');
+      setToast('✅ Pagamento confirmado. Atualizando status…');
 
       setLocalEvents((prev) => [
         ...prev,
         {
           key: `service:pay-${Date.now()}`,
           source: 'SERVICE',
-          title: 'Pagamento iniciado',
-          desc: 'Pagamento registrado (MVP). Atualizando status…',
+          title: 'Pagamento confirmado',
+          desc: `Pagamento confirmado (MVP). paymentId: ${paymentId}`,
           createdAt: new Date().toISOString(),
         },
       ]);
@@ -1007,6 +1082,12 @@ export default function ConsumerOrderDetailsPage({
         {toast ? (
           <div className="mb-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 text-sm text-white/85 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
             {toast}
+          </div>
+        ) : null}
+
+        {actionError ? (
+          <div className="mt-3 rounded-lg border border-white/15 bg-white/5 p-3 text-sm text-white/80">
+            {actionError}
           </div>
         ) : null}
 
@@ -1224,266 +1305,326 @@ export default function ConsumerOrderDetailsPage({
                 )}
               </div>
 
-              {/* Entrega */}
-              <div className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-                <div className="text-xs font-semibold text-white/85">Entrega</div>
-
-                {!shipment ? (
-                  <div className="mt-2 text-sm text-white/70">
-                    Nenhuma entrega vinculada ainda para esta compra.
-                  </div>
-                ) : (
-                  <div className="mt-2 grid gap-2 text-sm text-white/80">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/70">Entrega</span>
-
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono text-xs text-white/85">
-                          {shipment.id}
-                        </span>
-
-                        <button
-                          type="button"
-                          className="rounded-lg border border-white/15 bg-white/5 px-2 py-0.5 text-[11px] font-semibold text-white/75 hover:bg-white/10"
-                          onClick={async () => {
-                            const ok = await copyText(shipment.id);
-                            setToast(
-                              ok
-                                ? '✅ ID da entrega copiado'
-                                : 'Não foi possível copiar o ID da entrega',
-                            );
-                          }}
-                          title="Copiar ID da entrega"
-                        >
-                          Copiar
-                        </button>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="text-white/70">Status</span>
-                      <span className="text-white/95">
-                        {shipmentStatusPT(shipment.status)}
-                      </span>
-                    </div>
-
-                    {String(shipment.status ?? '').toUpperCase().trim() ===
-                      'DELIVERED' && !shipment.review ? (
-                      <div className="mt-2 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-100">
-                        Entrega concluída. Leva 30s: avalie agora para registrar
-                        sua experiência.
-                      </div>
-                    ) : null}
-
-                    {shipment.review ? (
-                      <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-100">
-                        ✅ Entrega avaliada (
-                        {reviewStarsLabel(shipment.review.rating)}★)
-                      </div>
-                    ) : shipment.status !== 'DELIVERED' ? (
-                      <div className="mt-3 rounded-xl border border-white/15 bg-white/5 p-3 text-sm text-white/75">
-                        Avaliação disponível após a entrega ser marcada como{' '}
-                        <b>DELIVERED</b>.
-                      </div>
-                    ) : (
-                      <div className="mt-3 rounded-xl border border-white/15 bg-white/5 p-3">
-                        <div className="text-xs font-semibold text-white/85">
-                          Avaliar entrega
-                        </div>
-
-                        <div className="mt-2 flex flex-wrap items-center gap-2">
-                          <label className="text-xs text-white/70">
-                            Nota (1–5)
-                          </label>
-                          <select
-                            value={reviewRating}
-                            onChange={(e) => setReviewRating(Number(e.target.value))}
-                            className="rounded-lg border border-white/15 bg-black/60 px-2 py-1 text-sm text-white/85"
-                            disabled={reviewLoading || Boolean(shipment?.review)}
-                          >
-                            {[1, 2, 3, 4, 5].map((n) => (
-                              <option key={n} value={n}>
-                                {n}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-
-                        <textarea
-                          value={reviewComment}
-                          onChange={(e) => setReviewComment(e.target.value)}
-                          placeholder="Opcional: como foi a entrega?"
-                          className="mt-2 w-full rounded-xl border border-white/15 bg-black/60 p-2 text-sm text-white/85 placeholder:text-white/50 focus:outline-none"
-                          disabled={reviewLoading || Boolean(shipment?.review)}
-                        />
-
-                        <div className="mt-2 flex items-center gap-2">
-                          <button
-                            type="button"
-                            disabled={reviewLoading || Boolean(shipment?.review)}
-                            onClick={submitShipmentReview}
-                            className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
-                          >
-                            {shipment?.review
-                              ? 'Avaliado'
-                              : reviewLoading
-                                ? 'Enviando…'
-                                : 'Enviar avaliação'}
-                          </button>
-
-                          {reviewMsg ? (
-                            <div className="text-xs text-white/75">{reviewMsg}</div>
-                          ) : null}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Pagamento (Marto) */}
-              {allow.canPay ? (
+              {order && needsPaymentGate(order.status) ? (
                 <div className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-                  <div className="text-xs font-semibold text-white/85">Pagamento</div>
-                  <div className="mt-2 text-sm text-white/75">
-                    Este pedido foi criado e ainda não foi pago. Ao pagar, o rastro
-                    avança e a loja pode confirmar.
+                  <div className="text-sm font-semibold text-white/85">
+                    Pagamento pendente
                   </div>
 
-                  <div className="mt-3 flex flex-wrap items-center gap-2">
-                    <Btn
-                      tone="primary"
+                  <div className="mt-2 text-sm text-white/70">
+                    O ciclo Marto só avança após o pagamento ser confirmado.
+                  </div>
+
+                  <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
+                    Status:{' '}
+                    <span className="text-white/95">{String(order.status)}</span>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
                       disabled={actionLoading !== null}
-                      title="Pagar agora"
-                      onClick={() => {
-                        void confirmPay();
-                      }}
+                      onClick={() => void confirmPay()}
+                      className="rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
                     >
                       {actionLoading === 'PAY' ? 'Pagando…' : 'Pagar agora'}
-                    </Btn>
+                    </button>
 
-                    <span className="text-xs text-white/60">(MVP) Pagamento simulado</span>
+                    <button
+                      type="button"
+                      onClick={() => void load()}
+                      className="rounded-lg border border-white/15 bg-black/60 px-3 py-2 text-sm font-medium text-white/80 hover:bg-white/10"
+                    >
+                      Atualizar status
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  {/* Entrega */}
+                  <div className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                    <div className="text-xs font-semibold text-white/85">
+                      Entrega
+                    </div>
+
+                    {!shipment ? (
+                      <div className="mt-2 text-sm text-white/70">
+                        Nenhuma entrega vinculada ainda para esta compra.
+                      </div>
+                    ) : (
+                      <div className="mt-2 grid gap-2 text-sm text-white/80">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-white/70">Entrega</span>
+
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-xs text-white/85">
+                              {shipment.id}
+                            </span>
+
+                            <button
+                              type="button"
+                              className="rounded-lg border border-white/15 bg-white/5 px-2 py-0.5 text-[11px] font-semibold text-white/75 hover:bg-white/10"
+                              onClick={async () => {
+                                const ok = await copyText(shipment.id);
+                                setToast(
+                                  ok
+                                    ? '✅ ID da entrega copiado'
+                                    : 'Não foi possível copiar o ID da entrega',
+                                );
+                              }}
+                              title="Copiar ID da entrega"
+                            >
+                              Copiar
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-white/70">Status</span>
+                          <span className="text-white/95">
+                            {shipmentStatusPT(shipment.status)}
+                          </span>
+                        </div>
+
+                        {String(shipment.status ?? '').toUpperCase().trim() ===
+                          'DELIVERED' && !shipment.review ? (
+                          <div className="mt-2 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-100">
+                            Entrega concluída. Leva 30s: avalie agora para
+                            registrar sua experiência.
+                          </div>
+                        ) : null}
+
+                        {shipment.review ? (
+                          <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-emerald-500/25 bg-emerald-500/10 px-3 py-1 text-xs font-semibold text-emerald-100">
+                            ✅ Entrega avaliada (
+                            {reviewStarsLabel(shipment.review.rating)}★)
+                          </div>
+                        ) : shipment.status !== 'DELIVERED' ? (
+                          <div className="mt-3 rounded-xl border border-white/15 bg-white/5 p-3 text-sm text-white/75">
+                            Avaliação disponível após a entrega ser marcada como{' '}
+                            <b>DELIVERED</b>.
+                          </div>
+                        ) : (
+                          <div className="mt-3 rounded-xl border border-white/15 bg-white/5 p-3">
+                            <div className="text-xs font-semibold text-white/85">
+                              Avaliar entrega
+                            </div>
+
+                            <div className="mt-2 flex flex-wrap items-center gap-2">
+                              <label className="text-xs text-white/70">
+                                Nota (1–5)
+                              </label>
+                              <select
+                                value={reviewRating}
+                                onChange={(e) =>
+                                  setReviewRating(Number(e.target.value))
+                                }
+                                className="rounded-lg border border-white/15 bg-black/60 px-2 py-1 text-sm text-white/85"
+                                disabled={
+                                  reviewLoading || Boolean(shipment?.review)
+                                }
+                              >
+                                {[1, 2, 3, 4, 5].map((n) => (
+                                  <option key={n} value={n}>
+                                    {n}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            <textarea
+                              value={reviewComment}
+                              onChange={(e) => setReviewComment(e.target.value)}
+                              placeholder="Opcional: como foi a entrega?"
+                              className="mt-2 w-full rounded-xl border border-white/15 bg-black/60 p-2 text-sm text-white/85 placeholder:text-white/50 focus:outline-none"
+                              disabled={
+                                reviewLoading || Boolean(shipment?.review)
+                              }
+                            />
+
+                            <div className="mt-2 flex items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={
+                                  reviewLoading || Boolean(shipment?.review)
+                                }
+                                onClick={submitShipmentReview}
+                                className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
+                              >
+                                {shipment?.review
+                                  ? 'Avaliado'
+                                  : reviewLoading
+                                    ? 'Enviando…'
+                                    : 'Enviar avaliação'}
+                              </button>
+
+                              {reviewMsg ? (
+                                <div className="text-xs text-white/75">
+                                  {reviewMsg}
+                                </div>
+                              ) : null}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </div>
 
-                  {actionError ? (
-                    <div className="mt-3 rounded-lg border border-white/15 bg-white/5 p-3 text-sm text-white/80">
-                      {actionError}
+                  {/* Pagamento (Marto) */}
+                  {allow.canPay ? (
+                    <div className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                      <div className="text-xs font-semibold text-white/85">
+                        Pagamento
+                      </div>
+                      <div className="mt-2 text-sm text-white/75">
+                        Este pedido foi criado e ainda não foi pago. Ao pagar, o
+                        rastro avança e a loja pode confirmar.
+                      </div>
+
+                      <div className="mt-3 flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={false}
+                          onClick={() => {
+                            setToast('✅ clique chegou no botão');
+                            console.log('CLICK PAY BUTTON');
+                          }}
+                          className="rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15"
+                        >
+                          TESTE CLIQUE
+                        </button>
+
+                        <span className="text-xs text-white/60">
+                          (MVP) Pagamento simulado
+                        </span>
+                      </div>
+
+                      {actionError ? (
+                        <div className="mt-3 rounded-lg border border-white/15 bg-white/5 p-3 text-sm text-white/80">
+                          {actionError}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
-                </div>
-              ) : null}
 
-              {/* Ações do comprador */}
-              <div className="mt-5 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-                <div className="text-xs font-semibold text-white/85">Ações do comprador</div>
-                <div className="mt-2 text-xs text-white/70">
-                  Os botões aparecem/somem conforme o status.
-                </div>
-
-                {actionError && (
-                  <div className="mt-3 rounded-lg border border-white/15 bg-white/5 p-3 text-sm text-white/80">
-                    {actionError}
-                  </div>
-                )}
-
-                {String(status).toUpperCase() === 'RETURN_REQUESTED' && (
-                  <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-sm text-white/80">
-                    ⏳ Devolução solicitada
-                  </div>
-                )}
-
-                {String(status).toUpperCase() === 'COMPLETED' && (
-                  <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-sm text-white/80">
-                    ✅ Pedido concluído
-                  </div>
-                )}
-
-                {String(status).toUpperCase() === 'DELIVERED' ? (
-                  shipment ? (
-                    <div className="mt-3 rounded-xl border border-white/15 bg-white/5 p-3 text-sm text-white/80">
-                      Sua entrega foi marcada como <b>Entregue</b>. Confirme o
-                      recebimento para concluir o pedido.
+                  {/* Ações do comprador */}
+                  <div className="mt-5 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                    <div className="text-xs font-semibold text-white/85">
+                      Ações do comprador
                     </div>
-                  ) : (
-                    <div className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-100">
-                      Este pedido está como <b>Entregue</b>, mas ainda não existe
-                      entrega vinculada. No MVP, a confirmação depende da entrega.
+                    <div className="mt-2 text-xs text-white/70">
+                      Os botões aparecem/somem conforme o status.
                     </div>
-                  )
-                ) : null}
 
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {allow.canCancel && (
-                    <Btn
-                      tone="ghost"
-                      disabled={actionLoading !== null}
-                      title="Cancelar"
-                      onClick={() => {
-                        setActionError(null);
-                        setShowCancelModal(true);
-                      }}
-                    >
-                      Cancelar
-                    </Btn>
-                  )}
-
-                  {allow.canReturn &&
-                    String(shipment?.status ?? '').toUpperCase() === 'DELIVERED' && (
-                      <button
-                        type="button"
-                        disabled={actionLoading !== null}
-                        className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
-                        onClick={() => {
-                          setActionError(null);
-                          setShowReturnModal(true);
-                        }}
-                      >
-                        Pedir devolução
-                      </button>
+                    {actionError && (
+                      <div className="mt-3 rounded-lg border border-white/15 bg-white/5 p-3 text-sm text-white/80">
+                        {actionError}
+                      </div>
                     )}
 
-                  {String(status).toUpperCase() === 'DELIVERED' &&
-                    String(shipment?.status ?? '').toUpperCase() === 'DELIVERED' && (
+                    {String(status).toUpperCase() === 'RETURN_REQUESTED' && (
+                      <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-sm text-white/80">
+                        ⏳ Devolução solicitada
+                      </div>
+                    )}
+
+                    {String(status).toUpperCase() === 'COMPLETED' && (
+                      <div className="mt-4 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-sm text-white/80">
+                        ✅ Pedido concluído
+                      </div>
+                    )}
+
+                    {String(status).toUpperCase() === 'DELIVERED' ? (
+                      shipment ? (
+                        <div className="mt-3 rounded-xl border border-white/15 bg-white/5 p-3 text-sm text-white/80">
+                          Sua entrega foi marcada como <b>Entregue</b>. Confirme o
+                          recebimento para concluir o pedido.
+                        </div>
+                      ) : (
+                        <div className="mt-3 rounded-xl border border-amber-500/25 bg-amber-500/10 p-3 text-sm text-amber-100">
+                          Este pedido está como <b>Entregue</b>, mas ainda não
+                          existe entrega vinculada. No MVP, a confirmação depende
+                          da entrega.
+                        </div>
+                      )
+                    ) : null}
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {allow.canCancel && (
+                        <Btn
+                          tone="ghost"
+                          disabled={actionLoading !== null}
+                          title="Cancelar"
+                          onClick={() => {
+                            setActionError(null);
+                            setShowCancelModal(true);
+                          }}
+                        >
+                          Cancelar
+                        </Btn>
+                      )}
+
+                      {allow.canReturn &&
+                        String(shipment?.status ?? '').toUpperCase() ===
+                          'DELIVERED' && (
+                          <button
+                            type="button"
+                            disabled={actionLoading !== null}
+                            className="rounded-lg bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
+                            onClick={() => {
+                              setActionError(null);
+                              setShowReturnModal(true);
+                            }}
+                          >
+                            Pedir devolução
+                          </button>
+                        )}
+
+                      {String(status).toUpperCase() === 'DELIVERED' &&
+                        String(shipment?.status ?? '').toUpperCase() ===
+                          'DELIVERED' && (
+                          <Btn
+                            tone="primary"
+                            disabled={actionLoading !== null}
+                            title="Confirmar recebimento"
+                            onClick={() => {
+                              void doSetStatus('COMPLETED', 'recebido');
+                            }}
+                          >
+                            Confirmar recebimento
+                          </Btn>
+                        )}
+
                       <Btn
-                        tone="primary"
-                        disabled={actionLoading !== null}
-                        title="Confirmar recebimento"
+                        tone="ghost"
+                        disabled={
+                          actionLoading !== null ||
+                          String(status).toUpperCase().includes('CANCEL')
+                        }
+                        title="Contratar montagem"
                         onClick={() => {
-                          void doSetStatus('COMPLETED', 'recebido');
+                          setToast('');
+                          setAssemblyError(null);
+                          setShowAssemblyModal(true);
                         }}
                       >
-                        Confirmar recebimento
+                        Contratar montagem
                       </Btn>
-                    )}
+                    </div>
 
-                  <Btn
-                    tone="ghost"
-                    disabled={
-                      actionLoading !== null ||
-                      String(status).toUpperCase().includes('CANCEL')
-                    }
-                    title="Contratar montagem"
-                    onClick={() => {
-                      setToast('');
-                      setAssemblyError(null);
-                      setShowAssemblyModal(true);
-                    }}
-                  >
-                    Contratar montagem
-                  </Btn>
-                </div>
-
-                {!allow.canPay &&
-                !allow.canCancel &&
-                !allow.canReturn &&
-                !allow.isReturnRequested &&
-                !allow.isCompleted &&
-                String(status).toUpperCase() !== 'DELIVERED' ? (
-                  <div className="mt-3 rounded-xl border border-white/15 bg-white/10 p-3 text-xs text-white/75">
-                    Nenhuma ação disponível agora.
+                    {!allow.canPay &&
+                    !allow.canCancel &&
+                    !allow.canReturn &&
+                    !allow.isReturnRequested &&
+                    !allow.isCompleted &&
+                    String(status).toUpperCase() !== 'DELIVERED' ? (
+                      <div className="mt-3 rounded-xl border border-white/15 bg-white/10 p-3 text-xs text-white/75">
+                        Nenhuma ação disponível agora.
+                      </div>
+                    ) : null}
                   </div>
-                ) : null}
-              </div>
+                </>
+              )}
             </div>
 
             {/* Card Timeline */}

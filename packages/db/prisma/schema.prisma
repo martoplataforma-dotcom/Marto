@@ -586,6 +586,10 @@ model Product {
   priceCents  Int
   active      Boolean  @default(true)
   images      Json?
+  // Legendas associadas às imagens. Deve ter o mesmo número de itens que `images`.
+  imageCaptions String[] @default([])
+  // B+C: insights por imagem (overview + hotspots com x/y em %)
+  imageInsights Json?
   meta        Json?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
