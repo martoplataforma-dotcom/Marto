@@ -1,13 +1,23 @@
 // apps/api/src/modules/orders/orders.service.ts
 import {
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { OrderEventType, OrderStatus, Prisma } from '@prisma/client';
+import {
+  OrderEventType,
+  OrderStatus,
+  PaymentContextType,
+  PaymentStatus,
+  PixChargeStatus,
+  PayoutStatus,
+  Prisma,
+} from '@prisma/client';
 
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { WalletService } from '../wallet/wallet.service';
+import type { MartoPayResponse, MartoPayStage } from './dto/marto-pay.dto';
 
 function toJsonValue(value: unknown): Prisma.InputJsonValue | undefined {
   if (value === undefined || value === null) return undefined;
@@ -123,6 +133,69 @@ export class OrdersService {
     private readonly wallet: WalletService,
   ) {}
 
+  private buildMartoPayResponse(input: {
+    order: any;
+    payment?: any | null;
+    payout?: any | null;
+    pixCharge?: any | null;
+    idempotent?: boolean;
+    stage?: MartoPayStage;
+    message?: string;
+  }): MartoPayResponse {
+    const { order, payment, payout, pixCharge, idempotent, stage, message } =
+      input;
+    if (!order) {
+      throw new NotFoundException('Pedido não encontrado.');
+    }
+
+    return {
+      ok: true,
+      idempotent,
+      stage,
+      message,
+      order,
+      payment: payment
+        ? {
+            id: payment.id,
+            payerUserId: payment.payerUserId,
+            contextType: payment.contextType,
+            contextId: payment.contextId,
+            amountCents: payment.amountCents,
+            status: payment.status,
+            pixChargeId: payment.pixChargeId ?? null,
+            createdAt: payment.createdAt,
+            updatedAt: payment.updatedAt,
+          }
+        : null,
+      payout: payout
+        ? {
+            id: payout.id,
+            paymentId: payout.paymentId,
+            payeeUserId: payout.payeeUserId,
+            contextType: payout.contextType,
+            contextId: payout.contextId,
+            amountCents: payout.amountCents,
+            status: payout.status,
+            releasedAt: payout.releasedAt ?? null,
+            paidAt: payout.paidAt ?? null,
+            createdAt: payout.createdAt,
+            updatedAt: payout.updatedAt,
+          }
+        : null,
+      pixCharge: pixCharge
+        ? {
+            id: pixCharge.id,
+            status: pixCharge.status,
+            brCode: pixCharge.brCode ?? null,
+            qrCodeUrl: pixCharge.qrCodeUrl ?? null,
+            expiresAt: pixCharge.expiresAt ?? null,
+            paidAt: pixCharge.paidAt ?? null,
+            settledAt: pixCharge.settledAt ?? null,
+          }
+        : null,
+    };
+  }
+
   // ✅ helper: anexa merchant {id, tradeName} nos pedidos
   private async attachMerchants<T extends { merchantId: string }>(
     rows: T[],
@@ -208,6 +281,374 @@ export class OrdersService {
     }
 
     return order;
+  }
+
+  async payOrderMock(orderId: string, payerUserId: string) {
+    const targetOrderId = String(orderId ?? '').trim();
+    const actorUserId = String(payerUserId ?? '').trim();
+
+    if (!targetOrderId) {
+      throw new BadRequestException('orderId inválido.');
+    }
+
+    if (!actorUserId) {
+      throw new BadRequestException('payerUserId inválido.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id: targetOrderId },
+        include: { items: true },
+      });
+
+      if (!order) {
+        throw new NotFoundException('Pedido não encontrado.');
+      }
+
+      if (order.status !== OrderStatus.CREATED) {
+        throw new BadRequestException(
+          `Pedido não pode ser pago no status atual: ${order.status}`,
+        );
+      }
+
+      if (!order.userId || String(order.userId) !== actorUserId) {
+        throw new BadRequestException('Você não pode pagar este pedido.');
+      }
+
+      if (!order.items?.length) {
+        throw new BadRequestException('Pedido sem itens.');
+      }
+
+      const merchant = await tx.merchant.findUnique({
+        where: { id: order.merchantId },
+        select: { userId: true },
+      });
+
+      const merchantUserId = String(merchant?.userId ?? '').trim();
+      if (!merchantUserId) {
+        throw new BadRequestException(
+          'Não foi possível identificar o recebedor (lojista) do pedido.',
+        );
+      }
+
+      const totalCents = order.items.reduce((acc, item) => {
+        const qty = Number(item.quantity ?? 0);
+        const unit = Number(item.unitPrice ?? 0);
+        if (!Number.isFinite(qty) || qty <= 0) return acc;
+        if (!Number.isFinite(unit) || unit <= 0) return acc;
+        return acc + Math.round(unit * 100) * Math.trunc(qty);
+      }, 0);
+
+      if (!Number.isInteger(totalCents) || totalCents <= 0) {
+        throw new BadRequestException(
+          'Valor do pedido inválido para pagamento.',
+        );
+      }
+
+      // 4.5) Idempotência básica: já existe pagamento para este pedido?
+      const existingPayment = await tx.payment.findFirst({
+        where: {
+          contextType: PaymentContextType.order,
+          contextId: order.id,
+        },
+        include: {
+          payouts: true,
+          pixCharge: true,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (existingPayment) {
+        // Caso já tenha sido pago, não cria nada de novo
+        if (existingPayment.status === PaymentStatus.captured) {
+          return this.buildMartoPayResponse({
+            order,
+            payment: existingPayment,
+            payout: existingPayment.payouts?.[0] ?? null,
+            pixCharge: existingPayment.pixCharge ?? null,
+            idempotent: true,
+            stage: 'already_captured',
+            message: 'Pedido já foi pago anteriormente.',
+          });
+        }
+
+        // Caso já exista tentativa em aberto
+        if (existingPayment.status === PaymentStatus.authorized) {
+          return this.buildMartoPayResponse({
+            order,
+            payment: existingPayment,
+            payout: existingPayment.payouts?.[0] ?? null,
+            pixCharge: existingPayment.pixCharge ?? null,
+            idempotent: true,
+            stage: 'awaiting_confirmation',
+            message: 'Cobrança Pix já criada para este pedido.',
+          });
+        }
+
+        // MVP: bloquear novos pagamentos se houve falha/refund até tratarmos reprocesso
+        throw new BadRequestException(
+          `Já existe pagamento para este pedido com status ${existingPayment.status}.`,
+        );
+      }
+
+      const pixCharge = await tx.pixCharge.create({
+        data: {
+          receiver: merchantUserId,
+          reference: `order:${order.id}`,
+          amount: totalCents / 100,
+          status: 'CREATED',
+          provider: 'marto_mock',
+          providerId: `mock_${order.id}_${Date.now()}`,
+          brCode: `000201010212...MARTO-MOCK-ORDER-${order.id}`,
+          qrCodeUrl: null,
+          expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+        },
+      });
+
+      const payment = await tx.payment.create({
+        data: {
+          payerUserId: actorUserId,
+          contextType: PaymentContextType.order,
+          contextId: order.id,
+          amountCents: totalCents,
+          status: PaymentStatus.authorized,
+          pixChargeId: pixCharge.id,
+        },
+      });
+
+      const payout = await tx.payout.create({
+        data: {
+          paymentId: payment.id,
+          payeeUserId: merchantUserId,
+          contextType: PaymentContextType.order,
+          contextId: order.id,
+          amountCents: totalCents,
+          status: PayoutStatus.held,
+        },
+      });
+
+      return this.buildMartoPayResponse({
+        order,
+        payment,
+        payout,
+        pixCharge,
+        stage: 'created_charge',
+      });
+    });
+  }
+
+  async confirmOrderPixMock(orderId: string) {
+    const targetOrderId = String(orderId ?? '').trim();
+    if (!targetOrderId) {
+      throw new BadRequestException('orderId inválido.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const payment = await tx.payment.findFirst({
+        where: {
+          contextType: PaymentContextType.order,
+          contextId: targetOrderId,
+        },
+        include: {
+          pixCharge: true,
+          payouts: true,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (!payment) {
+        throw new NotFoundException('Pagamento do pedido não encontrado.');
+      }
+
+      if (!payment.pixCharge) {
+        throw new BadRequestException('Pagamento sem PixCharge vinculado.');
+      }
+
+      if (payment.status === PaymentStatus.captured) {
+        const order = await tx.order.findUnique({
+          where: { id: targetOrderId },
+        });
+        if (!order) {
+          throw new NotFoundException('Pedido não encontrado.');
+        }
+
+        return this.buildMartoPayResponse({
+          order,
+          payment,
+          payout: payment.payouts?.[0] ?? null,
+          pixCharge: payment.pixCharge,
+          idempotent: true,
+          stage: 'already_captured',
+          message: 'Pagamento já confirmado anteriormente.',
+        });
+      }
+
+      const now = new Date();
+
+      const pixCharge = await tx.pixCharge.update({
+        where: { id: payment.pixCharge.id },
+        data: {
+          status: PixChargeStatus.PAID,
+          paidAt: now,
+          settledAt: now,
+        },
+      });
+
+      const updatedPayment = await tx.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: PaymentStatus.captured,
+        },
+      });
+
+      const updatedOrder = await tx.order.update({
+        where: { id: targetOrderId },
+        data: {
+          status: OrderStatus.PAID,
+          paidAt: now,
+        },
+      });
+
+      return this.buildMartoPayResponse({
+        order: updatedOrder,
+        payment: updatedPayment,
+        payout: payment.payouts?.[0] ?? null,
+        pixCharge,
+        stage: 'captured',
+      });
+    });
+  }
+
+  async releaseOrderPayoutMock(orderId: string) {
+    const targetOrderId = String(orderId ?? '').trim();
+    if (!targetOrderId) {
+      throw new BadRequestException('orderId inválido.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id: targetOrderId },
+      });
+
+      if (!order) {
+        throw new NotFoundException('Pedido não encontrado.');
+      }
+
+      if (order.status !== OrderStatus.PAID) {
+        throw new BadRequestException(
+          `Payout não pode ser liberado com pedido no status ${order.status}.`,
+        );
+      }
+
+      const payout = await tx.payout.findFirst({
+        where: {
+          contextType: PaymentContextType.order,
+          contextId: targetOrderId,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (!payout) {
+        throw new NotFoundException('Payout do pedido não encontrado.');
+      }
+
+      if (
+        payout.status === PayoutStatus.released ||
+        payout.status === PayoutStatus.paid
+      ) {
+        return this.buildMartoPayResponse({
+          order,
+          payout,
+          idempotent: true,
+          stage:
+            payout.status === PayoutStatus.paid
+              ? 'payout_paid'
+              : 'payout_released',
+          message:
+            payout.status === PayoutStatus.paid
+              ? 'Payout já foi pago anteriormente.'
+              : 'Payout já foi liberado anteriormente.',
+        });
+      }
+
+      if (payout.status !== PayoutStatus.held) {
+        throw new BadRequestException(
+          `Payout em status inválido para liberação: ${String(payout.status)}.`,
+        );
+      }
+
+      const releasedPayout = await tx.payout.update({
+        where: { id: payout.id },
+        data: {
+          status: PayoutStatus.released,
+          releasedAt: new Date(),
+        },
+      });
+
+      return this.buildMartoPayResponse({
+        order,
+        payout: releasedPayout,
+        stage: 'payout_released',
+      });
+    });
+  }
+
+  async payOrderPayoutMock(orderId: string) {
+    const targetOrderId = String(orderId ?? '').trim();
+    if (!targetOrderId) {
+      throw new BadRequestException('orderId inválido.');
+    }
+
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.findUnique({
+        where: { id: targetOrderId },
+      });
+
+      if (!order) throw new NotFoundException('Pedido não encontrado.');
+
+      const payout = await tx.payout.findFirst({
+        where: {
+          contextType: PaymentContextType.order,
+          contextId: targetOrderId,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+
+      if (!payout) {
+        throw new NotFoundException('Payout do pedido não encontrado.');
+      }
+
+      // idempotência
+      if (payout.status === PayoutStatus.paid) {
+        return this.buildMartoPayResponse({
+          order,
+          payout,
+          idempotent: true,
+          stage: 'payout_paid',
+          message: 'Payout já foi pago anteriormente.',
+        });
+      }
+
+      if (payout.status !== PayoutStatus.released) {
+        throw new BadRequestException(
+          `Payout não pode ser pago no status ${String(payout.status)}.`,
+        );
+      }
+
+      const paidPayout = await tx.payout.update({
+        where: { id: payout.id },
+        data: {
+          status: PayoutStatus.paid,
+          paidAt: new Date(),
+        },
+      });
+
+      return this.buildMartoPayResponse({
+        order,
+        payout: paidPayout,
+        stage: 'payout_paid',
+      });
+    });
   }
 
   /**

@@ -492,6 +492,7 @@ model PixCharge {
   qrCodeUrl  String?
   expiresAt  DateTime?
   paidAt     DateTime?
+  payment    Payment?
   createdAt  DateTime        @default(now())
   updatedAt  DateTime        @updatedAt
   settledAt  DateTime?
@@ -532,6 +533,67 @@ model User {
 
   // Points
   pointsWallet PointsWallet?
+
+  // Payments
+  paymentsMade     Payment[] @relation("UserPaymentsMade")
+  payoutsToReceive Payout[]  @relation("UserPayoutsToReceive")
+}
+
+model Payment {
+  id          String             @id @default(uuid())
+
+  payerUserId String
+  payerUser   User               @relation("UserPaymentsMade", fields: [payerUserId], references: [id])
+
+  contextType PaymentContextType
+  contextId   String
+
+  // Mantemos Int em centavos para ledger/payout
+  amountCents Int
+
+  status      PaymentStatus      @default(authorized)
+
+  // vínculo opcional com PixCharge (1:1)
+  pixChargeId String?            @unique
+  pixCharge   PixCharge?         @relation(fields: [pixChargeId], references: [id])
+
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  payouts     Payout[]
+
+  @@index([payerUserId])
+  @@index([contextType, contextId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model Payout {
+  id          String             @id @default(uuid())
+
+  paymentId   String
+  payment     Payment            @relation(fields: [paymentId], references: [id])
+
+  payeeUserId String
+  payeeUser   User               @relation("UserPayoutsToReceive", fields: [payeeUserId], references: [id])
+
+  contextType PaymentContextType
+  contextId   String
+
+  amountCents Int
+  status      PayoutStatus       @default(held)
+
+  releasedAt  DateTime?
+  paidAt      DateTime?
+
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@index([paymentId])
+  @@index([payeeUserId])
+  @@index([contextType, contextId])
+  @@index([status])
+  @@index([createdAt])
 }
 
 model PasswordResetToken {
@@ -846,6 +908,24 @@ enum PixChargeStatus {
   EXPIRED
   CANCELLED
   FAILED
+}
+
+enum PaymentContextType {
+  order
+  service
+}
+
+enum PaymentStatus {
+  authorized
+  captured
+  refunded
+  failed
+}
+
+enum PayoutStatus {
+  held
+  released
+  paid
 }
 
 enum MerchantStatus {

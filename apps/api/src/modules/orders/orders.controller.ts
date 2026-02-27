@@ -108,4 +108,26 @@ export class OrdersController {
       meta: body.meta,
     });
   }
+
+  @Post(':orderId/pay')
+  async payOrder(@Req() req: Request, @Param('orderId') orderId: string) {
+    const u = req.user as { id?: string; sub?: string } | undefined;
+    const payerUserId = String(u?.id ?? u?.sub ?? '');
+    return this.ordersService.payOrderMock(orderId, payerUserId);
+  }
+
+  @Post(':id/pay/confirm')
+  async confirmOrderPix(@Param('id') id: string) {
+    return this.ordersService.confirmOrderPixMock(id);
+  }
+
+  @Post(':id/payout/release')
+  async releaseOrderPayout(@Param('id') id: string) {
+    return this.ordersService.releaseOrderPayoutMock(id);
+  }
+
+  @Post(':id/payout/pay')
+  async payOrderPayout(@Param('id') id: string) {
+    return this.ordersService.payOrderPayoutMock(id);
+  }
 }

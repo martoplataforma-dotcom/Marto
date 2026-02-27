@@ -224,6 +224,9 @@ type OrderStatus =
   | 'RETURN_REQUESTED'
   | string;
 
+type PayMethod = 'PIX' | 'CARD';
+type DeliveryMode = 'PICKUP' | 'DELIVERY';
+
 type PayMode = 'PAYMENTS_MOCK' | 'DIRECT_PAID';
 
 // ✅ troque aqui conforme seu backend hoje
@@ -401,6 +404,7 @@ async function postMockPayment(orderId: string) {
 
 async function postCreatePaymentForOrder(
   orderId: string,
+  method: PayMethod,
 ): Promise<{ paymentId: string }> {
   const token = getToken();
   if (!token) throw new Error('Sem token. Faça login novamente.');
@@ -416,7 +420,7 @@ async function postCreatePaymentForOrder(
       Authorization: `Bearer ${token}`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ method: 'PIX' }),
+    body: JSON.stringify({ method }),
   });
 
   if (
@@ -569,6 +573,11 @@ export default function ConsumerOrderDetailsPage({
     null | 'CANCEL' | 'PAY' | 'RETURN'
   >(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [payMethod, setPayMethod] = useState<PayMethod>('PIX');
+  const [deliveryMode, setDeliveryMode] = useState<DeliveryMode>('PICKUP');
+  const [deliveryCep, setDeliveryCep] = useState('');
+  const [deliveryCity, setDeliveryCity] = useState('');
+  const [deliveryState, setDeliveryState] = useState('');
   const [reloadTick, setReloadTick] = useState(0);
 
   // ✅ ids vizinhos (front-only) — não dá mais pra calcular sem /orders/me
@@ -924,12 +933,17 @@ export default function ConsumerOrderDetailsPage({
   async function confirmPay() {
     if (!order?.id) return;
 
-  setActionError(null);
-  setActionLoading('PAY');
-  setToast('⏳ Iniciando Marto Pay…');
+    if (payMethod === 'CARD') {
+      setToast('💳 Cartão: em breve no Marto Pay.');
+      return;
+    }
+
+    setActionError(null);
+    setActionLoading('PAY');
+    setToast('⏳ Iniciando Marto Pay…');
 
     try {
-      const { paymentId } = await postCreatePaymentForOrder(order.id);
+      const { paymentId } = await postCreatePaymentForOrder(order.id, payMethod);
       await postConfirmPayment(paymentId);
 
       setToast('✅ Pagamento confirmado. Atualizando status…');
@@ -1318,6 +1332,187 @@ export default function ConsumerOrderDetailsPage({
                   <div className="mt-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
                     Status:{' '}
                     <span className="text-white/95">{String(order.status)}</span>
+                  </div>
+
+                  <div className="mt-3 rounded-xl border border-white/15 bg-black/40 p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-xs font-semibold text-white/85">
+                        Resumo da cobrança
+                      </div>
+                      <div className="text-xs font-semibold text-white/70">
+                        Marto Pay
+                      </div>
+                    </div>
+
+                    <div className="mt-2 grid gap-2 text-sm text-white/80">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-white/70">Itens</span>
+                        <span className="text-white/95">
+                          {Array.isArray(order?.items) ? order.items.length : 0}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-white/70">Total</span>
+                        <span className="font-semibold text-white/95">
+                          {order ? totalLabel(order) : '—'}
+                        </span>
+                      </div>
+
+                      {order?.merchant?.tradeName ? (
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="text-white/70">Loja</span>
+                          <span className="text-white/95">
+                            {order.merchant.tradeName}
+                          </span>
+                        </div>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-2 text-xs text-white/60">
+                      Confirmação MVP (sandbox). Em produção: Pix com expiração
+                      + webhook.
+                    </div>
+                  </div>
+
+                  <section className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-white/85">
+                          Entrega
+                        </div>
+                        <div className="mt-1 text-xs text-white/65">
+                          Defina como você quer receber - o ciclo avança com
+                          rastreio e prova.
+                        </div>
+                      </div>
+
+                      <div className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
+                        MVP
+                      </div>
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setDeliveryMode('PICKUP')}
+                        className={[
+                          'rounded-full border px-3 py-1 text-xs font-semibold',
+                          deliveryMode === 'PICKUP'
+                            ? 'border-white/25 bg-white/10 text-white/90'
+                            : 'border-white/15 bg-black/40 text-white/70 hover:bg-white/5',
+                        ].join(' ')}
+                      >
+                        Retirada
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setDeliveryMode('DELIVERY')}
+                        className={[
+                          'rounded-full border px-3 py-1 text-xs font-semibold',
+                          deliveryMode === 'DELIVERY'
+                            ? 'border-white/25 bg-white/10 text-white/90'
+                            : 'border-white/15 bg-black/40 text-white/70 hover:bg-white/5',
+                        ].join(' ')}
+                      >
+                        Entrega
+                      </button>
+                    </div>
+
+                    <div className="mt-2 text-xs text-white/60">
+                      Retirada é uma capacidade da loja - em breve isso vem
+                      travado por produto.
+                    </div>
+
+                    {deliveryMode === 'PICKUP' ? (
+                      <div className="mt-3 rounded-xl border border-white/15 bg-black/40 p-3 text-sm text-white/75">
+                        Você escolheu <b>Retirada</b>. A loja vai confirmar o
+                        ponto e horário.
+                      </div>
+                    ) : (
+                      <div className="mt-3 rounded-xl border border-white/15 bg-black/40 p-3">
+                        <div className="text-xs font-semibold text-white/85">
+                          Endereço (MVP)
+                        </div>
+
+                        <div className="mt-2 grid gap-2 sm:grid-cols-3">
+                          <input
+                            value={deliveryCep}
+                            onChange={(e) => setDeliveryCep(e.target.value)}
+                            placeholder="CEP"
+                            className="w-full rounded-xl border border-white/15 bg-black/60 p-2 text-sm text-white/85 placeholder:text-white/50 focus:outline-none"
+                          />
+                          <input
+                            value={deliveryCity}
+                            onChange={(e) => setDeliveryCity(e.target.value)}
+                            placeholder="Cidade"
+                            className="w-full rounded-xl border border-white/15 bg-black/60 p-2 text-sm text-white/85 placeholder:text-white/50 focus:outline-none"
+                          />
+                          <input
+                            value={deliveryState}
+                            onChange={(e) => setDeliveryState(e.target.value)}
+                            placeholder="UF"
+                            className="w-full rounded-xl border border-white/15 bg-black/60 p-2 text-sm text-white/85 placeholder:text-white/50 focus:outline-none"
+                          />
+                        </div>
+
+                        <div className="mt-2 text-xs text-white/60">
+                          Em breve: cotação automática + transportadoras +
+                          rastreio.
+                        </div>
+                      </div>
+                    )}
+
+                    {!shipment ? (
+                      <div className="mt-3 text-xs text-white/60">
+                        Status da transportadora:{' '}
+                        <span className="text-white/70">—</span>
+                      </div>
+                    ) : (
+                      <div className="mt-3 text-xs text-white/60">
+                        Status da transportadora:{' '}
+                        <span className="text-white/80">
+                          {shipmentStatusPT(shipment.status)}
+                        </span>
+                      </div>
+                    )}
+                  </section>
+
+                  <div className="mt-3 rounded-xl border border-white/15 bg-white/5 p-3">
+                    <div className="text-xs font-semibold text-white/85">
+                      Método
+                    </div>
+
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPayMethod('PIX')}
+                        className={[
+                          'rounded-full border px-3 py-1 text-xs font-semibold',
+                          payMethod === 'PIX'
+                            ? 'border-white/25 bg-white/10 text-white/90'
+                            : 'border-white/15 bg-black/40 text-white/70 hover:bg-white/5',
+                        ].join(' ')}
+                      >
+                        PIX
+                      </button>
+
+                      <button
+                        type="button"
+                        disabled
+                        className="rounded-full border border-white/10 bg-black/30 px-3 py-1 text-xs font-semibold text-white/45"
+                        title="Em breve"
+                      >
+                        Cartão (em breve)
+                      </button>
+                    </div>
+
+                    <div className="mt-2 text-xs text-white/60">
+                      {payMethod === 'PIX'
+                        ? 'PIX: confirmação MVP (sandbox).'
+                        : 'Cartão estará disponível em breve.'}
+                    </div>
                   </div>
 
                   <div className="mt-3 flex flex-wrap gap-2">
