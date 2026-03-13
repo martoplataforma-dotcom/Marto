@@ -1,6 +1,12 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { PrismaService } from '../../../common/prisma/prisma.service';
 import { Prisma } from '@prisma/client';
+import { buildProductShippingSetup } from '../../logistics/shipping/build-product-shipping-setup';
+import { resolveProductShippingOptionsFromEntities } from '../../logistics/shipping/resolve-product-shipping-options-from-entities';
 
 function normalizeJson(
   value: Prisma.InputJsonValue | null | undefined,
@@ -102,6 +108,195 @@ function ensureInsightsAligned(
 export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async getShippingOptionsById(productId: string) {
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      select: {
+        id: true,
+        merchantId: true,
+        requiresShipping: true,
+        weightGrams: true,
+        lengthCm: true,
+        widthCm: true,
+        heightCm: true,
+        allowCorreios: true,
+        allowTransportadora: true,
+        allowLocalDelivery: true,
+        allowPickup: true,
+      },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Produto não encontrado.');
+    }
+
+    const merchantProfile = await this.prisma.merchant.findUnique({
+      where: {
+        id: product.merchantId,
+      },
+      select: {
+        originZipCode: true,
+        supportsCorreios: true,
+        supportsTransportadora: true,
+        supportsLocalDelivery: true,
+        supportsPickup: true,
+      },
+    });
+
+    if (!merchantProfile) {
+      throw new NotFoundException(
+        'Perfil logístico do lojista não encontrado.',
+      );
+    }
+
+    return resolveProductShippingOptionsFromEntities({
+      product: {
+        requiresShipping: product.requiresShipping,
+        weightGrams: product.weightGrams,
+        lengthCm: product.lengthCm,
+        widthCm: product.widthCm,
+        heightCm: product.heightCm,
+        allowCorreios: product.allowCorreios,
+        allowTransportadora: product.allowTransportadora,
+        allowLocalDelivery: product.allowLocalDelivery,
+        allowPickup: product.allowPickup,
+      },
+      expeditorProfile: {
+        originZipCode: merchantProfile.originZipCode,
+        supportsCorreios: merchantProfile.supportsCorreios,
+        supportsTransportadora: merchantProfile.supportsTransportadora,
+        supportsLocalDelivery: merchantProfile.supportsLocalDelivery,
+        supportsPickup: merchantProfile.supportsPickup,
+      },
+    });
+  }
+
+  private buildShippingFields(input: {
+    requiresShipping?: boolean | null;
+    productType?: string | null;
+    weightGrams?: number | null;
+    lengthCm?: number | null;
+    widthCm?: number | null;
+    heightCm?: number | null;
+    allowCorreios?: boolean | null;
+    allowTransportadora?: boolean | null;
+    allowLocalDelivery?: boolean | null;
+    allowPickup?: boolean | null;
+  }) {
+    const requiresShipping = Boolean(input.requiresShipping);
+
+    const setup = buildProductShippingSetup({
+      requiresShipping,
+      weightGrams: input.weightGrams ?? null,
+      lengthCm: input.lengthCm ?? null,
+      widthCm: input.widthCm ?? null,
+      heightCm: input.heightCm ?? null,
+    });
+
+    return {
+      requiresShipping,
+      productType: input.productType ?? null,
+      weightGrams: input.weightGrams ?? null,
+      lengthCm: input.lengthCm ?? null,
+      widthCm: input.widthCm ?? null,
+      heightCm: input.heightCm ?? null,
+
+      allowCorreios:
+        input.allowCorreios ?? setup.defaultPermissions.allowCorreios,
+      allowTransportadora:
+        input.allowTransportadora ??
+        setup.defaultPermissions.allowTransportadora,
+      allowLocalDelivery:
+        input.allowLocalDelivery ?? setup.defaultPermissions.allowLocalDelivery,
+      allowPickup: input.allowPickup ?? setup.defaultPermissions.allowPickup,
+
+      shippingAnalysis: setup.analysis,
+    };
+  }
+
+  private hasShippingFieldsInPayload(input: {
+    requiresShipping?: boolean | null;
+    productType?: string | null;
+    weightGrams?: number | null;
+    lengthCm?: number | null;
+    widthCm?: number | null;
+    heightCm?: number | null;
+    allowCorreios?: boolean | null;
+    allowTransportadora?: boolean | null;
+    allowLocalDelivery?: boolean | null;
+    allowPickup?: boolean | null;
+  }) {
+    return (
+      input.requiresShipping !== undefined ||
+      input.productType !== undefined ||
+      input.weightGrams !== undefined ||
+      input.lengthCm !== undefined ||
+      input.widthCm !== undefined ||
+      input.heightCm !== undefined ||
+      input.allowCorreios !== undefined ||
+      input.allowTransportadora !== undefined ||
+      input.allowLocalDelivery !== undefined ||
+      input.allowPickup !== undefined
+    );
+  }
+
+  private buildPartialShippingUpdate(input: {
+    requiresShipping?: boolean | null;
+    productType?: string | null;
+    weightGrams?: number | null;
+    lengthCm?: number | null;
+    widthCm?: number | null;
+    heightCm?: number | null;
+    allowCorreios?: boolean | null;
+    allowTransportadora?: boolean | null;
+    allowLocalDelivery?: boolean | null;
+    allowPickup?: boolean | null;
+  }) {
+    const data: Record<string, unknown> = {};
+
+    if (input.requiresShipping !== undefined) {
+      data.requiresShipping = input.requiresShipping;
+    }
+
+    if (input.productType !== undefined) {
+      data.productType = input.productType;
+    }
+
+    if (input.weightGrams !== undefined) {
+      data.weightGrams = input.weightGrams;
+    }
+
+    if (input.lengthCm !== undefined) {
+      data.lengthCm = input.lengthCm;
+    }
+
+    if (input.widthCm !== undefined) {
+      data.widthCm = input.widthCm;
+    }
+
+    if (input.heightCm !== undefined) {
+      data.heightCm = input.heightCm;
+    }
+
+    if (input.allowCorreios !== undefined) {
+      data.allowCorreios = input.allowCorreios;
+    }
+
+    if (input.allowTransportadora !== undefined) {
+      data.allowTransportadora = input.allowTransportadora;
+    }
+
+    if (input.allowLocalDelivery !== undefined) {
+      data.allowLocalDelivery = input.allowLocalDelivery;
+    }
+
+    if (input.allowPickup !== undefined) {
+      data.allowPickup = input.allowPickup;
+    }
+
+    return data;
+  }
+
   async listByUserId(userId: string) {
     if (!userId) throw new UnauthorizedException('Sem usuário.');
 
@@ -146,6 +341,16 @@ export class ProductsService {
       title: string;
       description?: string | null;
       priceCents: number;
+      requiresShipping?: boolean | null;
+      productType?: string | null;
+      weightGrams?: number | null;
+      lengthCm?: number | null;
+      widthCm?: number | null;
+      heightCm?: number | null;
+      allowCorreios?: boolean | null;
+      allowTransportadora?: boolean | null;
+      allowLocalDelivery?: boolean | null;
+      allowPickup?: boolean | null;
       images?: unknown; // pode vir string[] | null do front
       imageCaptions?: unknown; // pode vir string[] | null do front
       imageInsights?: unknown; // pode vir json | null do front
@@ -153,6 +358,19 @@ export class ProductsService {
     },
   ) {
     if (!userId) throw new UnauthorizedException('Sem usuário.');
+
+    const shippingFields = this.buildShippingFields({
+      requiresShipping: body.requiresShipping,
+      productType: body.productType,
+      weightGrams: body.weightGrams,
+      lengthCm: body.lengthCm,
+      widthCm: body.widthCm,
+      heightCm: body.heightCm,
+      allowCorreios: body.allowCorreios,
+      allowTransportadora: body.allowTransportadora,
+      allowLocalDelivery: body.allowLocalDelivery,
+      allowPickup: body.allowPickup,
+    });
 
     const title = String(body?.title ?? '').trim();
     const description =
@@ -191,6 +409,16 @@ export class ProductsService {
         description,
         priceCents,
         active: true,
+        requiresShipping: shippingFields.requiresShipping,
+        productType: shippingFields.productType,
+        weightGrams: shippingFields.weightGrams,
+        lengthCm: shippingFields.lengthCm,
+        widthCm: shippingFields.widthCm,
+        heightCm: shippingFields.heightCm,
+        allowCorreios: shippingFields.allowCorreios,
+        allowTransportadora: shippingFields.allowTransportadora,
+        allowLocalDelivery: shippingFields.allowLocalDelivery,
+        allowPickup: shippingFields.allowPickup,
         ...(typeof imagesValue !== 'undefined' ? { images: imagesValue } : {}),
         ...(typeof captionsValue !== 'undefined'
           ? { imageCaptions: captionsValue }
@@ -226,6 +454,16 @@ export class ProductsService {
       title?: string;
       description?: string | null;
       priceCents?: number;
+      requiresShipping?: boolean | null;
+      productType?: string | null;
+      weightGrams?: number | null;
+      lengthCm?: number | null;
+      widthCm?: number | null;
+      heightCm?: number | null;
+      allowCorreios?: boolean | null;
+      allowTransportadora?: boolean | null;
+      allowLocalDelivery?: boolean | null;
+      allowPickup?: boolean | null;
       images?: unknown; // pode vir string[] | null
       imageCaptions?: unknown; // pode vir string[] | null
       imageInsights?: unknown; // pode vir json | null
@@ -261,6 +499,18 @@ export class ProductsService {
     }
 
     const updateData: Prisma.ProductUpdateInput = {};
+    const shippingInput = {
+      requiresShipping: body.requiresShipping,
+      productType: body.productType,
+      weightGrams: body.weightGrams,
+      lengthCm: body.lengthCm,
+      widthCm: body.widthCm,
+      heightCm: body.heightCm,
+      allowCorreios: body.allowCorreios,
+      allowTransportadora: body.allowTransportadora,
+      allowLocalDelivery: body.allowLocalDelivery,
+      allowPickup: body.allowPickup,
+    };
 
     if (typeof body.active === 'boolean') {
       updateData.active = body.active;
@@ -364,6 +614,10 @@ export class ProductsService {
     const metaValue = normalizeJson(body.meta);
     if (typeof metaValue !== 'undefined') {
       updateData.meta = metaValue;
+    }
+
+    if (this.hasShippingFieldsInPayload(shippingInput)) {
+      Object.assign(updateData, this.buildPartialShippingUpdate(shippingInput));
     }
 
     if (Object.keys(updateData).length === 0) {

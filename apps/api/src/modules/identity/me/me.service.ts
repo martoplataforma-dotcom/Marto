@@ -59,18 +59,35 @@ export type AddRoleBody =
       };
     };
 
-function redirectFromHome(home: string | null | undefined): string {
+function normalizeSpecialties(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) =>
+      String(item ?? '')
+        .trim()
+        .toLowerCase(),
+    )
+    .filter(Boolean);
+}
+
+function redirectFromHome(
+  home: string | null | undefined,
+  opts?: { serviceProviderSpecialties?: unknown },
+): string {
   const h = String(home ?? '').trim();
 
-  // ✅ Aqui é onde garantimos o “direto para onde deve”
-  if (h === 'service_provider') return '/dash/provider/services';
+  if (h === 'service_provider') {
+    const specialties = normalizeSpecialties(opts?.serviceProviderSpecialties);
+    return specialties.length
+      ? '/dash/provider/services'
+      : '/dash/provider/onboarding/services';
+  }
 
   if (h === 'merchant') return '/dash/merchant';
   if (h === 'factory') return '/dash/factory';
   if (h === 'representative') return '/dash/representative';
   if (h === 'carrier') return '/dash/carrier';
 
-  // default (consumer / desconhecido)
   return '/dash/consumer';
 }
 
@@ -165,7 +182,27 @@ export class MeService {
       profile = null;
     }
 
-    const redirectTo = redirectFromHome(finalHome);
+    let serviceProviderSpecialties: unknown = null;
+
+    if (
+      finalHome === 'service_provider' ||
+      roles.includes('SERVICE_PROVIDER')
+    ) {
+      try {
+        const sp = await this.prisma.serviceProvider.findUnique({
+          where: { userId },
+          select: { specialties: true } as any,
+        });
+
+        serviceProviderSpecialties = (sp as any)?.specialties ?? null;
+      } catch {
+        serviceProviderSpecialties = null;
+      }
+    }
+
+    const redirectTo = redirectFromHome(finalHome, {
+      serviceProviderSpecialties,
+    });
 
     return {
       user: {

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { fetchJSON } from '../../../src/lib/api';
 
@@ -23,7 +23,7 @@ type MartoPayResponse = {
   idempotent?: boolean;
   stage?: MartoPayStage;
   message?: string;
-  order: Record<string, unknown>;
+  order: { reservedUntil?: Date | string | null } & Record<string, unknown>;
   payment?: { status?: string } | null;
   payout?: { status?: string } | null;
   pixCharge?:
@@ -69,6 +69,15 @@ export default function CheckoutPayPage() {
 
   const [orderId, setOrderId] = useState<string | null>(orderIdFromQuery);
   const [pay, setPay] = useState<MartoPayResponse | null>(null);
+  const [reserveLeftMs, setReserveLeftMs] = useState<number | null>(null);
+  const reserveLeftMsRef = useRef<number | null>(null);
+
+  function fmtMmSs(ms: number) {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const mm = String(Math.floor(s / 60)).padStart(2, '0');
+    const ss = String(s % 60).padStart(2, '0');
+    return `${mm}:${ss}`;
+  }
 
   async function createOrder(): Promise<string> {
     if (orderId) return orderId;
@@ -176,9 +185,15 @@ export default function CheckoutPayPage() {
 
         const id = orderIdFromQuery ?? orderId;
         if (!id) return;
+        if (reserveLeftMsRef.current !== null && reserveLeftMsRef.current <= 0) {
+          return;
+        }
 
         const loop = async () => {
           if (!alive) return;
+          if (reserveLeftMsRef.current !== null && reserveLeftMsRef.current <= 0) {
+            return;
+          }
 
           try {
             const latest = await refreshPayStatus(id);
@@ -194,6 +209,9 @@ export default function CheckoutPayPage() {
             // se falhar, não trava; tenta de novo no próximo tick
           }
 
+          if (reserveLeftMsRef.current !== null && reserveLeftMsRef.current <= 0) {
+            return;
+          }
           t = setTimeout(loop, 3000);
         };
 
@@ -211,6 +229,40 @@ export default function CheckoutPayPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    const untilRaw = pay?.order?.reservedUntil;
+    if (!untilRaw) {
+      setReserveLeftMs(null);
+      reserveLeftMsRef.current = null;
+      return;
+    }
+
+    const until = new Date(untilRaw).getTime();
+    if (!Number.isFinite(until)) {
+      setReserveLeftMs(null);
+      reserveLeftMsRef.current = null;
+      return;
+    }
+
+    let alive = true;
+    let t: ReturnType<typeof setTimeout> | null = null;
+
+    const tick = () => {
+      if (!alive) return;
+      const left = until - Date.now();
+      setReserveLeftMs(left);
+      reserveLeftMsRef.current = left;
+      t = setTimeout(tick, 500);
+    };
+
+    tick();
+
+    return () => {
+      alive = false;
+      if (t) clearTimeout(t);
+    };
+  }, [pay?.order?.reservedUntil]);
 
   const stage = pay?.stage;
   const pix = pay?.pixCharge;
@@ -293,11 +345,34 @@ export default function CheckoutPayPage() {
                   {err}
                 </div>
               ) : null}
+              {err?.includes('Pedido expirou') ? (
+                <div className="mt-3 flex gap-2">
+                  <Link
+                    href="/checkout"
+                    className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white/85 hover:bg-white/15"
+                  >
+                    Atualizar compra
+                  </Link>
+                  <Link
+                    href="/catalog"
+                    className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white/85 hover:bg-white/15"
+                  >
+                    Voltar ao catálogo
+                  </Link>
+                </div>
+              ) : null}
 
               <div className="mt-5">
                 <div className="text-sm font-semibold text-white/85">
                   Copia e cola (BR Code)
                 </div>
+
+                {pay?.message ? (
+                  <div className="mt-4 rounded-2xl border border-white/15 bg-white/5 px-4 py-3 text-sm text-white/85">
+                    <div className="font-semibold text-white/90">Marto Pay</div>
+                    <div className="mt-1 text-white/75">{pay.message}</div>
+                  </div>
+                ) : null}
 
                 <textarea
                   value={brCode}
@@ -347,6 +422,21 @@ export default function CheckoutPayPage() {
                     {pix?.expiresAt ? String(pix.expiresAt) : '—'}
                   </span>
                 </div>
+
+                {reserveLeftMs !== null ? (
+                  <div className="mt-3 text-xs text-white/60">
+                    Reserva do pedido:{' '}
+                    {reserveLeftMs > 0 ? (
+                      <span className="text-white/75">
+                        expira em {fmtMmSs(reserveLeftMs)}
+                      </span>
+                    ) : (
+                      <span className="text-red-200">
+                        expirada — atualize sua compra
+                      </span>
+                    )}
+                  </div>
+                ) : null}
               </div>
             </section>
 

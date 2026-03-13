@@ -320,6 +320,11 @@ model Order {
   merchantId String
   userId     String?
   status     OrderStatus @default(CREATED)
+  destinationZipCode    String?
+  selectedShippingMode  String?
+  shippingPriceCents    Int?
+  estimatedDays         Int?
+  originZipCodeSnapshot String?
 
   // Timestamps de lifecycle (MVP)
   paidAt           DateTime?
@@ -338,6 +343,7 @@ model Order {
 
   city      String?
   state     String?
+  reservedUntil DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -349,6 +355,7 @@ model Order {
 
   @@index([merchantId, createdAt])
   @@index([status])
+  @@index([reservedUntil])
 }
 
 model OrderEvent {
@@ -627,6 +634,11 @@ model Merchant {
   tradeName String
   document  String
   status    MerchantStatus @default(ACTIVE)
+  originZipCode          String?
+  supportsCorreios       Boolean @default(false)
+  supportsTransportadora Boolean @default(false)
+  supportsLocalDelivery  Boolean @default(false)
+  supportsPickup         Boolean @default(false)
 
   handle   String? @unique // ex: "store5" (sem @ no banco)
   logoUrl  String?
@@ -647,6 +659,16 @@ model Product {
   description String?
   priceCents  Int
   active      Boolean  @default(true)
+  requiresShipping    Boolean @default(true)
+  productType         String?
+  weightGrams         Int?
+  lengthCm            Int?
+  widthCm             Int?
+  heightCm            Int?
+  allowCorreios       Boolean @default(false)
+  allowTransportadora Boolean @default(false)
+  allowLocalDelivery  Boolean @default(false)
+  allowPickup         Boolean @default(false)
   images      Json?
   // Legendas associadas às imagens. Deve ter o mesmo número de itens que `images`.
   imageCaptions String[] @default([])
@@ -712,6 +734,11 @@ model Factory {
   city      String?
   state     String?
   status    FactoryStatus @default(ACTIVE)
+  originZipCode          String?
+  supportsCorreios       Boolean @default(false)
+  supportsTransportadora Boolean @default(false)
+  supportsLocalDelivery  Boolean @default(false)
+  supportsPickup         Boolean @default(false)
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
   user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)

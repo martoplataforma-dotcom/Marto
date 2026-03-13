@@ -41,6 +41,11 @@ export class ProductsController {
     return this.service.listByUserId(userId);
   }
 
+  @Get(':id/shipping-options')
+  async getShippingOptions(@Param('id') id: string) {
+    return this.service.getShippingOptionsById(id);
+  }
+
   /**
    * ➕ POST /api/merchants/me/products
    * Cria um produto para o lojista logado

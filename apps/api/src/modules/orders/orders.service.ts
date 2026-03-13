@@ -196,6 +196,18 @@ export class OrdersService {
     };
   }
 
+  private isPixExpired(
+    pix: { expiresAt?: Date | string | null; status?: string } | null | undefined,
+  ) {
+    if (!pix?.expiresAt) return false;
+    const exp =
+      pix.expiresAt instanceof Date
+        ? pix.expiresAt.getTime()
+        : new Date(pix.expiresAt).getTime();
+    const now = Date.now();
+    return exp > 0 && exp < now && String(pix.status ?? '').toUpperCase() === 'CREATED';
+  }
+
   // ✅ helper: anexa merchant {id, tradeName} nos pedidos
   private async attachMerchants<T extends { merchantId: string }>(
     rows: T[],
@@ -234,6 +246,12 @@ export class OrdersService {
     userId?: string;
     city?: string;
     state?: string;
+    destinationZipCode?: string;
+    selectedShippingMode?:
+      | 'CORREIOS'
+      | 'TRANSPORTADORA'
+      | 'LOCAL_DELIVERY'
+      | 'PICKUP';
     items: Array<{
       productId: string;
       quantity: number;
@@ -246,6 +264,7 @@ export class OrdersService {
         city: params.city ?? 'SAO_PAULO',
         state: params.state ?? 'SP',
         merchantId: params.merchantId ?? 'merchant_test',
+        reservedUntil: new Date(Date.now() + 30 * 60 * 1000),
 
         items: {
           create: params.items.map((it) => ({
@@ -308,6 +327,17 @@ export class OrdersService {
       if (order.status !== OrderStatus.CREATED) {
         throw new BadRequestException(
           `Pedido não pode ser pago no status atual: ${order.status}`,
+        );
+      }
+
+      const now = Date.now();
+      const reservedUntil = order.reservedUntil
+        ? new Date(order.reservedUntil).getTime()
+        : null;
+
+      if (!reservedUntil || now > reservedUntil) {
+        throw new BadRequestException(
+          'Pedido expirou. Atualize sua compra para recalcular estoque/frete/preço.',
         );
       }
 
@@ -374,6 +404,46 @@ export class OrdersService {
 
         // Caso já exista tentativa em aberto
         if (existingPayment.status === PaymentStatus.authorized) {
+          if (this.isPixExpired(existingPayment.pixCharge)) {
+            const nextPix = await tx.pixCharge.create({
+              data: {
+                receiver:
+                  existingPayment.payouts?.[0]?.payeeUserId ??
+                  existingPayment.payerUserId,
+                reference: `order:${order.id}:${Date.now()}`,
+                amount: existingPayment.amountCents / 100,
+                status: 'CREATED',
+                provider: 'marto_mock',
+                providerId: `mock_${order.id}_${Date.now()}`,
+                brCode: null,
+                qrCodeUrl: null,
+                expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+              },
+            });
+
+            const nextPix2 = await tx.pixCharge.update({
+              where: { id: nextPix.id },
+              data: {
+                brCode: `000201010212...MARTO-MOCK-ORDER-${order.id}-CHARGE-${nextPix.id}`,
+              },
+            });
+
+            const updatedPayment = await tx.payment.update({
+              where: { id: existingPayment.id },
+              data: { pixChargeId: nextPix2.id },
+            });
+
+            return this.buildMartoPayResponse({
+              order,
+              payment: updatedPayment,
+              payout: existingPayment.payouts?.[0] ?? null,
+              pixCharge: nextPix2,
+              idempotent: true,
+              stage: 'created_charge',
+              message: 'Cobrança expirada. Geramos uma nova cobrança Pix.',
+            });
+          }
+
           return this.buildMartoPayResponse({
             order,
             payment: existingPayment,
@@ -399,9 +469,16 @@ export class OrdersService {
           status: 'CREATED',
           provider: 'marto_mock',
           providerId: `mock_${order.id}_${Date.now()}`,
-          brCode: `000201010212...MARTO-MOCK-ORDER-${order.id}`,
+          brCode: null,
           qrCodeUrl: null,
           expiresAt: new Date(Date.now() + 15 * 60 * 1000),
+        },
+      });
+
+      const pixCharge2 = await tx.pixCharge.update({
+        where: { id: pixCharge.id },
+        data: {
+          brCode: `000201010212...MARTO-MOCK-ORDER-${order.id}-CHARGE-${pixCharge.id}`,
         },
       });
 
@@ -412,7 +489,7 @@ export class OrdersService {
           contextId: order.id,
           amountCents: totalCents,
           status: PaymentStatus.authorized,
-          pixChargeId: pixCharge.id,
+          pixChargeId: pixCharge2.id,
         },
       });
 
@@ -431,7 +508,7 @@ export class OrdersService {
         order,
         payment,
         payout,
-        pixCharge,
+        pixCharge: pixCharge2,
         stage: 'created_charge',
       });
     });
@@ -462,6 +539,10 @@ export class OrdersService {
 
       if (!payment.pixCharge) {
         throw new BadRequestException('Pagamento sem PixCharge vinculado.');
+      }
+
+      if (this.isPixExpired(payment.pixCharge)) {
+        throw new BadRequestException('Cobrança Pix expirada. Gere uma nova cobrança.');
       }
 
       if (payment.status === PaymentStatus.captured) {

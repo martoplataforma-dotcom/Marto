@@ -4,6 +4,7 @@ import {
   ConflictException,
   Controller,
   Get,
+  Patch,
   Put,
   Req,
   UseGuards,
@@ -19,8 +20,21 @@ type UpsertMerchantBody = {
   handle?: string | null;
   city?: string | null;
   cepPrefix?: string | null;
+  originZipCode?: string | null;
+  supportsCorreios?: boolean | null;
+  supportsTransportadora?: boolean | null;
+  supportsLocalDelivery?: boolean | null;
+  supportsPickup?: boolean | null;
   logoUrl?: string | null;
   coverUrl?: string | null;
+};
+
+type UpdateMerchantLogisticsBody = {
+  originZipCode?: string;
+  supportsCorreios?: boolean;
+  supportsTransportadora?: boolean;
+  supportsLocalDelivery?: boolean;
+  supportsPickup?: boolean;
 };
 
 @Controller('merchants')
@@ -39,6 +53,37 @@ export class MerchantsController {
 
     return this.prisma.merchant.findUnique({
       where: { userId },
+    });
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('me/logistics')
+  async updateMyLogistics(
+    @Req() req: Request,
+    @Body() body: UpdateMerchantLogisticsBody,
+  ) {
+    const user = req.user as any;
+    const userId = user?.id ?? user?.sub;
+
+    return this.prisma.merchant.update({
+      where: { userId },
+      data: {
+        ...(body.originZipCode !== undefined
+          ? { originZipCode: body.originZipCode }
+          : {}),
+        ...(body.supportsCorreios !== undefined
+          ? { supportsCorreios: body.supportsCorreios }
+          : {}),
+        ...(body.supportsTransportadora !== undefined
+          ? { supportsTransportadora: body.supportsTransportadora }
+          : {}),
+        ...(body.supportsLocalDelivery !== undefined
+          ? { supportsLocalDelivery: body.supportsLocalDelivery }
+          : {}),
+        ...(body.supportsPickup !== undefined
+          ? { supportsPickup: body.supportsPickup }
+          : {}),
+      },
     });
   }
 
@@ -108,28 +153,57 @@ export class MerchantsController {
     }
 
     try {
+      const createData: Record<string, unknown> = {
+        userId,
+        tradeName,
+        document,
+        handle,
+        city,
+        cepPrefix,
+        logoUrl: body.logoUrl ?? null,
+        coverUrl: body.coverUrl ?? null,
+        status: 'ACTIVE',
+      };
+
+      const updateData: Record<string, unknown> = {
+        tradeName,
+        document,
+        handle,
+        city,
+        cepPrefix,
+        logoUrl: body.logoUrl ?? null,
+        coverUrl: body.coverUrl ?? null,
+      };
+
+      if (body.originZipCode !== undefined) {
+        createData.originZipCode = body.originZipCode;
+        updateData.originZipCode = body.originZipCode;
+      }
+
+      if (body.supportsCorreios !== undefined) {
+        createData.supportsCorreios = body.supportsCorreios;
+        updateData.supportsCorreios = body.supportsCorreios;
+      }
+
+      if (body.supportsTransportadora !== undefined) {
+        createData.supportsTransportadora = body.supportsTransportadora;
+        updateData.supportsTransportadora = body.supportsTransportadora;
+      }
+
+      if (body.supportsLocalDelivery !== undefined) {
+        createData.supportsLocalDelivery = body.supportsLocalDelivery;
+        updateData.supportsLocalDelivery = body.supportsLocalDelivery;
+      }
+
+      if (body.supportsPickup !== undefined) {
+        createData.supportsPickup = body.supportsPickup;
+        updateData.supportsPickup = body.supportsPickup;
+      }
+
       return await this.prisma.merchant.upsert({
         where: { userId },
-        create: {
-          userId,
-          tradeName,
-          document,
-          handle,
-          city,
-          cepPrefix,
-          logoUrl: body.logoUrl ?? null,
-          coverUrl: body.coverUrl ?? null,
-          status: 'ACTIVE',
-        },
-        update: {
-          tradeName,
-          document,
-          handle,
-          city,
-          cepPrefix,
-          logoUrl: body.logoUrl ?? null,
-          coverUrl: body.coverUrl ?? null,
-        },
+        create: createData as any,
+        update: updateData as any,
       });
     } catch (e: any) {
       if (

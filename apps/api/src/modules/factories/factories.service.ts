@@ -8,6 +8,19 @@ type UpsertFactoryBody = {
   document: string;
   city?: string | null;
   state?: string | null;
+  originZipCode?: string | null;
+  supportsCorreios?: boolean | null;
+  supportsTransportadora?: boolean | null;
+  supportsLocalDelivery?: boolean | null;
+  supportsPickup?: boolean | null;
+};
+
+type UpdateFactoryLogisticsBody = {
+  originZipCode?: string;
+  supportsCorreios?: boolean;
+  supportsTransportadora?: boolean;
+  supportsLocalDelivery?: boolean;
+  supportsPickup?: boolean;
 };
 
 @Injectable()
@@ -40,26 +53,80 @@ export class FactoriesService {
       throw new BadRequestException('document (CNPJ) é obrigatório.');
     }
 
+    const createData: Record<string, unknown> = {
+      userId,
+      tradeName,
+      legalName: body.legalName ?? null,
+      document,
+      city: body.city ?? null,
+      state: body.state ?? null,
+    };
+
+    const updateData: Record<string, unknown> = {
+      tradeName,
+      legalName: body.legalName ?? null,
+      document,
+      city: body.city ?? null,
+      state: body.state ?? null,
+    };
+
+    if (body.originZipCode !== undefined) {
+      createData.originZipCode = body.originZipCode;
+      updateData.originZipCode = body.originZipCode;
+    }
+
+    if (body.supportsCorreios !== undefined) {
+      createData.supportsCorreios = body.supportsCorreios;
+      updateData.supportsCorreios = body.supportsCorreios;
+    }
+
+    if (body.supportsTransportadora !== undefined) {
+      createData.supportsTransportadora = body.supportsTransportadora;
+      updateData.supportsTransportadora = body.supportsTransportadora;
+    }
+
+    if (body.supportsLocalDelivery !== undefined) {
+      createData.supportsLocalDelivery = body.supportsLocalDelivery;
+      updateData.supportsLocalDelivery = body.supportsLocalDelivery;
+    }
+
+    if (body.supportsPickup !== undefined) {
+      createData.supportsPickup = body.supportsPickup;
+      updateData.supportsPickup = body.supportsPickup;
+    }
+
     const factory = await this.prisma.factory.upsert({
       where: { userId },
-      create: {
-        userId,
-        tradeName,
-        legalName: body.legalName ?? null,
-        document,
-        city: body.city ?? null,
-        state: body.state ?? null,
-      },
-      update: {
-        tradeName,
-        legalName: body.legalName ?? null,
-        document,
-        city: body.city ?? null,
-        state: body.state ?? null,
-      },
+      create: createData as any,
+      update: updateData as any,
     });
 
     return { ok: true, factory };
+  }
+
+  async updateMyLogistics(userId: string, body: UpdateFactoryLogisticsBody) {
+    if (!userId) throw new BadRequestException('Usuário inválido.');
+
+    return this.prisma.factory.update({
+      where: { userId },
+      data: {
+        ...(body.originZipCode !== undefined
+          ? { originZipCode: body.originZipCode }
+          : {}),
+        ...(body.supportsCorreios !== undefined
+          ? { supportsCorreios: body.supportsCorreios }
+          : {}),
+        ...(body.supportsTransportadora !== undefined
+          ? { supportsTransportadora: body.supportsTransportadora }
+          : {}),
+        ...(body.supportsLocalDelivery !== undefined
+          ? { supportsLocalDelivery: body.supportsLocalDelivery }
+          : {}),
+        ...(body.supportsPickup !== undefined
+          ? { supportsPickup: body.supportsPickup }
+          : {}),
+      },
+    });
   }
 
   async ordersSummaryForMe(userId: string) {

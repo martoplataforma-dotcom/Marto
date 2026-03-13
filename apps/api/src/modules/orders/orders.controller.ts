@@ -33,6 +33,12 @@ export class OrdersController {
       merchantId: string;
       city?: string;
       state?: string;
+      destinationZipCode?: string;
+      selectedShippingMode?:
+        | 'CORREIOS'
+        | 'TRANSPORTADORA'
+        | 'LOCAL_DELIVERY'
+        | 'PICKUP';
       items: Array<{
         productId: string;
         quantity: number;
@@ -48,6 +54,8 @@ export class OrdersController {
       userId, // ✅ sempre do token
       city: body.city,
       state: body.state,
+      destinationZipCode: body.destinationZipCode,
+      selectedShippingMode: body.selectedShippingMode,
       items: body.items,
     });
   }

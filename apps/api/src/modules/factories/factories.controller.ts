@@ -1,4 +1,12 @@
-import { Body, Controller, Get, Put, Req, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Patch,
+  Put,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
 import type { Request } from 'express';
 
 import { JwtAuthGuard } from '../identity/auth/jwt-auth.guard';
@@ -15,6 +23,19 @@ type UpsertFactoryBody = {
   document: string;
   city?: string | null;
   state?: string | null;
+  originZipCode?: string | null;
+  supportsCorreios?: boolean | null;
+  supportsTransportadora?: boolean | null;
+  supportsLocalDelivery?: boolean | null;
+  supportsPickup?: boolean | null;
+};
+
+type UpdateFactoryLogisticsBody = {
+  originZipCode?: string;
+  supportsCorreios?: boolean;
+  supportsTransportadora?: boolean;
+  supportsLocalDelivery?: boolean;
+  supportsPickup?: boolean;
 };
 
 @Controller('factories')
@@ -35,6 +56,16 @@ export class FactoriesController {
   async upsert(@Req() req: Request, @Body() body: UpsertFactoryBody) {
     const userId = getUserId(req);
     return this.factoriesService.upsertMe(userId, body);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('me/logistics')
+  async updateMyLogistics(
+    @Req() req: Request,
+    @Body() body: UpdateFactoryLogisticsBody,
+  ) {
+    const userId = getUserId(req);
+    return this.factoriesService.updateMyLogistics(userId, body);
   }
 
   // ✅ GET /api/factories/me/overview/summary

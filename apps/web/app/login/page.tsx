@@ -15,6 +15,7 @@ type MeResponse = {
     | 'representative'
     | 'factory';
   needsRoleChoice?: boolean;
+  redirectTo?: string;
 };
 
 type ServiceProviderMeResponse = {
@@ -76,6 +77,8 @@ export default function LoginPage() {
       }
 
       const home = me?.home ?? 'consumer';
+      const redirectTo = String(me?.redirectTo ?? '').trim();
+
       localStorage.setItem('marto_home', home);
 
       if (home === 'service_provider') {
@@ -90,13 +93,12 @@ export default function LoginPage() {
           return;
         }
 
-        // ✅ provider normal: direto na central de serviços
-        router.replace('/dash/provider/services');
+        router.replace(redirectTo || '/dash/provider/services');
         router.refresh();
         return;
       }
 
-      router.replace(dashFromHome(home));
+      router.replace(redirectTo || dashFromHome(home));
       router.refresh();
     } catch (err: unknown) {
       const a = err as ApiError;
