@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 
-import { Prisma } from '@prisma/client';
+import { Prisma, ServiceProviderKind } from '@prisma/client';
 
 import { JwtAuthGuard } from '../identity/auth/jwt-auth.guard';
 import { PrismaService } from '../../common/prisma/prisma.service';
@@ -17,6 +17,14 @@ import { PrismaService } from '../../common/prisma/prisma.service';
 @Controller('service-providers')
 export class ServiceProvidersController {
   constructor(private readonly prisma: PrismaService) {}
+
+  private normalizeSpecialties(value: unknown): string[] {
+    if (!Array.isArray(value)) return [];
+
+    return value
+      .map((item) => String(item ?? '').trim().toLowerCase())
+      .filter(Boolean);
+  }
 
   @UseGuards(JwtAuthGuard)
   @Get('me')
@@ -45,7 +53,8 @@ export class ServiceProvidersController {
       documentType?: 'CPF' | 'CNPJ';
       cep?: string;
       address?: unknown;
-      kind?: 'GENERIC' | 'TRANSPORTER';
+      kind?: ServiceProviderKind;
+      specialties?: string[];
     },
   ) {
     const user = req.user as { id?: string; sub?: string } | undefined;
@@ -88,7 +97,15 @@ export class ServiceProvidersController {
     // ----------------------------
     // Kind
     // ----------------------------
-    const kind = body.kind === 'TRANSPORTER' ? 'TRANSPORTER' : 'GENERIC';
+    const normalizedKind =
+      body.kind === ServiceProviderKind.TRANSPORTER
+        ? ServiceProviderKind.TRANSPORTER
+        : ServiceProviderKind.GENERIC;
+
+    const normalizedSpecialties =
+      normalizedKind === ServiceProviderKind.TRANSPORTER
+        ? ['delivery']
+        : this.normalizeSpecialties(body.specialties);
 
     // ----------------------------
     // UPSERT SERVICE PROVIDER
@@ -101,20 +118,22 @@ export class ServiceProvidersController {
         cepPrefix,
         city,
         status: 'ACTIVE',
-        kind,
+        kind: normalizedKind,
         document,
         documentType,
         cep,
+        specialties: normalizedSpecialties,
         address: body.address ?? Prisma.JsonNull,
       },
       update: {
         cpf: document ?? undefined,
         cepPrefix,
         city,
-        kind,
+        kind: normalizedKind,
         document,
         documentType,
         cep,
+        specialties: normalizedSpecialties,
         address: body.address ?? Prisma.JsonNull,
       },
     });
@@ -122,7 +141,7 @@ export class ServiceProvidersController {
     // ----------------------------
     // GARANTE TRANSPORTER
     // ----------------------------
-    if (kind === 'TRANSPORTER') {
+    if (normalizedKind === ServiceProviderKind.TRANSPORTER) {
       await this.prisma.transporter.upsert({
         where: { serviceProviderId: serviceProvider.id },
         update: {},

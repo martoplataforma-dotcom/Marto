@@ -24,6 +24,12 @@ type ProductItem = {
     tech?: Partial<TechSpec> | null;
     catalog?: Partial<CatalogSpec> | null;
   } | null;
+  serviceLinks?: Array<{
+    id: string;
+    serviceType: string;
+    isRequired: boolean;
+    sortOrder: number;
+  }>;
 
   // (futuro) quando o backend mandar
   ordersCount?: number | null;
@@ -81,6 +87,14 @@ function brlFromCents(cents: number) {
 function classNames(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(' ');
 }
+
+const PRODUCT_SERVICE_OPTIONS = [
+  { key: 'assembly', label: 'Montagem' },
+  { key: 'installation', label: 'Instalação' },
+  { key: 'maintenance', label: 'Manutenção' },
+  { key: 'delivery', label: 'Entrega' },
+  { key: 'technical_visit', label: 'Visita técnica' },
+];
 
 function normalizeCaptions(len: number, prev?: string[] | null): string[] {
   const base = Array.isArray(prev) ? prev.slice(0, len) : [];
@@ -1527,7 +1541,16 @@ export default function MerchantProductsPage() {
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [price, setPrice] = useState('');
+  const [productServices, setProductServices] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
+
+  function toggleProductService(service: string) {
+    setProductServices((prev) =>
+      prev.includes(service)
+        ? prev.filter((s) => s !== service)
+        : [...prev, service],
+    );
+  }
 
   // ✅ Fotos múltiplas (novo)
   const [files, setFiles] = useState<File[]>([]);
@@ -1570,6 +1593,7 @@ export default function MerchantProductsPage() {
   const [eTitle, setETitle] = useState('');
   const [eDesc, setEDesc] = useState('');
   const [ePrice, setEPrice] = useState('');
+  const [eProductServices, setEProductServices] = useState<string[]>([]);
   const [eIdn, setEIdn] = useState<IdentitySpec>({ handle: '' });
   const [eDna, setEDna] = useState<ProductDNA>({
     skuRoot: '',
@@ -1646,6 +1670,14 @@ export default function MerchantProductsPage() {
     const i = editOrder.indexOf(editStep);
     setMsg('');
     setEditStep(editOrder[Math.min(editOrder.length - 1, i + 1)]!);
+  }
+
+  function toggleEditProductService(service: string) {
+    setEProductServices((prev) =>
+      prev.includes(service)
+        ? prev.filter((s) => s !== service)
+        : [...prev, service],
+    );
   }
 
   // lightbox (ver fotos existentes do produto)
@@ -1867,6 +1899,7 @@ useEffect(() => {
           priceCents,
           images: images ?? null,
           imageInsights: insightsToSend,
+          productServices,
           meta: {
             tech: hasAnyTech(spec) ? spec : null,
             catalog: cat ?? null,
@@ -1882,6 +1915,7 @@ useEffect(() => {
       setTitle('');
       setDescription('');
       setPrice('');
+      setProductServices([]);
       setFiles([]);
       setImageInsights([]);
       setSpec({
@@ -2012,6 +2046,19 @@ useEffect(() => {
     );
     setEInsights(normalizeInsightsForLen(0, []));
     setEOpenInsightIdx(null);
+    setEProductServices(
+      Array.isArray(
+        (p as { serviceLinks?: Array<{ serviceType?: string | null }> })
+          .serviceLinks,
+      )
+        ? (
+            (p as { serviceLinks?: Array<{ serviceType?: string | null }> })
+              .serviceLinks ?? []
+          )
+            .map((x) => String(x?.serviceType ?? '').trim())
+            .filter(Boolean)
+        : [],
+    );
 
     setSheetProductTitle(p.title ?? 'Editar produto');
     setSheetOpen(true);
@@ -2033,6 +2080,7 @@ useEffect(() => {
     setEKeepCaptions([]);
     setEKeepInsights([]);
     setEInsights([]);
+    setEProductServices([]);
     setESpec({
       weightKg: '',
       lengthCm: '',
@@ -2127,6 +2175,7 @@ useEffect(() => {
             priceCents,
             images: imagesToSend ?? undefined,
             imageInsights: insightsToSend,
+            productServices: eProductServices,
             meta: {
               tech: hasAnyTech(eSpec) ? eSpec : null,
               catalog: eCat ?? null,
@@ -2385,6 +2434,38 @@ useEffect(() => {
                       A primeira foto vira CAPA. Use uma clara/frontal. Depois detalhe (textura,
                       canto, embalagem, ambiente).
                     </div>
+                  </div>
+                </div>
+
+                <div className="mt-6">
+                  <div className="text-sm font-semibold text-white">
+                    Serviços associados ao produto
+                  </div>
+
+                  <p className="mt-1 text-xs text-white/60">
+                    Selecione serviços que podem ser necessários após a compra.
+                  </p>
+
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {PRODUCT_SERVICE_OPTIONS.map((opt) => {
+                      const selected = productServices.includes(opt.key);
+
+                      return (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          onClick={() => toggleProductService(opt.key)}
+                          className={[
+                            'rounded-2xl border px-4 py-3 text-left text-sm transition',
+                            selected
+                              ? 'border-white bg-white text-black'
+                              : 'border-white/10 bg-white/5 text-white hover:bg-white/10',
+                          ].join(' ')}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
@@ -3236,6 +3317,38 @@ useEffect(() => {
                     inputMode="decimal"
                   />
                 </label>
+
+                <div className="mt-6">
+                  <div className="text-sm font-semibold text-white">
+                    Serviços associados ao produto
+                  </div>
+
+                  <p className="mt-1 text-xs text-white/60">
+                    Ajuste os serviços que podem ser necessários após a compra.
+                  </p>
+
+                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                    {PRODUCT_SERVICE_OPTIONS.map((opt) => {
+                      const selected = eProductServices.includes(opt.key);
+
+                      return (
+                        <button
+                          key={opt.key}
+                          type="button"
+                          onClick={() => toggleEditProductService(opt.key)}
+                          className={[
+                            'rounded-2xl border px-4 py-3 text-left text-sm transition',
+                            selected
+                              ? 'border-white bg-white text-black'
+                              : 'border-white/10 bg-white/5 text-white hover:bg-white/10',
+                          ].join(' ')}
+                        >
+                          {opt.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
 
                 <label className="grid gap-2">
                   <span className="text-xs font-semibold text-white/65">Handle (slug)</span>

@@ -104,6 +104,36 @@ function ensureInsightsAligned(
   return { ok: true };
 }
 
+const ALLOWED_PRODUCT_SERVICE_TYPES = new Set([
+  'assembly',
+  'installation',
+  'maintenance',
+  'delivery',
+  'technical_visit',
+  'electrical',
+  'hydraulic',
+  'carpentry',
+  'upholstery',
+]);
+
+function normalizeProductServices(value: unknown): string[] | undefined {
+  if (typeof value === 'undefined') return undefined;
+  if (value === null) return [];
+
+  if (!Array.isArray(value)) return undefined;
+
+  const normalized = value
+    .map((item) =>
+      String(item ?? '')
+        .trim()
+        .toLowerCase(),
+    )
+    .filter(Boolean)
+    .filter((item) => ALLOWED_PRODUCT_SERVICE_TYPES.has(item));
+
+  return [...new Set(normalized)];
+}
+
 @Injectable()
 export class ProductsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -329,6 +359,15 @@ export class ProductsService {
         merchant: {
           select: { id: true, tradeName: true },
         },
+        serviceLinks: {
+          select: {
+            id: true,
+            serviceType: true,
+            isRequired: true,
+            sortOrder: true,
+          },
+          orderBy: { sortOrder: 'asc' },
+        },
       },
     });
 
@@ -355,6 +394,7 @@ export class ProductsService {
       imageCaptions?: unknown; // pode vir string[] | null do front
       imageInsights?: unknown; // pode vir json | null do front
       meta?: Prisma.InputJsonValue | null;
+      productServices?: string[] | null;
     },
   ) {
     if (!userId) throw new UnauthorizedException('Sem usuário.');
@@ -398,6 +438,14 @@ export class ProductsService {
     const captionsValue = normalizeCaptions(body.imageCaptions);
     const insightsValue = normalizeImageInsights(body.imageInsights);
     const metaValue = normalizeJson(body.meta);
+    const productServices = normalizeProductServices(body.productServices);
+
+    if (
+      typeof body.productServices !== 'undefined' &&
+      typeof productServices === 'undefined'
+    ) {
+      return { ok: false, message: 'productServices inválido.' };
+    }
 
     const v = ensureInsightsAligned(imagesValue, insightsValue);
     if (!v.ok) return { ok: false, message: v.message };
@@ -427,6 +475,16 @@ export class ProductsService {
           ? { imageInsights: insightsValue }
           : {}),
         ...(typeof metaValue !== 'undefined' ? { meta: metaValue } : {}),
+        ...(typeof productServices !== 'undefined'
+          ? {
+              serviceLinks: {
+                create: productServices.map((serviceType, index) => ({
+                  serviceType,
+                  sortOrder: index,
+                })),
+              },
+            }
+          : {}),
       },
       select: {
         id: true,
@@ -440,6 +498,15 @@ export class ProductsService {
         meta: true,
         createdAt: true,
         merchant: { select: { id: true, tradeName: true } },
+        serviceLinks: {
+          select: {
+            id: true,
+            serviceType: true,
+            isRequired: true,
+            sortOrder: true,
+          },
+          orderBy: { sortOrder: 'asc' },
+        },
       },
     });
 
@@ -468,6 +535,7 @@ export class ProductsService {
       imageCaptions?: unknown; // pode vir string[] | null
       imageInsights?: unknown; // pode vir json | null
       meta?: Prisma.InputJsonValue | null;
+      productServices?: string[] | null;
     },
   ) {
     if (!userId) throw new UnauthorizedException('Sem usuário.');
@@ -499,6 +567,15 @@ export class ProductsService {
     }
 
     const updateData: Prisma.ProductUpdateInput = {};
+    const productServices = normalizeProductServices(body.productServices);
+
+    if (
+      typeof body.productServices !== 'undefined' &&
+      typeof productServices === 'undefined'
+    ) {
+      return { ok: false, message: 'productServices inválido.' };
+    }
+
     const shippingInput = {
       requiresShipping: body.requiresShipping,
       productType: body.productType,
@@ -621,25 +698,54 @@ export class ProductsService {
     }
 
     if (Object.keys(updateData).length === 0) {
-      return { ok: false, message: 'Nenhum campo válido para atualizar.' };
+      if (typeof productServices === 'undefined') {
+        return { ok: false, message: 'Nenhum campo válido para atualizar.' };
+      }
     }
 
-    const updated = await this.prisma.product.update({
-      where: { id },
-      data: updateData,
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        priceCents: true,
-        active: true,
-        images: true,
-        imageCaptions: true,
-        imageInsights: true,
-        meta: true,
-        updatedAt: true,
-        merchant: { select: { id: true, tradeName: true } },
-      },
+    const updated = await this.prisma.$transaction(async (tx) => {
+      if (typeof productServices !== 'undefined') {
+        await tx.productServiceLink.deleteMany({
+          where: { productId: id },
+        });
+
+        if (productServices.length > 0) {
+          await tx.productServiceLink.createMany({
+            data: productServices.map((serviceType, index) => ({
+              productId: id,
+              serviceType,
+              sortOrder: index,
+            })),
+          });
+        }
+      }
+
+      return tx.product.update({
+        where: { id },
+        data: updateData,
+        select: {
+          id: true,
+          title: true,
+          description: true,
+          priceCents: true,
+          active: true,
+          images: true,
+          imageCaptions: true,
+          imageInsights: true,
+          meta: true,
+          updatedAt: true,
+          merchant: { select: { id: true, tradeName: true } },
+          serviceLinks: {
+            select: {
+              id: true,
+              serviceType: true,
+              isRequired: true,
+              sortOrder: true,
+            },
+            orderBy: { sortOrder: 'asc' },
+          },
+        },
+      });
     });
 
     return { ok: true, updated };

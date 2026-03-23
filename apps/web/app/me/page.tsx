@@ -3,6 +3,7 @@
 
 import Link from 'next/link';
 import Image, { type ImageLoader } from 'next/image';
+import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 import { fetchJSON, type ApiError } from '../../src/lib/api';
 
@@ -259,6 +260,7 @@ function SectionsByHome({
 }
 
 export default function MyProfilePage() {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
   const [me, setMe] = useState<MeResponse | null>(null);
@@ -269,12 +271,17 @@ export default function MyProfilePage() {
   const [inviteToast, setInviteToast] = useState<string | null>(null);
 
   useEffect(() => {
+    let alive = true;
+
     (async () => {
       setMsg('');
+      setInviteOpen(false);
+      setInviteToast(null);
       const token = getToken();
+
       if (!token) {
-        setMsg('Sem token. Entre novamente.');
-        setLoading(false);
+        localStorage.removeItem('marto_access');
+        router.replace('/login');
         return;
       }
 
@@ -284,10 +291,10 @@ export default function MyProfilePage() {
           headers: { Authorization: `Bearer ${token}` },
         });
 
+        if (!alive) return;
         setMe(data);
 
         if (data?.home === 'consumer') {
-          // MVP: reaproveita a mesma lógica do dash/consumer sem “operar” aqui
           try {
             const ordersRes = await fetchJSON<
               unknown[] | { orders?: unknown[]; items?: unknown[] }
@@ -346,21 +353,38 @@ export default function MyProfilePage() {
               return !sr.review && !sr.reviewedAt;
             }).length;
 
+            if (!alive) return;
             setReviewPendenciesCount(pending);
           } catch {
+            if (!alive) return;
             setReviewPendenciesCount(null);
           }
         } else {
+          if (!alive) return;
           setReviewPendenciesCount(null);
         }
       } catch (e: unknown) {
-        const err = e as ApiError;
-        setMsg(err?.message ?? 'Não foi possível carregar sua conta.');
+        const err = e as ApiError & { statusCode?: number; status?: number };
+        const status = Number(err?.statusCode ?? err?.status ?? 0);
+        const message = String(err?.message ?? '');
+
+        if (status === 401 || message.toLowerCase() === 'unauthorized') {
+          localStorage.removeItem('marto_access');
+          router.replace('/login');
+          return;
+        }
+
+        if (!alive) return;
+        setMsg(message || 'Não foi possível carregar sua conta.');
       } finally {
-        setLoading(false);
+        if (alive) setLoading(false);
       }
     })();
-  }, []);
+
+    return () => {
+      alive = false;
+    };
+  }, [router]);
 
   const email = String(me?.email ?? '').trim();
   const backendDisplayName = String(me?.profile?.displayName ?? '').trim();

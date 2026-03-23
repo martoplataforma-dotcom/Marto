@@ -34,6 +34,29 @@ function formatDateBR(d: Date | string | null | undefined): string {
   return `${dd}/${mm}/${yyyy}`;
 }
 
+const SPECIALTY_LABELS: Record<string, string> = {
+  assembly: 'Montagem',
+  installation: 'Instalação',
+  maintenance: 'Manutenção',
+  delivery: 'Entregador',
+  technical_visit: 'Visita técnica',
+  electrical: 'Elétrica',
+  hydraulic: 'Hidráulica',
+  carpentry: 'Marcenaria',
+  upholstery: 'Estofaria',
+};
+
+function specialtyLabelList(values: string[] | null | undefined) {
+  const items = Array.isArray(values) ? values : [];
+  return items
+    .map(
+      (item) =>
+        SPECIALTY_LABELS[String(item ?? '').trim()] ??
+        String(item ?? '').trim(),
+    )
+    .filter(Boolean);
+}
+
 @Injectable()
 export class PublicService {
   constructor(private readonly prisma: PrismaService) {}
@@ -58,6 +81,40 @@ export class PublicService {
     });
 
     if (!user) return null;
+
+    const provider = await this.prisma.serviceProvider.findUnique({
+      where: { userId: user.id },
+      select: {
+        id: true,
+        kind: true,
+        city: true,
+        specialties: true,
+        address: true,
+      },
+    });
+
+    const providerReputation = provider
+      ? await this.prisma.serviceReview.aggregate({
+          where: {
+            providerId: provider.id,
+          },
+          _avg: {
+            rating: true,
+          },
+          _count: {
+            _all: true,
+          },
+        })
+      : null;
+
+    const providerUf =
+      provider?.address && typeof provider.address === 'object'
+        ? String(
+            (provider.address as Record<string, unknown>).uf ?? '',
+          ).trim() || null
+        : null;
+
+    const providerSpecialties = specialtyLabelList(provider?.specialties);
 
     // ✅ MVP: compras viram eventos públicos (sem dados sensíveis)
     const orders = await this.prisma.order.findMany({
@@ -127,6 +184,23 @@ export class PublicService {
         avatarUrl: user.avatarUrl ?? null,
         since: user.createdAt,
       },
+      provider: provider
+        ? {
+            kind: provider.kind,
+            city: provider.city ?? null,
+            uf: providerUf,
+            specialtiesLabel: providerSpecialties.length
+              ? providerSpecialties.join(' • ')
+              : null,
+            reputation: {
+              averageRating:
+                typeof providerReputation?._avg.rating === 'number'
+                  ? Number(providerReputation._avg.rating.toFixed(1))
+                  : null,
+              reviewCount: providerReputation?._count._all ?? 0,
+            },
+          }
+        : null,
       stats: {
         verifiedCount,
         linksCount: 0,

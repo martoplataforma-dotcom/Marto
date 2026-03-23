@@ -38,6 +38,11 @@ type PublicProviderSnapshot = {
   sla?: { pickupMinutes?: number; deliveryMinutes?: number; bias?: string };
   agendaSummary?: string | null;
   regionSummary?: string | null;
+
+  reputation?: {
+    averageRating?: number | null;
+    reviewCount?: number | null;
+  } | null;
 };
 
 type PublicUserResponse = {
@@ -94,37 +99,31 @@ function normalizeAvatarUrl(v: unknown) {
   return s;
 }
 
-/**
- * ✅ Badge do perfil público NÃO pode depender de `home` (histórico).
- * Regra:
- * 1) provider.kind === TRANSPORTER -> Transportadora
- * 2) provider.specialtiesLabel (ex: "Entregador") -> respeita
- * 3) fallback -> usa home
- */
 function badgeFromPublic(data: PublicUserResponse | null) {
+  const home = data?.home ?? null;
   const kind = data?.provider?.kind ?? null;
   const specialties = (data?.provider?.specialtiesLabel ?? '').trim();
 
-  if (kind === 'TRANSPORTER') return 'Transportadora';
+  if (home === 'merchant') return 'Negócio';
+  if (home === 'factory') return 'Fabricante';
+  if (home === 'representative') return 'Representante';
+  if (home === 'consumer') return 'Consumidor';
 
-  if (specialties) {
-    const s = specialties.toLowerCase();
-    if (s.includes('entreg')) return 'Entregador';
-    if (s.includes('transport')) return 'Transportadora';
-    if (s.includes('prest')) return 'Prestador';
-    return specialties;
+  if (home === 'service_provider') {
+    if (kind === 'TRANSPORTER') return 'Transportadora';
+
+    if (specialties) {
+      const s = specialties.toLowerCase();
+      if (s.includes('entreg')) return 'Entregador';
+      if (s.includes('transport')) return 'Transportadora';
+      if (s.includes('prest')) return 'Prestador';
+      return specialties;
+    }
+
+    return 'Prestador';
   }
 
-  const home = data?.home ?? null;
-  return home === 'factory'
-    ? 'Fabricante'
-    : home === 'merchant'
-      ? 'Negócio'
-      : home === 'service_provider'
-        ? 'Prestador'
-        : home === 'representative'
-          ? 'Representante'
-          : 'Consumidor';
+  return 'Usuário Marto';
 }
 
 /** ✅ next/image “direto” (igual o que corrigiu no /me) */
@@ -374,6 +373,61 @@ export default function PublicUserProfilePage({ params }: Props) {
 
   const publicBadge = badgeFromPublic(data);
   const avatar = normalizeAvatarUrl(avatarSrc);
+  const provider = data.provider ?? null;
+  const home = data.home ?? null;
+  const isMerchantProfile = home === 'merchant';
+  const isProviderProfile = home === 'service_provider';
+  const isConsumerProfile = home === 'consumer';
+  const isFactoryProfile = home === 'factory';
+  const isRepresentativeProfile = home === 'representative';
+  const providerRating = provider?.reputation?.averageRating ?? null;
+  const providerReviewCount = provider?.reputation?.reviewCount ?? 0;
+  const providerKindLabel = !provider
+    ? 'Prestador Marto'
+    : provider.kind === 'TRANSPORTER'
+      ? 'Transportadora Marto'
+      : provider.specialtiesLabel?.trim() || 'Prestador Marto';
+
+  const providerBaseLabel = !provider
+    ? 'Base em definição'
+    : [String(provider.city ?? '').trim(), String(provider.uf ?? '').trim().toUpperCase()]
+        .filter(Boolean)
+        .join(' • ') || 'Base em definição';
+
+  const providerTrustLabel = !provider
+    ? 'Em estruturação'
+    : providerReviewCount >= 8 && (providerRating ?? 0) >= 4.7
+      ? 'Alta confiança'
+      : providerReviewCount >= 3
+        ? 'Confiança em evolução'
+        : 'Baseando reputação';
+
+  const providerOperationLine = !provider
+    ? 'Operação profissional em evolução no ecossistema.'
+    : provider.kind === 'TRANSPORTER'
+      ? provider.regionSummary?.trim()
+        ? `Atuação logística: ${provider.regionSummary.trim()}`
+        : 'Atuação logística em evolução dentro do Marto.'
+      : provider.agendaSummary?.trim()
+        ? `Agenda: ${provider.agendaSummary.trim()}`
+        : provider.regionSummary?.trim()
+          ? `Área atendida: ${provider.regionSummary.trim()}`
+          : 'Atendimento profissional em evolução dentro do Marto.';
+
+  const providerPromiseLine = !provider
+    ? 'O Marto transforma histórico real em confiança pública.'
+    : provider.kind === 'TRANSPORTER'
+      ? (() => {
+          const pickup = provider.sla?.pickupMinutes;
+          const delivery = provider.sla?.deliveryMinutes;
+
+          if (pickup || delivery) {
+            return `Promessa operacional baseada em SLA real${pickup ? ` • coleta ${pickup} min` : ''}${delivery ? ` • entrega ${delivery} min` : ''}.`;
+          }
+
+          return 'Promessa operacional baseada em região, disponibilidade e execução real.';
+        })()
+      : 'Confiança construída por pontualidade, execução correta, transparência e avaliações reais.';
 
   return (
     <main className="relative min-h-screen overflow-x-hidden bg-zinc-950 text-white">
@@ -532,6 +586,118 @@ export default function PublicUserProfilePage({ params }: Props) {
                       relações reais
                     </span>
                   </div>
+
+                  {isProviderProfile && provider ? (
+                    <div className="mt-6 overflow-hidden rounded-[2rem] border border-white/12 bg-white/[0.055] shadow-[0_0_0_1px_rgba(255,255,255,0.03)]">
+                      <div className="grid gap-0 lg:grid-cols-[1.2fr_0.8fr]">
+                        <div className="p-5 sm:p-6">
+                          <div className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/62">
+                            Pulso profissional
+                          </div>
+
+                          <div className="mt-4 text-2xl font-semibold tracking-tight text-white">
+                            {providerKindLabel}
+                          </div>
+
+                          <p className="mt-3 max-w-2xl text-sm leading-7 text-white/74">
+                            {providerPromiseLine}
+                          </p>
+
+                          <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                            <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
+                              <div className="text-[11px] uppercase tracking-[0.14em] text-white/50">
+                                Especialidade
+                              </div>
+                              <div className="mt-2 text-sm font-semibold text-white">
+                                {providerKindLabel}
+                              </div>
+                            </div>
+
+                            <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
+                              <div className="text-[11px] uppercase tracking-[0.14em] text-white/50">
+                                Base operacional
+                              </div>
+                              <div className="mt-2 text-sm font-semibold text-white">
+                                {providerBaseLabel}
+                              </div>
+                            </div>
+
+                            <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
+                              <div className="text-[11px] uppercase tracking-[0.14em] text-white/50">
+                                Confiança
+                              </div>
+                              <div className="mt-2 text-sm font-semibold text-white">
+                                {providerTrustLabel}
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="mt-5 rounded-2xl border border-white/10 bg-black/25 p-4">
+                            <div className="text-[11px] uppercase tracking-[0.14em] text-white/50">
+                              Leitura do Marto
+                            </div>
+                            <div className="mt-2 text-sm leading-7 text-white/74">
+                              {providerOperationLine}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="border-t border-white/8 bg-black/25 p-5 lg:border-l lg:border-t-0 sm:p-6">
+                          <div className="text-[11px] uppercase tracking-[0.14em] text-white/50">
+                            Reputação pública
+                          </div>
+
+                          <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
+                            <div className="text-xs text-white/55">Avaliações verificadas</div>
+                            <div className="mt-1 text-3xl font-semibold text-white">
+                              {providerReviewCount}
+                            </div>
+                          </div>
+
+                          <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-4">
+                            <div className="text-xs text-white/55">Nota média</div>
+                            <div className="mt-1 text-3xl font-semibold text-white">
+                              {providerReviewCount > 0 ? (providerRating ?? '—') : '—'}
+                            </div>
+                          </div>
+
+                          <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-4">
+                            <div className="text-xs text-white/55">Leitura atual</div>
+                            <div className="mt-1 text-sm font-semibold text-white">
+                              {providerReviewCount > 0
+                                ? 'Histórico público já começou a ganhar densidade.'
+                                : 'A reputação pública começa a aparecer conforme serviços reais são concluídos e avaliados.'}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {isMerchantProfile ? (
+                    <div className="mt-5 grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                        <div className="text-xs text-white/55">Perfil</div>
+                        <div className="mt-1 text-sm font-semibold text-white">
+                          Loja no ecossistema Marto
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                        <div className="text-xs text-white/55">Atividade pública</div>
+                        <div className="mt-1 text-sm font-semibold text-white">
+                          Compras, avaliações e relações reais
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                        <div className="text-xs text-white/55">Confiança</div>
+                        <div className="mt-1 text-sm font-semibold text-white">
+                          Histórico visível conforme ações verificadas
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
@@ -553,7 +719,18 @@ export default function PublicUserProfilePage({ params }: Props) {
                 </div>
 
                 <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
-                  {events.length > 0 ? (
+                  {isProviderProfile && provider ? (
+                    <>
+                      <div className="text-sm font-semibold text-white">
+                        Histórico profissional público
+                      </div>
+                      <div className="mt-2 text-sm text-white/70">
+                        No Marto, reputação profissional não nasce de autopromoção. Ela aparece
+                        quando atendimento, entrega, avaliação e vínculo real começam a gerar
+                        histórico verificável.
+                      </div>
+                    </>
+                  ) : events.length > 0 ? (
                     <>
                       <div className="text-sm font-semibold text-white">
                         {events.length} registro
@@ -577,8 +754,9 @@ export default function PublicUserProfilePage({ params }: Props) {
                   )}
                 </div>
 
-                {/* Se for prestador/transportadora no futuro, o bloco de operação entra aqui.
-                    Para consumidor, fica leve. */}
+                {/* Blocos operacionais entram por papel.
+                    Lojista não herda cards de prestador.
+                    Consumidor continua leve. */}
               </div>
             </div>
           </div>

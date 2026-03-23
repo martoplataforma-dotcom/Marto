@@ -93,6 +93,95 @@ type OrderItem = {
   unitPrice: string;
 };
 
+type OrderServiceOffer = {
+  serviceType: string;
+  isRequired: boolean;
+  sortOrder: number;
+};
+
+type OrderServiceOfferItem = {
+  productId: string;
+  quantity: number;
+  services: OrderServiceOffer[];
+};
+
+type ServiceOfferSummary = {
+  hasServiceOptions: boolean;
+  serviceTypes: string[];
+  items: OrderServiceOfferItem[];
+};
+
+type ProviderOption = {
+  id: string;
+  city?: string | null;
+  cepPrefix?: string | null;
+  kind?: string | null;
+  specialties: string[];
+  matchedServiceTypes?: string[];
+  rankingScore?: number;
+  reputation?: {
+    averageRating?: number | null;
+    reviewCount?: number | null;
+  } | null;
+  profile?: {
+    handle?: string | null;
+    displayName?: string | null;
+    avatarUrl?: string | null;
+  } | null;
+};
+
+type ProviderOptionsOk = {
+  ok: true;
+  orderId: string;
+  serviceTypes: string[];
+  providers: ProviderOption[];
+};
+
+type ProviderOptionsFail = {
+  ok: false;
+  message?: string;
+};
+
+type ProviderOptionsResponse = ProviderOptionsOk | ProviderOptionsFail;
+
+type OrderServiceRequest = {
+  id: string;
+  orderId: string;
+  userId: string;
+  providerId?: string | null;
+  serviceType: string;
+  linkedProductId?: string | null;
+  title: string;
+  notes?: string | null;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string | null;
+  provider?: {
+    id: string;
+    city?: string | null;
+    kind?: string | null;
+    profile?: {
+      handle?: string | null;
+      displayName?: string | null;
+      avatarUrl?: string | null;
+    } | null;
+  } | null;
+  serviceReview?: {
+    id: string;
+    rating: number;
+    comment?: string | null;
+    createdAt: string;
+    updatedAt: string;
+  } | null;
+};
+
+type OrderServiceRequestsResponse = {
+  ok: true;
+  orderId: string;
+  requests: OrderServiceRequest[];
+};
+
 type OrderEvent = {
   id: string;
   type: string;
@@ -118,6 +207,7 @@ type Order = {
   updatedAt: string;
   items: OrderItem[];
   events: OrderEvent[];
+  serviceOfferSummary?: ServiceOfferSummary | null;
 };
 
 type ShipmentEvent = {
@@ -535,6 +625,22 @@ function Btn({
   );
 }
 
+const SERVICE_TYPE_LABELS: Record<string, string> = {
+  assembly: 'Montagem',
+  installation: 'Instalação',
+  maintenance: 'Manutenção',
+  delivery: 'Entrega',
+  technical_visit: 'Visita técnica',
+  electrical: 'Elétrica',
+  hydraulic: 'Hidráulica',
+  carpentry: 'Marcenaria',
+  upholstery: 'Estofaria',
+};
+
+function serviceTypeLabel(value: string) {
+  return SERVICE_TYPE_LABELS[String(value ?? '').trim()] ?? value;
+}
+
 export default function ConsumerOrderDetailsPage({
   params,
 }: {
@@ -606,6 +712,35 @@ export default function ConsumerOrderDetailsPage({
   const [productsById, setProductsById] = useState<Record<string, ProductLite>>(
     {},
   );
+  const [providerOptionsOpen, setProviderOptionsOpen] = useState(false);
+  const [providerOptionsLoading, setProviderOptionsLoading] = useState(false);
+  const [providerOptionsError, setProviderOptionsError] = useState<string | null>(
+    null,
+  );
+  const [providerOptions, setProviderOptions] = useState<ProviderOption[]>([]);
+  const [providerOptionServiceTypes, setProviderOptionServiceTypes] = useState<
+    string[]
+  >([]);
+  const [serviceRequestLoadingKey, setServiceRequestLoadingKey] = useState<
+    string | null
+  >(null);
+  const [serviceRequestError, setServiceRequestError] = useState<string | null>(
+    null,
+  );
+  const [orderServiceRequests, setOrderServiceRequests] = useState<
+    OrderServiceRequest[]
+  >([]);
+  const [orderServiceRequestsLoading, setOrderServiceRequestsLoading] =
+    useState(false);
+  const [orderServiceRequestsError, setOrderServiceRequestsError] = useState<
+    string | null
+  >(null);
+  const [reviewSubmittingKey, setReviewSubmittingKey] = useState<string | null>(
+    null,
+  );
+  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [reviewRatings, setReviewRatings] = useState<Record<string, number>>({});
+  const [reviewComments, setReviewComments] = useState<Record<string, string>>({});
 
   useEffect(() => {
     if (!orderId) return;
@@ -735,6 +870,197 @@ export default function ConsumerOrderDetailsPage({
     }
   }
 
+  async function loadProviderOptions() {
+    if (!order?.id) return;
+
+    setProviderOptionsError(null);
+    setProviderOptionsLoading(true);
+
+    try {
+      const token = getToken();
+      if (!token) throw new Error('Sem token. Faça login novamente.');
+
+      const res = await fetchJSON<ProviderOptionsResponse>(
+        `/orders/${encodeURIComponent(order.id)}/provider-options`,
+        {
+          method: 'GET',
+          headers: { Authorization: `Bearer ${token}` },
+        },
+      );
+
+      if (!res || typeof res !== 'object' || res.ok !== true) {
+        throw new Error(
+          (res &&
+          typeof res === 'object' &&
+          'message' in res &&
+          typeof res.message === 'string'
+            ? res.message
+            : 'Falha ao carregar profissionais compatíveis.') ||
+            'Falha ao carregar profissionais compatíveis.',
+        );
+      }
+
+      setProviderOptionServiceTypes(
+        Array.isArray(res.serviceTypes) ? res.serviceTypes : [],
+      );
+      setProviderOptions(Array.isArray(res.providers) ? res.providers : []);
+      setProviderOptionsOpen(true);
+    } catch (e) {
+      setProviderOptionsError(
+        e instanceof Error ? e.message : 'Erro ao carregar profissionais.',
+      );
+      setProviderOptions([]);
+      setProviderOptionServiceTypes([]);
+      setProviderOptionsOpen(true);
+    } finally {
+      setProviderOptionsLoading(false);
+    }
+  }
+
+  async function requestServiceWithProvider(provider: ProviderOption) {
+    if (!order?.id) return;
+
+    setServiceRequestError(null);
+    setServiceRequestLoadingKey(provider.id);
+
+    try {
+      const token = getToken();
+      if (!token) throw new Error('Sem token. Faça login novamente.');
+
+      const matchedServiceType = providerOptionServiceTypes.find((serviceType) =>
+        provider.specialties.includes(serviceType),
+      );
+
+      if (!matchedServiceType) {
+        throw new Error(
+          'Nenhum serviço compatível encontrado para este prestador.',
+        );
+      }
+
+      const linkedItem = order.serviceOfferSummary?.items.find((entry) =>
+        entry.services.some(
+          (service) => service.serviceType === matchedServiceType,
+        ),
+      );
+
+      const linkedProductId = linkedItem?.productId ?? undefined;
+
+      const sr = await fetchJSON<{
+        id: string;
+        orderId: string;
+        providerId?: string | null;
+        serviceType?: string | null;
+        linkedProductId?: string | null;
+        title: string;
+        notes: string | null;
+        status: string;
+        createdAt: string;
+      }>('/service-requests', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          orderId: order.id,
+          providerId: provider.id,
+          serviceType: matchedServiceType,
+          linkedProductId,
+          title: `Solicitação de ${serviceTypeLabel(matchedServiceType)}`,
+          notes: `Pedido ${order.id} • prestador selecionado pelo consumidor`,
+        }),
+      });
+
+      setToast(
+        `✅ Serviço solicitado com ${
+          provider.profile?.displayName ||
+          provider.profile?.handle ||
+          'prestador'
+        }. ID: ${sr.id}`,
+      );
+
+      setLocalEvents((prev) => [
+        ...prev,
+        {
+          key: `service:${sr.id}`,
+          source: 'SERVICE',
+          title: `Serviço solicitado: ${serviceTypeLabel(matchedServiceType)}`,
+          desc: `Prestador: ${
+            provider.profile?.displayName ||
+            provider.profile?.handle ||
+            provider.id
+          }`,
+          createdAt: new Date().toISOString(),
+        },
+      ]);
+    } catch (e) {
+      setServiceRequestError(
+        e instanceof Error ? e.message : 'Erro ao solicitar serviço.',
+      );
+    } finally {
+      setServiceRequestLoadingKey(null);
+    }
+  }
+
+  async function submitServiceReview(serviceRequest: OrderServiceRequest) {
+    try {
+      setReviewError(null);
+      setReviewSubmittingKey(serviceRequest.id);
+
+      const token = getToken();
+      if (!token) throw new Error('Sem token. Faça login novamente.');
+
+      const rating = Number(reviewRatings[serviceRequest.id] ?? 0);
+      const comment = String(reviewComments[serviceRequest.id] ?? '').trim();
+
+      if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+        throw new Error('Escolha uma nota de 1 a 5.');
+      }
+
+      const created = await fetchJSON<{
+        id: string;
+        rating: number;
+        comment?: string | null;
+        createdAt: string;
+        updatedAt: string;
+      }>('/service-requests/reviews', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          serviceRequestId: serviceRequest.id,
+          rating,
+          comment: comment || undefined,
+        }),
+      });
+
+      setOrderServiceRequests((prev) =>
+        prev.map((item) =>
+          item.id === serviceRequest.id
+            ? {
+                ...item,
+                serviceReview: {
+                  id: created.id,
+                  rating: created.rating,
+                  comment: created.comment ?? null,
+                  createdAt: created.createdAt,
+                  updatedAt: created.updatedAt,
+                },
+              }
+            : item,
+        ),
+      );
+
+      setToast('✅ Avaliação enviada com sucesso.');
+    } catch (e) {
+      setReviewError(e instanceof Error ? e.message : 'Erro ao enviar avaliação.');
+    } finally {
+      setReviewSubmittingKey(null);
+    }
+  }
+
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -746,6 +1072,47 @@ export default function ConsumerOrderDetailsPage({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [orderId, reloadTick]);
+
+  useEffect(() => {
+    let alive = true;
+
+    async function loadOrderServiceRequests() {
+      if (!order?.id) return;
+
+      try {
+        setOrderServiceRequestsLoading(true);
+        setOrderServiceRequestsError(null);
+
+        const token = getToken();
+        if (!token) throw new Error('Sem token. Faça login novamente.');
+
+        const res = await fetchJSON<OrderServiceRequestsResponse>(
+          `/service-requests/by-order/${encodeURIComponent(order.id)}`,
+          {
+            method: 'GET',
+            headers: { Authorization: `Bearer ${token}` },
+          },
+        );
+
+        if (!alive) return;
+        setOrderServiceRequests(Array.isArray(res?.requests) ? res.requests : []);
+      } catch (e) {
+        if (!alive) return;
+        setOrderServiceRequestsError(
+          e instanceof Error ? e.message : 'Erro ao carregar serviços do pedido.',
+        );
+        setOrderServiceRequests([]);
+      } finally {
+        if (alive) setOrderServiceRequestsLoading(false);
+      }
+    }
+
+    void loadOrderServiceRequests();
+
+    return () => {
+      alive = false;
+    };
+  }, [order?.id]);
 
   useEffect(() => {
     if (!order?.id) return;
@@ -1318,6 +1685,461 @@ export default function ConsumerOrderDetailsPage({
                   <div className="mt-2 text-sm text-white/70">Sem itens.</div>
                 )}
               </div>
+
+              {order.serviceOfferSummary?.hasServiceOptions ? (
+                <div className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold text-white/85">
+                        Profissionais para este pedido
+                      </div>
+                      <div className="mt-1 text-sm text-white/70">
+                        O Marto encontrou prestadores compatíveis com os serviços
+                        detectados nesta compra.
+                      </div>
+                    </div>
+
+                    <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/75">
+                      Pós-compra
+                    </span>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {order.serviceOfferSummary.serviceTypes.map((serviceType) => (
+                      <span
+                        key={serviceType}
+                        className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/85"
+                      >
+                        {serviceTypeLabel(serviceType)}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void loadProviderOptions()}
+                      disabled={providerOptionsLoading}
+                      className="rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {providerOptionsLoading
+                        ? 'Carregando profissionais…'
+                        : 'Ver profissionais para este pedido'}
+                    </button>
+
+                    {providerOptionsOpen ? (
+                      <button
+                        type="button"
+                        onClick={() => setProviderOptionsOpen(false)}
+                        className="rounded-lg border border-white/15 bg-black/60 px-3 py-2 text-sm font-medium text-white/80 hover:bg-white/10"
+                      >
+                        Ocultar
+                      </button>
+                    ) : null}
+                  </div>
+
+                  {providerOptionsError ? (
+                    <div className="mt-3 rounded-xl border border-red-500/25 bg-red-500/10 p-3 text-sm text-red-100">
+                      {providerOptionsError}
+                    </div>
+                  ) : null}
+
+                  {providerOptionsOpen ? (
+                    <div className="mt-4">
+                      <div className="text-xs font-semibold text-white/70">
+                        Compatibilidade atual
+                      </div>
+
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        {providerOptionServiceTypes.map((serviceType) => (
+                          <span
+                            key={`provider-match:${serviceType}`}
+                            className="rounded-full border border-white/10 bg-black/30 px-2.5 py-1 text-[11px] font-semibold text-white/70"
+                          >
+                            {serviceTypeLabel(serviceType)}
+                          </span>
+                        ))}
+                      </div>
+
+                      {serviceRequestError ? (
+                        <div className="mt-3 rounded-xl border border-red-500/25 bg-red-500/10 p-3 text-sm text-red-100">
+                          {serviceRequestError}
+                        </div>
+                      ) : null}
+
+                      {providerOptionsLoading ? (
+                        <div className="mt-3 rounded-xl border border-white/15 bg-white/5 p-3 text-sm text-white/75">
+                          Buscando profissionais compatíveis…
+                        </div>
+                      ) : providerOptions.length === 0 ? (
+                        <div className="mt-3 rounded-xl border border-white/15 bg-white/5 p-3 text-sm text-white/75">
+                          Nenhum profissional compatível encontrado por enquanto.
+                        </div>
+                      ) : (
+                        <div className="mt-3 grid gap-3">
+                          {providerOptions.map((provider) => {
+                            const displayName =
+                              provider.profile?.displayName?.trim() ||
+                              provider.profile?.handle?.trim() ||
+                              `Prestador ${provider.id.slice(0, 8)}…`;
+                            const matchedCount = Array.isArray(
+                              provider.matchedServiceTypes,
+                            )
+                              ? provider.matchedServiceTypes.length
+                              : 0;
+
+                            const hasReviews =
+                              (provider.reputation?.reviewCount ?? 0) > 0;
+                            const hasHighReputation =
+                              hasReviews &&
+                              (provider.reputation?.averageRating ?? 0) >= 4.5;
+
+                            return (
+                              <div
+                                key={provider.id}
+                                className="rounded-xl border border-white/10 bg-white/5 p-3"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="text-sm font-semibold text-white/90">
+                                      {displayName}
+                                    </div>
+
+                                    <div className="mt-1 text-xs text-white/60">
+                                      {provider.city
+                                        ? `${provider.city}`
+                                        : 'Cidade não definida'}
+                                      {provider.cepPrefix
+                                        ? ` • CEP base ${provider.cepPrefix}`
+                                        : ''}
+                                    </div>
+
+                                    <div className="mt-1 text-xs text-white/60">
+                                      {provider.reputation?.reviewCount
+                                        ? `Nota média ${
+                                            provider.reputation.averageRating ?? '-'
+                                          } • ${provider.reputation.reviewCount} avaliação(ões)`
+                                        : 'Ainda sem avaliações'}
+                                    </div>
+
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                      {matchedCount > 0 ? (
+                                        <span className="rounded-full border border-white/10 bg-black/30 px-2.5 py-1 text-[11px] font-semibold text-white/70">
+                                          Cobre {matchedCount} serviço
+                                          {matchedCount > 1 ? 's' : ''} deste
+                                          pedido
+                                        </span>
+                                      ) : null}
+
+                                      {matchedCount >= 2 ? (
+                                        <span className="rounded-full border border-emerald-500/25 bg-emerald-500/10 px-2.5 py-1 text-[11px] font-semibold text-emerald-200">
+                                          Melhor match
+                                        </span>
+                                      ) : null}
+
+                                      {hasHighReputation ? (
+                                        <span className="rounded-full border border-sky-500/25 bg-sky-500/10 px-2.5 py-1 text-[11px] font-semibold text-sky-200">
+                                          Alta reputação
+                                        </span>
+                                      ) : !hasReviews ? (
+                                        <span className="rounded-full border border-white/10 bg-black/30 px-2.5 py-1 text-[11px] font-semibold text-white/60">
+                                          Novo no Marto
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+
+                                  <span className="rounded-full border border-white/10 bg-black/30 px-2.5 py-1 text-[11px] font-semibold text-white/70">
+                                    {provider.kind ?? 'GENERIC'}
+                                  </span>
+                                </div>
+
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  {provider.specialties.map((specialty) => (
+                                    <span
+                                      key={`${provider.id}:${specialty}`}
+                                      className="rounded-full border border-white/10 bg-black/30 px-2.5 py-1 text-[11px] font-semibold text-white/70"
+                                    >
+                                      {serviceTypeLabel(specialty)}
+                                    </span>
+                                  ))}
+                                </div>
+
+                                <div className="mt-3 flex flex-wrap gap-2">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void requestServiceWithProvider(provider)
+                                    }
+                                    disabled={serviceRequestLoadingKey === provider.id}
+                                    className="rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
+                                  >
+                                    {serviceRequestLoadingKey === provider.id
+                                      ? 'Solicitando…'
+                                      : 'Solicitar serviço com este profissional'}
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {orderServiceRequestsError ? (
+                <div className="mt-4 rounded-2xl border border-red-500/25 bg-red-500/10 p-3 text-sm text-red-100">
+                  {orderServiceRequestsError}
+                </div>
+              ) : null}
+
+              {reviewError ? (
+                <div className="mt-4 rounded-2xl border border-red-500/25 bg-red-500/10 p-3 text-sm text-red-100">
+                  {reviewError}
+                </div>
+              ) : null}
+
+              <div className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-white/85">
+                      Serviços deste pedido
+                    </div>
+                    <div className="mt-1 text-sm text-white/70">
+                      Acompanhe as solicitações de serviço e avalie quando forem
+                      concluídas.
+                    </div>
+                  </div>
+
+                  <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/75">
+                    {orderServiceRequestsLoading
+                      ? 'Carregando…'
+                      : `${orderServiceRequests.length} solicitações`}
+                  </span>
+                </div>
+
+                {orderServiceRequestsLoading ? (
+                  <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/75">
+                    Carregando solicitações de serviço…
+                  </div>
+                ) : orderServiceRequests.length === 0 ? (
+                  <div className="mt-4 rounded-xl border border-white/10 bg-white/5 p-3 text-sm text-white/75">
+                    Este pedido ainda não possui solicitações de serviço.
+                  </div>
+                ) : (
+                  <div className="mt-4 grid gap-3">
+                    {orderServiceRequests.map((request) => {
+                      const providerName =
+                        request.provider?.profile?.displayName?.trim() ||
+                        request.provider?.profile?.handle?.trim() ||
+                        'Prestador selecionado';
+
+                      const selectedRating = reviewRatings[request.id] ?? 0;
+                      const selectedComment = reviewComments[request.id] ?? '';
+
+                      return (
+                        <div
+                          key={request.id}
+                          className="rounded-xl border border-white/10 bg-white/5 p-4"
+                        >
+                          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                            <div className="min-w-0">
+                              <div className="text-sm font-semibold text-white/90">
+                                {request.title}
+                              </div>
+
+                              <div className="mt-1 text-xs text-white/60">
+                                {serviceTypeLabel(request.serviceType)} •{' '}
+                                {request.status}
+                              </div>
+
+                              {request.provider ? (
+                                <div className="mt-1 text-xs text-white/60">
+                                  Prestador: {providerName}
+                                </div>
+                              ) : null}
+
+                              {request.linkedProductId ? (
+                                <div className="mt-1 text-xs text-white/55">
+                                  Produto vinculado:{' '}
+                                  {request.linkedProductId.slice(0, 8)}…
+                                </div>
+                              ) : null}
+
+                              {request.notes ? (
+                                <p className="mt-2 text-sm text-white/70">
+                                  {request.notes}
+                                </p>
+                              ) : null}
+                            </div>
+
+                            <span
+                              className={[
+                                'rounded-full border px-3 py-1 text-xs font-semibold',
+                                request.status === 'COMPLETED'
+                                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+                                  : request.status === 'IN_PROGRESS'
+                                    ? 'border-indigo-500/30 bg-indigo-500/10 text-indigo-200'
+                                    : request.status === 'ASSIGNED'
+                                      ? 'border-sky-500/30 bg-sky-500/10 text-sky-200'
+                                      : request.status === 'CANCELLED'
+                                        ? 'border-red-500/30 bg-red-500/10 text-red-200'
+                                        : 'border-white/10 bg-white/5 text-white/70',
+                              ].join(' ')}
+                            >
+                              {request.status}
+                            </span>
+                          </div>
+
+                          {request.serviceReview ? (
+                            <div className="mt-4 rounded-xl border border-emerald-500/20 bg-emerald-500/10 p-3">
+                              <div className="text-sm font-semibold text-emerald-200">
+                                Serviço avaliado
+                              </div>
+                              <div className="mt-1 text-sm text-emerald-100">
+                                Nota: {request.serviceReview.rating}/5
+                              </div>
+                              {request.serviceReview.comment ? (
+                                <div className="mt-1 text-sm text-emerald-100/90">
+                                  {request.serviceReview.comment}
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : request.status === 'COMPLETED' ? (
+                            <div className="mt-4 rounded-xl border border-white/10 bg-black/30 p-3">
+                              <div className="text-sm font-semibold text-white/85">
+                                Avaliar serviço
+                              </div>
+                              <div className="mt-1 text-sm text-white/65">
+                                Conte ao Marto como foi esse atendimento.
+                              </div>
+
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {[1, 2, 3, 4, 5].map((rating) => (
+                                  <button
+                                    key={`${request.id}:${rating}`}
+                                    type="button"
+                                    onClick={() =>
+                                      setReviewRatings((prev) => ({
+                                        ...prev,
+                                        [request.id]: rating,
+                                      }))
+                                    }
+                                    className={[
+                                      'rounded-full border px-3 py-1 text-xs font-semibold transition',
+                                      selectedRating === rating
+                                        ? 'border-white bg-white text-black'
+                                        : 'border-white/10 bg-white/5 text-white hover:bg-white/10',
+                                    ].join(' ')}
+                                  >
+                                    {rating}
+                                  </button>
+                                ))}
+                              </div>
+
+                              <div className="mt-3">
+                                <textarea
+                                  value={selectedComment}
+                                  onChange={(e) =>
+                                    setReviewComments((prev) => ({
+                                      ...prev,
+                                      [request.id]: e.target.value,
+                                    }))
+                                  }
+                                  placeholder="Comentário opcional sobre o serviço…"
+                                  className="min-h-[88px] w-full rounded-2xl border border-white/15 bg-black/30 px-4 py-3 text-sm text-white outline-none placeholder:text-white/35 focus:border-white/30"
+                                />
+                              </div>
+
+                              <div className="mt-3">
+                                <button
+                                  type="button"
+                                  onClick={() => void submitServiceReview(request)}
+                                  disabled={reviewSubmittingKey === request.id}
+                                  className="rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-sm font-medium text-white hover:bg-white/15 disabled:opacity-60"
+                                >
+                                  {reviewSubmittingKey === request.id
+                                    ? 'Enviando avaliação…'
+                                    : 'Enviar avaliação'}
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {order.serviceOfferSummary?.hasServiceOptions ? (
+                <div className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-xs font-semibold text-white/85">
+                        Serviços disponíveis para este pedido
+                      </div>
+                      <div className="mt-1 text-sm text-white/70">
+                        Este pedido pode receber serviços complementares na sua região.
+                      </div>
+                    </div>
+
+                    <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/75">
+                      Pós-compra
+                    </span>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {order.serviceOfferSummary.serviceTypes.map((serviceType) => (
+                      <span
+                        key={serviceType}
+                        className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/85"
+                      >
+                        {serviceTypeLabel(serviceType)}
+                      </span>
+                    ))}
+                  </div>
+
+                  <div className="mt-4 grid gap-2">
+                    {order.serviceOfferSummary.items.map((entry) => {
+                      const product = productsById[String(entry.productId)];
+                      const title =
+                        product?.title?.trim() || `Produto ${String(entry.productId).slice(0, 8)}…`;
+
+                      return (
+                        <div
+                          key={entry.productId}
+                          className="rounded-xl border border-white/10 bg-white/5 p-3"
+                        >
+                          <div className="text-sm font-semibold text-white/90">{title}</div>
+
+                          <div className="mt-1 text-xs text-white/60">
+                            Quantidade: {entry.quantity}
+                          </div>
+
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {entry.services.map((service) => (
+                              <span
+                                key={`${entry.productId}:${service.serviceType}`}
+                                className="rounded-full border border-white/10 bg-black/30 px-2.5 py-1 text-[11px] font-semibold text-white/70"
+                              >
+                                {serviceTypeLabel(service.serviceType)}
+                                {service.isRequired ? ' • obrigatório' : ''}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="mt-3 text-xs text-white/55">
+                    Em breve você poderá contratar e agendar esses serviços diretamente aqui.
+                  </div>
+                </div>
+              ) : null}
 
               {order && needsPaymentGate(order.status) ? (
                 <div className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">

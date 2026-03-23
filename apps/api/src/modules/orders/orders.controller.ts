@@ -74,6 +74,29 @@ export class OrdersController {
     return this.ordersService.listMySales({ userId });
   }
 
+  @Get(':orderId/provider-options')
+  async getProviderOptions(
+    @Req() req: Request,
+    @Param('orderId') orderId: string,
+  ) {
+    const u = req.user as { id?: string; sub?: string } | undefined;
+    const userId = String(u?.id ?? u?.sub ?? '');
+
+    const result = await this.ordersService.getProviderOptionsForOrder(orderId);
+    if (!result) return { ok: false, message: 'Pedido não encontrado' };
+
+    if (String(result.order.userId ?? '') !== userId) {
+      return { ok: false, message: 'Forbidden' };
+    }
+
+    return {
+      ok: true,
+      orderId: result.order.id,
+      serviceTypes: result.serviceTypes,
+      providers: result.providers,
+    };
+  }
+
   @Get(':orderId')
   async getOne(@Req() req: Request, @Param('orderId') orderId: string) {
     const u = req.user as { id?: string; sub?: string } | undefined;

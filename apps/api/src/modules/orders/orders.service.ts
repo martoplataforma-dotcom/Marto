@@ -16,6 +16,9 @@ import {
 } from '@prisma/client';
 
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { getEstimatedShippingDays } from '../logistics/shipping/get-estimated-shipping-days';
+import { getShippingPriceCents } from '../logistics/shipping/get-shipping-price-cents';
+import { resolveProductShippingOptionsFromEntities } from '../logistics/shipping/resolve-product-shipping-options-from-entities';
 import { WalletService } from '../wallet/wallet.service';
 import type { MartoPayResponse, MartoPayStage } from './dto/marto-pay.dto';
 
@@ -258,11 +261,160 @@ export class OrdersService {
       unitPrice: string; // Decimal como string
     }>;
   }) {
+    const merchantProfile = await this.prisma.merchant.findUnique({
+      where: {
+        id: params.merchantId,
+      },
+      select: {
+        originZipCode: true,
+        supportsCorreios: true,
+        supportsTransportadora: true,
+        supportsLocalDelivery: true,
+        supportsPickup: true,
+      },
+    });
+
+    const productIds = params.items.map((item) => item.productId);
+
+    const products = await this.prisma.product.findMany({
+      where: {
+        id: { in: productIds },
+        merchantId: params.merchantId,
+      },
+      select: {
+        id: true,
+        merchantId: true,
+        requiresShipping: true,
+        weightGrams: true,
+        lengthCm: true,
+        widthCm: true,
+        heightCm: true,
+        allowCorreios: true,
+        allowTransportadora: true,
+        allowLocalDelivery: true,
+        allowPickup: true,
+        serviceLinks: {
+          select: {
+            serviceType: true,
+            isRequired: true,
+            sortOrder: true,
+          },
+          orderBy: { sortOrder: 'asc' },
+        },
+      },
+    });
+
+    const productsById = new Map(products.map((product) => [product.id, product]));
+    const hasShippableItems = products.some((product) =>
+      Boolean(product.requiresShipping),
+    );
+
+    if (hasShippableItems && !params.destinationZipCode) {
+      throw new BadRequestException(
+        'destinationZipCode é obrigatório para pedidos com itens que exigem frete.',
+      );
+    }
+
+    if (hasShippableItems && !params.selectedShippingMode) {
+      throw new BadRequestException(
+        'selectedShippingMode é obrigatório para pedidos com itens que exigem frete.',
+      );
+    }
+
+    if (hasShippableItems && !merchantProfile?.originZipCode) {
+      throw new BadRequestException(
+        'originZipCode do merchant é obrigatório para pedidos com itens que exigem frete.',
+      );
+    }
+
+    const serviceOffersByItem = params.items.map((item) => {
+      const product = productsById.get(item.productId);
+
+      const services = (product?.serviceLinks ?? []).map((link) => ({
+        serviceType: link.serviceType,
+        isRequired: Boolean(link.isRequired),
+        sortOrder: Number(link.sortOrder ?? 0),
+      }));
+
+      return {
+        productId: item.productId,
+        quantity: item.quantity,
+        services,
+      };
+    });
+
+    const serviceTypes = Array.from(
+      new Set(
+        serviceOffersByItem.flatMap((item) =>
+          item.services.map((service) => service.serviceType),
+        ),
+      ),
+    );
+
+    const serviceOfferSummary = {
+      hasServiceOptions: serviceTypes.length > 0,
+      serviceTypes,
+      items: serviceOffersByItem.filter((item) => item.services.length > 0),
+    };
+
+    if (params.selectedShippingMode) {
+      for (const item of params.items) {
+        const product = productsById.get(item.productId);
+
+        if (!product) {
+          throw new BadRequestException(
+            `Produto do pedido não encontrado: ${item.productId}`,
+          );
+        }
+
+        const resolved = resolveProductShippingOptionsFromEntities({
+          product: {
+            requiresShipping: product.requiresShipping,
+            weightGrams: product.weightGrams,
+            lengthCm: product.lengthCm,
+            widthCm: product.widthCm,
+            heightCm: product.heightCm,
+            allowCorreios: product.allowCorreios,
+            allowTransportadora: product.allowTransportadora,
+            allowLocalDelivery: product.allowLocalDelivery,
+            allowPickup: product.allowPickup,
+          },
+          expeditorProfile: {
+            originZipCode: merchantProfile?.originZipCode ?? null,
+            supportsCorreios: merchantProfile?.supportsCorreios ?? false,
+            supportsTransportadora:
+              merchantProfile?.supportsTransportadora ?? false,
+            supportsLocalDelivery:
+              merchantProfile?.supportsLocalDelivery ?? false,
+            supportsPickup: merchantProfile?.supportsPickup ?? false,
+          },
+        });
+
+        if (
+          !resolved.availableShippingModes.includes(params.selectedShippingMode)
+        ) {
+          throw new BadRequestException(
+            `Modo de frete inválido para o produto ${item.productId}: ${params.selectedShippingMode}`,
+          );
+        }
+      }
+    }
+
+    const estimatedDays = getEstimatedShippingDays(params.selectedShippingMode);
+    const shippingPriceCents = getShippingPriceCents(
+      params.selectedShippingMode,
+    );
+
     const order = await this.prisma.order.create({
       data: {
         userId: params.userId ?? 'user_test',
         city: params.city ?? 'SAO_PAULO',
         state: params.state ?? 'SP',
+        destinationZipCode: params.destinationZipCode ?? null,
+        selectedShippingMode: params.selectedShippingMode ?? null,
+        originZipCodeSnapshot: merchantProfile?.originZipCode ?? null,
+        estimatedDays,
+        shippingPriceCents,
         merchantId: params.merchantId ?? 'merchant_test',
         reservedUntil: new Date(Date.now() + 30 * 60 * 1000),
 
@@ -299,7 +451,10 @@ export class OrdersService {
       });
     }
 
-    return order;
+    return {
+      ...order,
+      serviceOfferSummary,
+    };
   }
 
   async payOrderMock(orderId: string, payerUserId: string) {
@@ -738,7 +893,25 @@ export class OrdersService {
    */
   async getOrderById(
     orderId: string,
-  ): Promise<(OrderWithItems & { merchant: MerchantMini | null }) | null> {
+  ): Promise<
+    | (OrderWithItems & {
+        merchant: MerchantMini | null;
+        serviceOfferSummary: {
+          hasServiceOptions: boolean;
+          serviceTypes: string[];
+          items: Array<{
+            productId: string;
+            quantity: number;
+            services: Array<{
+              serviceType: string;
+              isRequired: boolean;
+              sortOrder: number;
+            }>;
+          }>;
+        };
+      })
+    | null
+  > {
     const id = String(orderId ?? '').trim();
     if (!id) return null;
 
@@ -752,12 +925,207 @@ export class OrdersService {
 
     if (!order) return null;
 
+    const products = await this.prisma.product.findMany({
+      where: {
+        id: { in: order.items.map((item) => item.productId) },
+      },
+      select: {
+        id: true,
+        serviceLinks: {
+          select: {
+            serviceType: true,
+            isRequired: true,
+            sortOrder: true,
+          },
+          orderBy: { sortOrder: 'asc' },
+        },
+      },
+    });
+
+    const productsById = new Map(products.map((product) => [product.id, product]));
+
+    const serviceOffersByItem = order.items.map((item) => {
+      const product = productsById.get(item.productId);
+
+      const services = (product?.serviceLinks ?? []).map((link) => ({
+        serviceType: link.serviceType,
+        isRequired: Boolean(link.isRequired),
+        sortOrder: Number(link.sortOrder ?? 0),
+      }));
+
+      return {
+        productId: item.productId,
+        quantity: item.quantity,
+        services,
+      };
+    });
+
+    const serviceTypes = Array.from(
+      new Set(
+        serviceOffersByItem.flatMap((item) =>
+          item.services.map((service) => service.serviceType),
+        ),
+      ),
+    );
+
+    const serviceOfferSummary = {
+      hasServiceOptions: serviceTypes.length > 0,
+      serviceTypes,
+      items: serviceOffersByItem.filter((item) => item.services.length > 0),
+    };
+
     const merchant = await this.prisma.merchant.findUnique({
       where: { id: order.merchantId },
       select: { id: true, tradeName: true },
     });
 
-    return { ...order, merchant: merchant ?? null };
+    return {
+      ...order,
+      merchant: merchant ?? null,
+      serviceOfferSummary,
+    };
+  }
+
+  async getProviderOptionsForOrder(orderId: string) {
+    const order = await this.getOrderById(orderId);
+    if (!order) return null;
+
+    const serviceTypes = Array.from(
+      new Set(
+        Array.isArray(order.serviceOfferSummary?.serviceTypes)
+          ? order.serviceOfferSummary.serviceTypes
+              .map((item) => String(item ?? '').trim().toLowerCase())
+              .filter(Boolean)
+          : [],
+      ),
+    );
+
+    if (serviceTypes.length === 0) {
+      return {
+        order,
+        serviceTypes: [],
+        providers: [],
+      };
+    }
+
+    const providers = await this.prisma.serviceProvider.findMany({
+      where: {
+        status: 'ACTIVE' as any,
+        specialties: {
+          hasSome: serviceTypes,
+        },
+      },
+      select: {
+        id: true,
+        city: true,
+        cepPrefix: true,
+        kind: true,
+        specialties: true,
+        user: {
+          select: {
+            handle: true,
+            displayName: true,
+            avatarUrl: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      take: 20,
+    });
+
+    const providerIds = providers.map((provider) => provider.id);
+
+    const reviewStats =
+      providerIds.length > 0
+        ? await this.prisma.serviceReview.groupBy({
+            by: ['providerId'],
+            where: {
+              providerId: {
+                in: providerIds,
+              },
+            },
+            _avg: {
+              rating: true,
+            },
+            _count: {
+              _all: true,
+            },
+          })
+        : [];
+
+    const reviewStatsByProviderId = new Map(
+      reviewStats.map((item) => [
+        item.providerId,
+        {
+          averageRating:
+            typeof item._avg.rating === 'number'
+              ? Number(item._avg.rating.toFixed(1))
+              : null,
+          reviewCount: item._count._all,
+        },
+      ]),
+    );
+
+    const rankedProviders = providers
+      .map((provider) => {
+        const reputation = reviewStatsByProviderId.get(provider.id) ?? {
+          averageRating: null,
+          reviewCount: 0,
+        };
+
+        const matchedServiceTypes = serviceTypes.filter((serviceType) =>
+          Array.isArray(provider.specialties)
+            ? provider.specialties.includes(serviceType)
+            : false,
+        );
+
+        const averageRating = reputation.averageRating ?? 0;
+        const reviewCount = reputation.reviewCount ?? 0;
+
+        const rankingScore =
+          matchedServiceTypes.length * 1000 +
+          averageRating * 100 +
+          Math.min(reviewCount, 50);
+
+        return {
+          id: provider.id,
+          city: provider.city,
+          cepPrefix: provider.cepPrefix,
+          kind: provider.kind,
+          specialties: provider.specialties,
+          profile: {
+            handle: provider.user?.handle ?? null,
+            displayName: provider.user?.displayName ?? null,
+            avatarUrl: provider.user?.avatarUrl ?? null,
+          },
+          reputation,
+          matchedServiceTypes,
+          rankingScore,
+        };
+      })
+      .sort((a, b) => {
+        if (b.rankingScore !== a.rankingScore) {
+          return b.rankingScore - a.rankingScore;
+        }
+
+        const aRating = a.reputation.averageRating ?? 0;
+        const bRating = b.reputation.averageRating ?? 0;
+        if (bRating !== aRating) {
+          return bRating - aRating;
+        }
+
+        const aReviews = a.reputation.reviewCount ?? 0;
+        const bReviews = b.reputation.reviewCount ?? 0;
+        return bReviews - aReviews;
+      });
+
+    return {
+      order,
+      serviceTypes,
+      providers: rankedProviders,
+    };
   }
 
   /**

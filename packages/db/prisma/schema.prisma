@@ -349,6 +349,8 @@ model Order {
 
   events OrderEvent[]
   items  OrderItem[]
+  serviceRequests ServiceRequest[]
+  serviceReviews ServiceReview[]
 
   user        User?        @relation(fields: [userId], references: [id])
   socialPosts SocialPost[]
@@ -532,6 +534,8 @@ model User {
 
   // Orders (buyer)
   orders Order[]
+  serviceRequests ServiceRequest[]
+  serviceReviews ServiceReview[]
 
   // Social (conveniência)
   socialPosts    SocialPost[]
@@ -680,9 +684,25 @@ model Product {
 
   merchant    Merchant     @relation(fields: [merchantId], references: [id])
   socialPosts SocialPost[]
+  serviceLinks ProductServiceLink[]
 
   @@index([merchantId])
   @@index([active])
+}
+
+model ProductServiceLink {
+  id          String   @id @default(uuid())
+  productId   String
+  serviceType String
+  isRequired  Boolean  @default(false)
+  sortOrder   Int      @default(0)
+  createdAt   DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId])
+  @@index([serviceType])
+  @@unique([productId, serviceType])
 }
 
 model ServiceProvider {
@@ -700,8 +720,58 @@ model ServiceProvider {
   documentType DocumentType?
   user         User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
   transporter  Transporter?
+  serviceRequests ServiceRequest[]
+  serviceReviews ServiceReview[]
 
   specialties String[] @default([])
+}
+
+model ServiceRequest {
+  id              String               @id @default(uuid())
+  orderId         String
+  userId          String
+  providerId      String?
+  serviceType     String
+  linkedProductId String?
+  title           String
+  notes           String?
+  status          ServiceRequestStatus @default(REQUESTED)
+  createdAt       DateTime             @default(now())
+  updatedAt       DateTime             @updatedAt
+  completedAt     DateTime?
+  serviceReview   ServiceReview?
+
+  order           Order            @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider        ServiceProvider? @relation(fields: [providerId], references: [id], onDelete: SetNull)
+
+  @@index([orderId])
+  @@index([userId])
+  @@index([providerId])
+  @@index([serviceType])
+  @@index([status])
+}
+
+model ServiceReview {
+  id               String   @id @default(uuid())
+  serviceRequestId String   @unique
+  orderId          String
+  userId           String
+  providerId       String
+  rating           Int
+  comment          String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  serviceRequest ServiceRequest  @relation(fields: [serviceRequestId], references: [id], onDelete: Cascade)
+  order          Order           @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider       ServiceProvider @relation(fields: [providerId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([userId])
+  @@index([providerId])
+  @@index([rating])
 }
 
 model Consumer {
@@ -883,6 +953,14 @@ enum OrderStatus {
   RETURNED
 
   DISPUTE
+}
+
+enum ServiceRequestStatus {
+  REQUESTED
+  ASSIGNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
 }
 
 enum ExportFormat {

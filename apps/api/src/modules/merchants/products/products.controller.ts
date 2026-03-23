@@ -61,6 +61,7 @@ export class ProductsController {
       images?: string[] | null;
       imageCaptions?: string[] | null;
       meta?: Prisma.InputJsonValue | null;
+      productServices?: string[] | null;
     },
   ) {
     const userId = getUserId(req);
@@ -84,6 +85,7 @@ export class ProductsController {
       images?: string[] | null;
       imageCaptions?: string[] | null;
       meta?: Prisma.InputJsonValue | null;
+      productServices?: string[] | null;
     },
   ) {
     const userId = getUserId(req);

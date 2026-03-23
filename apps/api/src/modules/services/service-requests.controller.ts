@@ -11,59 +11,404 @@ import {
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { JwtAuthGuard } from '../identity/auth/jwt-auth.guard';
+import { PrismaService } from '../../common/prisma/prisma.service';
 
 type ServiceRequest = {
   id: string;
   orderId: string;
   paymentId: string | null;
+  providerId?: string | null;
+  serviceType?: string | null;
+  linkedProductId?: string | null;
   title: string;
   notes: string | null;
-  status: 'OPEN' | 'ASSIGNED' | 'DONE';
+  status:
+    | 'OPEN'
+    | 'REQUESTED'
+    | 'ASSIGNED'
+    | 'IN_PROGRESS'
+    | 'COMPLETED'
+    | 'DONE'
+    | 'CANCELLED';
   createdAt: string;
   finishedByUserId?: string | null;
 };
 
-type Review = {
-  id: string;
-  serviceRequestId: string;
-  providerUserId: string;
-  rating: number;
-  comment: string | null;
-  createdAt: string;
-};
-
 @Controller('service-requests')
 export class ServiceRequestsController {
+  constructor(private readonly prisma: PrismaService) {}
+
   // ✅ store em memória (mock), pra POST e GET baterem
   private static readonly store = new Map<string, ServiceRequest>();
 
-  // store em memória (mock)
-  private static readonly reviewsStore: Review[] = [];
-
   @UseGuards(JwtAuthGuard)
   @Post()
-  create(
+  async create(
+    @Req() req: Request,
     @Body()
     body: {
       orderId: string;
       paymentId?: string;
+      providerId?: string;
+      serviceType?: string;
+      linkedProductId?: string;
       title: string;
       notes?: string;
     },
   ) {
-    const sr: ServiceRequest = {
-      id: `sr-${Date.now()}`,
-      orderId: body.orderId,
-      paymentId: body.paymentId ?? null,
-      title: body.title,
-      notes: body.notes ?? null,
-      status: 'ASSIGNED', // você já estava vendo ASSIGNED no provider, mantive
-      createdAt: new Date().toISOString(),
+    const user = req.user as { id?: string; sub?: string } | undefined;
+    const userId = String(user?.id ?? user?.sub ?? '').trim();
+
+    if (!userId) {
+      throw new BadRequestException('Usuário inválido.');
+    }
+
+    const orderId = String(body.orderId ?? '').trim();
+    const title = String(body.title ?? '').trim();
+    const notes = String(body.notes ?? '').trim() || null;
+    const paymentId = String(body.paymentId ?? '').trim() || null;
+    const providerId = String(body.providerId ?? '').trim() || null;
+    const linkedProductId = String(body.linkedProductId ?? '').trim() || null;
+    const serviceType =
+      String(body.serviceType ?? '').trim().toLowerCase() || null;
+
+    if (!orderId) {
+      throw new BadRequestException('orderId é obrigatório.');
+    }
+
+    if (!title) {
+      throw new BadRequestException('title é obrigatório.');
+    }
+
+    if (!serviceType) {
+      throw new BadRequestException('serviceType é obrigatório.');
+    }
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        userId: true,
+        items: {
+          select: {
+            productId: true,
+          },
+        },
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Pedido não encontrado: ${orderId}`);
+    }
+
+    if (String(order.userId ?? '') !== userId) {
+      throw new BadRequestException(
+        'Esse pedido não pertence ao usuário logado.',
+      );
+    }
+
+    if (linkedProductId) {
+      const orderHasProduct = order.items.some(
+        (item) => String(item.productId ?? '') === linkedProductId,
+      );
+
+      if (!orderHasProduct) {
+        throw new BadRequestException(
+          'linkedProductId não pertence aos itens deste pedido.',
+        );
+      }
+    }
+
+    if (providerId) {
+      const provider = await this.prisma.serviceProvider.findUnique({
+        where: { id: providerId },
+        select: { id: true, status: true },
+      });
+
+      if (!provider) {
+        throw new NotFoundException(`Prestador não encontrado: ${providerId}`);
+      }
+
+      if (String(provider.status ?? '').toUpperCase() !== 'ACTIVE') {
+        throw new BadRequestException('Prestador informado não está ativo.');
+      }
+    }
+
+    const created = await this.prisma.serviceRequest.create({
+      data: {
+        orderId,
+        userId,
+        providerId,
+        serviceType,
+        linkedProductId,
+        title,
+        notes,
+        status: 'REQUESTED',
+      },
+      select: {
+        id: true,
+        orderId: true,
+        userId: true,
+        providerId: true,
+        serviceType: true,
+        linkedProductId: true,
+        title: true,
+        notes: true,
+        status: true,
+        createdAt: true,
+      },
+    });
+
+    ServiceRequestsController.store.set(created.id, {
+      id: created.id,
+      orderId: created.orderId,
+      paymentId,
+      providerId: created.providerId ?? null,
+      serviceType: created.serviceType,
+      linkedProductId: created.linkedProductId ?? null,
+      title: created.title,
+      notes: created.notes ?? null,
+      status: 'REQUESTED',
+      createdAt: created.createdAt.toISOString(),
+      finishedByUserId: null,
+    });
+
+    return {
+      ...created,
+      createdAt: created.createdAt.toISOString(),
     };
+  }
 
-    ServiceRequestsController.store.set(sr.id, sr);
+  /**
+   * 📥 GET /api/service-requests/me
+   * Lista solicitações reais recebidas pelo prestador logado
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('me')
+  async listMine(@Req() req: Request) {
+    const user = req.user as { id?: string; sub?: string } | undefined;
+    const userId = String(user?.id ?? user?.sub ?? '').trim();
 
-    return sr;
+    if (!userId) {
+      throw new BadRequestException('Usuário inválido.');
+    }
+
+    const provider = await this.prisma.serviceProvider.findUnique({
+      where: { userId },
+      select: {
+        id: true,
+        city: true,
+        kind: true,
+        specialties: true,
+      },
+    });
+
+    if (!provider) {
+      return {
+        ok: true,
+        provider: null,
+        requests: [],
+      };
+    }
+
+    const requests = await this.prisma.serviceRequest.findMany({
+      where: {
+        providerId: provider.id,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+      select: {
+        id: true,
+        orderId: true,
+        providerId: true,
+        serviceType: true,
+        linkedProductId: true,
+        title: true,
+        notes: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        completedAt: true,
+        order: {
+          select: {
+            id: true,
+            createdAt: true,
+          },
+        },
+      },
+    });
+
+    const productIds = Array.from(
+      new Set(
+        requests
+          .map((item) => String(item.linkedProductId ?? '').trim())
+          .filter(Boolean),
+      ),
+    );
+
+    const linkedProducts =
+      productIds.length > 0
+        ? await this.prisma.product.findMany({
+            where: {
+              id: { in: productIds },
+            },
+            select: {
+              id: true,
+              title: true,
+            },
+          })
+        : [];
+
+    const productsById = new Map(
+      linkedProducts.map((product) => [product.id, product]),
+    );
+
+    return {
+      ok: true,
+      provider: {
+        id: provider.id,
+        city: provider.city,
+        kind: provider.kind,
+        specialties: provider.specialties,
+      },
+      requests: requests.map((item) => ({
+        id: item.id,
+        orderId: item.orderId,
+        providerId: item.providerId,
+        serviceType: item.serviceType,
+        linkedProductId: item.linkedProductId,
+        title: item.title,
+        notes: item.notes,
+        status: item.status,
+        createdAt: item.createdAt.toISOString(),
+        updatedAt: item.updatedAt.toISOString(),
+        completedAt: item.completedAt?.toISOString() ?? null,
+        order: {
+          id: item.order.id,
+          createdAt: item.order.createdAt.toISOString(),
+        },
+        linkedProduct: item.linkedProductId
+          ? {
+              id: item.linkedProductId,
+              title: productsById.get(item.linkedProductId)?.title ?? null,
+            }
+          : null,
+      })),
+    };
+  }
+
+  /**
+   * 📦 GET /api/service-requests/by-order/:orderId
+   * Lista solicitações de serviço do pedido para o comprador dono
+   */
+  @UseGuards(JwtAuthGuard)
+  @Get('by-order/:orderId')
+  async listByOrder(@Req() req: Request, @Param('orderId') orderId: string) {
+    const user = req.user as { id?: string; sub?: string } | undefined;
+    const userId = String(user?.id ?? user?.sub ?? '').trim();
+
+    if (!userId) {
+      throw new BadRequestException('Usuário inválido.');
+    }
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        id: true,
+        userId: true,
+      },
+    });
+
+    if (!order) {
+      throw new NotFoundException(`Pedido não encontrado: ${orderId}`);
+    }
+
+    if (String(order.userId ?? '') !== userId) {
+      throw new BadRequestException('Esse pedido não pertence ao usuário logado.');
+    }
+
+    const requests = await this.prisma.serviceRequest.findMany({
+      where: { orderId },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        orderId: true,
+        userId: true,
+        providerId: true,
+        serviceType: true,
+        linkedProductId: true,
+        title: true,
+        notes: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        completedAt: true,
+        provider: {
+          select: {
+            id: true,
+            city: true,
+            kind: true,
+            user: {
+              select: {
+                handle: true,
+                displayName: true,
+                avatarUrl: true,
+              },
+            },
+          },
+        },
+        serviceReview: {
+          select: {
+            id: true,
+            rating: true,
+            comment: true,
+            createdAt: true,
+            updatedAt: true,
+          },
+        },
+      },
+    });
+
+    return {
+      ok: true,
+      orderId,
+      requests: requests.map((item) => ({
+        id: item.id,
+        orderId: item.orderId,
+        userId: item.userId,
+        providerId: item.providerId,
+        serviceType: item.serviceType,
+        linkedProductId: item.linkedProductId,
+        title: item.title,
+        notes: item.notes,
+        status: item.status,
+        createdAt: item.createdAt.toISOString(),
+        updatedAt: item.updatedAt.toISOString(),
+        completedAt: item.completedAt?.toISOString() ?? null,
+        provider: item.provider
+          ? {
+              id: item.provider.id,
+              city: item.provider.city,
+              kind: item.provider.kind,
+              profile: {
+                handle: item.provider.user?.handle ?? null,
+                displayName: item.provider.user?.displayName ?? null,
+                avatarUrl: item.provider.user?.avatarUrl ?? null,
+              },
+            }
+          : null,
+        serviceReview: item.serviceReview
+          ? {
+              id: item.serviceReview.id,
+              rating: item.serviceReview.rating,
+              comment: item.serviceReview.comment,
+              createdAt: item.serviceReview.createdAt.toISOString(),
+              updatedAt: item.serviceReview.updatedAt.toISOString(),
+            }
+          : null,
+      })),
+    };
   }
 
   /**
@@ -82,34 +427,359 @@ export class ServiceRequestsController {
   }
 
   /**
-   * ✅ POST /api/service-requests/:id/finish
-   * Marca a tarefa como DONE (mock em memória)
+   * ✅ POST /api/service-requests/:id/accept
+   * Aceita uma solicitação real: REQUESTED -> ASSIGNED
    */
   @UseGuards(JwtAuthGuard)
-  @Post(':id/finish')
-  finish(@Param('id') id: string, @Req() req: Request) {
-    const sr = ServiceRequestsController.store.get(id);
+  @Post(':id/accept')
+  async accept(@Req() req: Request, @Param('id') id: string) {
+    const user = req.user as { id?: string; sub?: string } | undefined;
+    const userId = String(user?.id ?? user?.sub ?? '').trim();
 
-    if (!sr)
-      throw new NotFoundException(`ServiceRequest não encontrado: ${id}`);
+    if (!userId) {
+      throw new BadRequestException('Usuário inválido.');
+    }
 
-    const user = req.user as { sub?: string } | undefined;
+    const provider = await this.prisma.serviceProvider.findUnique({
+      where: { userId },
+      select: { id: true },
+    });
 
-    sr.status = 'DONE';
-    sr.finishedByUserId = user?.sub ?? null;
+    if (!provider) {
+      throw new BadRequestException(
+        'Prestador não encontrado para o usuário logado.',
+      );
+    }
 
-    ServiceRequestsController.store.set(id, sr);
+    const existing = await this.prisma.serviceRequest.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        providerId: true,
+        status: true,
+      },
+    });
 
-    return sr;
+    if (!existing) {
+      throw new NotFoundException(`ServiceRequest não encontrada: ${id}`);
+    }
+
+    if (String(existing.providerId ?? '') !== provider.id) {
+      throw new BadRequestException(
+        'Essa solicitação não pertence a este prestador.',
+      );
+    }
+
+    if (String(existing.status ?? '') !== 'REQUESTED') {
+      throw new BadRequestException(
+        'Só é possível aceitar solicitações em REQUESTED.',
+      );
+    }
+
+    const updated = await this.prisma.serviceRequest.update({
+      where: { id },
+      data: {
+        status: 'ASSIGNED',
+      },
+      select: {
+        id: true,
+        orderId: true,
+        userId: true,
+        providerId: true,
+        serviceType: true,
+        linkedProductId: true,
+        title: true,
+        notes: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        completedAt: true,
+      },
+    });
+
+    const mem = ServiceRequestsController.store.get(id);
+    if (mem) {
+      ServiceRequestsController.store.set(id, {
+        ...mem,
+        status: 'ASSIGNED',
+      });
+    }
+
+    return {
+      ...updated,
+      createdAt: updated.createdAt.toISOString(),
+      updatedAt: updated.updatedAt.toISOString(),
+      completedAt: updated.completedAt?.toISOString() ?? null,
+    };
   }
 
   /**
-   * ⭐ POST /api/reviews
-   * MOCK: cria avaliação para uma ServiceRequest DONE
+   * ❌ POST /api/service-requests/:id/reject
+   * Recusa uma solicitação real: REQUESTED -> CANCELLED
    */
   @UseGuards(JwtAuthGuard)
-  @Post('/reviews')
-  createReview(
+  @Post(':id/reject')
+  async reject(@Req() req: Request, @Param('id') id: string) {
+    const user = req.user as { id?: string; sub?: string } | undefined;
+    const userId = String(user?.id ?? user?.sub ?? '').trim();
+
+    if (!userId) {
+      throw new BadRequestException('Usuário inválido.');
+    }
+
+    const provider = await this.prisma.serviceProvider.findUnique({
+      where: { userId },
+      select: { id: true },
+    });
+
+    if (!provider) {
+      throw new BadRequestException(
+        'Prestador não encontrado para o usuário logado.',
+      );
+    }
+
+    const existing = await this.prisma.serviceRequest.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        providerId: true,
+        status: true,
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`ServiceRequest não encontrada: ${id}`);
+    }
+
+    if (String(existing.providerId ?? '') !== provider.id) {
+      throw new BadRequestException(
+        'Essa solicitação não pertence a este prestador.',
+      );
+    }
+
+    if (String(existing.status ?? '') !== 'REQUESTED') {
+      throw new BadRequestException(
+        'Só é possível recusar solicitações em REQUESTED.',
+      );
+    }
+
+    const updated = await this.prisma.serviceRequest.update({
+      where: { id },
+      data: {
+        status: 'CANCELLED',
+      },
+      select: {
+        id: true,
+        orderId: true,
+        userId: true,
+        providerId: true,
+        serviceType: true,
+        linkedProductId: true,
+        title: true,
+        notes: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        completedAt: true,
+      },
+    });
+
+    const mem = ServiceRequestsController.store.get(id);
+    if (mem) {
+      ServiceRequestsController.store.set(id, {
+        ...mem,
+        status: 'OPEN',
+      });
+    }
+
+    return {
+      ...updated,
+      createdAt: updated.createdAt.toISOString(),
+      updatedAt: updated.updatedAt.toISOString(),
+      completedAt: updated.completedAt?.toISOString() ?? null,
+    };
+  }
+
+  /**
+   * ▶ POST /api/service-requests/:id/start
+   * Inicia uma solicitação real: ASSIGNED -> IN_PROGRESS
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/start')
+  async start(@Req() req: Request, @Param('id') id: string) {
+    const user = req.user as { id?: string; sub?: string } | undefined;
+    const userId = String(user?.id ?? user?.sub ?? '').trim();
+
+    if (!userId) {
+      throw new BadRequestException('Usuário inválido.');
+    }
+
+    const provider = await this.prisma.serviceProvider.findUnique({
+      where: { userId },
+      select: { id: true },
+    });
+
+    if (!provider) {
+      throw new BadRequestException(
+        'Prestador não encontrado para o usuário logado.',
+      );
+    }
+
+    const existing = await this.prisma.serviceRequest.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        providerId: true,
+        status: true,
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`ServiceRequest não encontrada: ${id}`);
+    }
+
+    if (String(existing.providerId ?? '') !== provider.id) {
+      throw new BadRequestException(
+        'Essa solicitação não pertence a este prestador.',
+      );
+    }
+
+    if (String(existing.status ?? '') !== 'ASSIGNED') {
+      throw new BadRequestException(
+        'Só é possível iniciar solicitações em ASSIGNED.',
+      );
+    }
+
+    const updated = await this.prisma.serviceRequest.update({
+      where: { id },
+      data: {
+        status: 'IN_PROGRESS',
+      },
+      select: {
+        id: true,
+        orderId: true,
+        userId: true,
+        providerId: true,
+        serviceType: true,
+        linkedProductId: true,
+        title: true,
+        notes: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        completedAt: true,
+      },
+    });
+
+    const mem = ServiceRequestsController.store.get(id);
+    if (mem) {
+      ServiceRequestsController.store.set(id, {
+        ...mem,
+        status: 'IN_PROGRESS',
+      });
+    }
+
+    return {
+      ...updated,
+      createdAt: updated.createdAt.toISOString(),
+      updatedAt: updated.updatedAt.toISOString(),
+      completedAt: updated.completedAt?.toISOString() ?? null,
+    };
+  }
+
+  /**
+   * ✅ POST /api/service-requests/:id/finish
+   * Conclui uma solicitação real: IN_PROGRESS -> COMPLETED
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post(':id/finish')
+  async finish(@Req() req: Request, @Param('id') id: string) {
+    const user = req.user as { id?: string; sub?: string } | undefined;
+    const userId = String(user?.id ?? user?.sub ?? '').trim();
+
+    if (!userId) {
+      throw new BadRequestException('Usuário inválido.');
+    }
+
+    const provider = await this.prisma.serviceProvider.findUnique({
+      where: { userId },
+      select: { id: true },
+    });
+
+    if (!provider) {
+      throw new BadRequestException(
+        'Prestador não encontrado para o usuário logado.',
+      );
+    }
+
+    const existing = await this.prisma.serviceRequest.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        providerId: true,
+        status: true,
+      },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`ServiceRequest não encontrada: ${id}`);
+    }
+
+    if (String(existing.providerId ?? '') !== provider.id) {
+      throw new BadRequestException(
+        'Essa solicitação não pertence a este prestador.',
+      );
+    }
+
+    if (String(existing.status ?? '') !== 'IN_PROGRESS') {
+      throw new BadRequestException(
+        'Só é possível concluir solicitações em IN_PROGRESS.',
+      );
+    }
+
+    const updated = await this.prisma.serviceRequest.update({
+      where: { id },
+      data: {
+        status: 'COMPLETED',
+        completedAt: new Date(),
+      },
+      select: {
+        id: true,
+        orderId: true,
+        userId: true,
+        providerId: true,
+        serviceType: true,
+        linkedProductId: true,
+        title: true,
+        notes: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+        completedAt: true,
+      },
+    });
+
+    const mem = ServiceRequestsController.store.get(id);
+    if (mem) {
+      ServiceRequestsController.store.set(id, {
+        ...mem,
+        status: 'COMPLETED',
+        finishedByUserId: userId,
+      });
+    }
+
+    return {
+      ...updated,
+      createdAt: updated.createdAt.toISOString(),
+      updatedAt: updated.updatedAt.toISOString(),
+      completedAt: updated.completedAt?.toISOString() ?? null,
+    };
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('reviews')
+  async createReview(
+    @Req() req: Request,
     @Body()
     body: {
       serviceRequestId: string;
@@ -117,31 +787,93 @@ export class ServiceRequestsController {
       comment?: string;
     },
   ) {
-    const sr = ServiceRequestsController.store.get(body.serviceRequestId);
+    const user = req.user as { id?: string; sub?: string } | undefined;
+    const userId = String(user?.id ?? user?.sub ?? '').trim();
 
-    if (!sr) {
-      throw new NotFoundException('ServiceRequest não encontrada');
+    if (!userId) {
+      throw new BadRequestException('Usuário inválido.');
     }
 
-    if (sr.status !== 'DONE') {
-      throw new BadRequestException('ServiceRequest ainda não foi finalizada');
+    const serviceRequestId = String(body.serviceRequestId ?? '').trim();
+    const rating = Number(body.rating);
+    const comment = String(body.comment ?? '').trim() || null;
+
+    if (!serviceRequestId) {
+      throw new BadRequestException('serviceRequestId é obrigatório.');
     }
 
-    if (!sr.finishedByUserId) {
-      throw new BadRequestException('Prestador não identificado');
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) {
+      throw new BadRequestException('rating deve ser um inteiro entre 1 e 5.');
     }
 
-    const review: Review = {
-      id: `rev-${Date.now()}`,
-      serviceRequestId: sr.id,
-      providerUserId: sr.finishedByUserId,
-      rating: Math.max(1, Math.min(5, Number(body.rating))),
-      comment: body.comment ?? null,
-      createdAt: new Date().toISOString(),
+    const serviceRequest = await this.prisma.serviceRequest.findUnique({
+      where: { id: serviceRequestId },
+      select: {
+        id: true,
+        orderId: true,
+        userId: true,
+        providerId: true,
+        status: true,
+        serviceReview: {
+          select: { id: true },
+        },
+      },
+    });
+
+    if (!serviceRequest) {
+      throw new NotFoundException(
+        `ServiceRequest não encontrada: ${serviceRequestId}`,
+      );
+    }
+
+    if (String(serviceRequest.userId ?? '') !== userId) {
+      throw new BadRequestException(
+        'Essa solicitação não pertence ao usuário logado.',
+      );
+    }
+
+    if (String(serviceRequest.status ?? '') !== 'COMPLETED') {
+      throw new BadRequestException(
+        'Só é possível avaliar solicitações em COMPLETED.',
+      );
+    }
+
+    if (!serviceRequest.providerId) {
+      throw new BadRequestException(
+        'A solicitação não possui prestador vinculado.',
+      );
+    }
+
+    if (serviceRequest.serviceReview) {
+      throw new BadRequestException('Essa solicitação já foi avaliada.');
+    }
+
+    const created = await this.prisma.serviceReview.create({
+      data: {
+        serviceRequestId,
+        orderId: serviceRequest.orderId,
+        userId,
+        providerId: serviceRequest.providerId,
+        rating,
+        comment,
+      },
+      select: {
+        id: true,
+        serviceRequestId: true,
+        orderId: true,
+        userId: true,
+        providerId: true,
+        rating: true,
+        comment: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
+
+    return {
+      ...created,
+      createdAt: created.createdAt.toISOString(),
+      updatedAt: created.updatedAt.toISOString(),
     };
-
-    ServiceRequestsController.reviewsStore.push(review);
-
-    return review;
   }
 }
