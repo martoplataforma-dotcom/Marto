@@ -5,6 +5,11 @@ import { PublicService } from './public.service';
 export class PublicController {
   constructor(private readonly publicService: PublicService) {}
 
+  @Get('products/:id/shipping-options')
+  async getProductShippingOptions(@Param('id') id: string) {
+    return this.publicService.getProductShippingOptions(id);
+  }
+
   @Get('users/:handle')
   async getPublicUser(@Param('handle') handle: string) {
     const data = await this.publicService.getPublicUserByHandle(handle);

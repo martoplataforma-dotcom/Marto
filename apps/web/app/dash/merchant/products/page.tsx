@@ -17,6 +17,12 @@ type ProductItem = {
   description?: string | null;
   priceCents: number;
   active: boolean;
+  requiresShipping?: boolean | null;
+  productType?: string | null;
+  weightGrams?: number | null;
+  lengthCm?: number | null;
+  widthCm?: number | null;
+  heightCm?: number | null;
   images?: string[] | null;
   imageCaptions?: string[] | null;
   imageInsights?: ImageInsight[] | null;
@@ -35,6 +41,30 @@ type ProductItem = {
   ordersCount?: number | null;
   reviewsCount?: number | null;
   hasService?: boolean | null;
+};
+
+type ShippingMode =
+  | 'CORREIOS'
+  | 'TRANSPORTADORA'
+  | 'LOCAL_DELIVERY'
+  | 'PICKUP';
+
+type ShippingSize = 'SMALL' | 'MEDIUM' | 'LARGE';
+
+type ShippingOptionsResponse = {
+  analysis: {
+    shippingSize: ShippingSize;
+    canUseCorreios: boolean;
+    shouldPrioritizeTransportadora: boolean;
+    recommendedShippingModes: ShippingMode[];
+    reason: string;
+  };
+  availableShippingModes: ShippingMode[];
+  blockedModes: Array<{
+    mode: ShippingMode;
+    reason: string;
+  }>;
+  suggestedPrimaryShippingMode: ShippingMode | null;
 };
 
 type ProductsResponse = {
@@ -1601,6 +1631,10 @@ export default function MerchantProductsPage() {
     version: '',
   });
   const [eSaving, setESaving] = useState(false);
+  const [editShippingOptions, setEditShippingOptions] =
+    useState<ShippingOptionsResponse | null>(null);
+  const [editShippingLoading, setEditShippingLoading] = useState(false);
+  const [editShippingError, setEditShippingError] = useState<string | null>(null);
 
   // ✅ Fotos múltiplas (edição)
   const [eFiles, setEFiles] = useState<File[]>([]);
@@ -1843,6 +1877,35 @@ useEffect(() => {
     }
   }
 
+  function parseOptionalNumber(value: string): number | null {
+    const n = Number(String(value ?? '').replace(',', '.').trim());
+    return Number.isFinite(n) && n > 0 ? n : null;
+  }
+
+  function parseOptionalInt(value: string): number | null {
+    const n = parseOptionalNumber(value);
+    return n === null ? null : Math.round(n);
+  }
+
+  function parseOptionalWeightGrams(weightKg: string): number | null {
+    const kg = parseOptionalNumber(weightKg);
+    return kg === null ? null : Math.round(kg * 1000);
+  }
+
+  function formatOptionalWeightKgFromGrams(
+    weightGrams: number | null | undefined,
+  ): string {
+    if (
+      typeof weightGrams !== 'number' ||
+      !Number.isFinite(weightGrams) ||
+      weightGrams <= 0
+    ) {
+      return '';
+    }
+
+    return String(weightGrams / 1000);
+  }
+
   async function createProduct() {
     setMsg('');
     const token = getToken();
@@ -1887,6 +1950,14 @@ useEffect(() => {
         ? `${stripCatalogBlock(withDna ?? '')}\n\n${buildCatalogBlock(cat)}`
         : buildCatalogBlock(cat);
 
+      const requiresShipping = cat.kind === 'PHYSICAL';
+      const productType = cat.kind;
+
+      const weightGrams = parseOptionalWeightGrams(spec.weightKg);
+      const lengthCm = parseOptionalInt(spec.lengthCm);
+      const widthCm = parseOptionalInt(spec.widthCm);
+      const heightCm = parseOptionalInt(spec.heightCm);
+
       const res = await fetchJSON<CreateProductResponse>('/merchants/me/products', {
         method: 'POST',
         headers: {
@@ -1897,6 +1968,12 @@ useEffect(() => {
           title: title.trim(),
           description: finalDesc,
           priceCents,
+          requiresShipping,
+          productType,
+          weightGrams,
+          lengthCm,
+          widthCm,
+          heightCm,
           images: images ?? null,
           imageInsights: insightsToSend,
           productServices,
@@ -1985,10 +2062,32 @@ useEffect(() => {
     }
   }
 
+  async function loadEditShippingOptions(productId: string) {
+    setEditShippingLoading(true);
+    setEditShippingError(null);
+
+    try {
+      const res = await fetchJSON<ShippingOptionsResponse>(
+        `/merchants/me/products/${productId}/shipping-options`,
+      );
+      setEditShippingOptions(res);
+    } catch (err) {
+      setEditShippingOptions(null);
+      setEditShippingError(
+        err instanceof Error ? err.message : 'Falha ao carregar leitura logística.',
+      );
+    } finally {
+      setEditShippingLoading(false);
+    }
+  }
+
   function startEdit(p: ProductItem) {
     setMsg('');
     setEditStep('BASIC');
     setEditingId(p.id);
+    setEditShippingOptions(null);
+    setEditShippingError(null);
+    void loadEditShippingOptions(p.id);
     setETitle(p.title ?? '');
 
     const metaTech = (p.meta?.tech ?? null) as Partial<TechSpec> | null;
@@ -2011,12 +2110,29 @@ useEffect(() => {
     // se tiver meta, usa meta; senão, fallback nos marcadores antigos
     const extractedTech = metaTech ?? extractTechBlock(p.description ?? '');
     const extractedCat = metaCat ?? extractCatalogBlock(p.description ?? '');
+    const productKind =
+      p.productType === 'PHYSICAL' || p.productType === 'DIGITAL' || p.productType === 'SERVICE'
+        ? p.productType
+        : extractedCat.kind === 'PHYSICAL' ||
+            extractedCat.kind === 'DIGITAL' ||
+            extractedCat.kind === 'SERVICE'
+          ? extractedCat.kind
+          : 'PHYSICAL';
 
     setESpec({
-      weightKg: String(extractedTech.weightKg ?? ''),
-      lengthCm: String(extractedTech.lengthCm ?? ''),
-      widthCm: String(extractedTech.widthCm ?? ''),
-      heightCm: String(extractedTech.heightCm ?? ''),
+      weightKg: formatOptionalWeightKgFromGrams(p.weightGrams) || String(extractedTech.weightKg ?? ''),
+      lengthCm:
+        (typeof p.lengthCm === 'number' && p.lengthCm > 0
+          ? String(p.lengthCm)
+          : String(extractedTech.lengthCm ?? '')),
+      widthCm:
+        (typeof p.widthCm === 'number' && p.widthCm > 0
+          ? String(p.widthCm)
+          : String(extractedTech.widthCm ?? '')),
+      heightCm:
+        (typeof p.heightCm === 'number' && p.heightCm > 0
+          ? String(p.heightCm)
+          : String(extractedTech.heightCm ?? '')),
       sku: String(extractedTech.sku ?? ''),
       barcode: String(extractedTech.barcode ?? ''),
       brand: String(extractedTech.brand ?? ''),
@@ -2024,7 +2140,8 @@ useEffect(() => {
     });
 
     setECat({
-      kind: (extractedCat.kind as ProductKind) ?? 'PHYSICAL',
+      ...(metaCat ?? {}),
+      kind: productKind,
       inventoryMode: (extractedCat.inventoryMode as InventoryMode) ?? 'INFINITE',
       stockTotal: String(extractedCat.stockTotal ?? ''),
       prepDays: String(extractedCat.prepDays ?? ''),
@@ -2066,6 +2183,9 @@ useEffect(() => {
 
   function cancelEdit() {
     setEditingId(null);
+    setEditShippingOptions(null);
+    setEditShippingError(null);
+    setEditShippingLoading(false);
     setETitle('');
     setEDesc('');
     setEPrice('');
@@ -2158,6 +2278,13 @@ useEffect(() => {
       : buildCatalogBlock(eCat);
 
     const insightsToSend = normalizeInsightsForLen(baseImgs.length, eKeepInsights);
+    const requiresShipping = eCat.kind === 'PHYSICAL';
+    const productType = eCat.kind;
+
+    const weightGrams = parseOptionalWeightGrams(eSpec.weightKg);
+    const lengthCm = parseOptionalInt(eSpec.lengthCm);
+    const widthCm = parseOptionalInt(eSpec.widthCm);
+    const heightCm = parseOptionalInt(eSpec.heightCm);
 
     setESaving(true);
     try {
@@ -2173,6 +2300,12 @@ useEffect(() => {
             title: titleTrimmed,
             description: finalDesc,
             priceCents,
+            requiresShipping,
+            productType,
+            weightGrams,
+            lengthCm,
+            widthCm,
+            heightCm,
             images: imagesToSend ?? undefined,
             imageInsights: insightsToSend,
             productServices: eProductServices,
@@ -3592,11 +3725,12 @@ useEffect(() => {
 
             {/* FICHA TÉCNICA (EDIÇÃO) */}
             {editStep === 'TECH' ? (
-              <div className="rounded-3xl border border-white/15 bg-black/35 p-5">
-                <div className="flex flex-wrap items-start justify-between gap-2">
-                  <div>
-                    <div className="text-sm font-semibold text-white/90">
-                      Ficha técnica (Marto)
+              <div className="grid gap-4">
+                <div className="rounded-3xl border border-white/15 bg-black/35 p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-semibold text-white/90">
+                        Ficha técnica (Marto)
                     </div>
                     <div className="mt-1 text-xs text-white/65">
                       Mesmo padrão do produto novo.
@@ -3683,6 +3817,96 @@ useEffect(() => {
                       className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
                     />
                   </label>
+                </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-white">Leitura logística Marto</p>
+                      <p className="text-xs text-white/70">
+                        Diagnóstico real do produto com base no backend.
+                      </p>
+                    </div>
+                  </div>
+
+                  {editShippingLoading ? (
+                    <p className="mt-3 text-sm text-white/70">Analisando logística...</p>
+                  ) : editShippingError ? (
+                    <p className="mt-3 text-sm text-rose-300">{editShippingError}</p>
+                  ) : editShippingOptions ? (
+                    <div className="mt-4 space-y-4">
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <div className="rounded-xl border border-white/10 bg-black/40 p-3">
+                          <p className="text-xs uppercase tracking-[0.18em] text-white/55">Porte</p>
+                          <p className="mt-1 text-sm font-medium text-white">
+                            {editShippingOptions.analysis.shippingSize}
+                          </p>
+                        </div>
+
+                        <div className="rounded-xl border border-white/10 bg-black/40 p-3">
+                          <p className="text-xs uppercase tracking-[0.18em] text-white/55">
+                            Modo principal sugerido
+                          </p>
+                          <p className="mt-1 text-sm font-medium text-white">
+                            {editShippingOptions.suggestedPrimaryShippingMode ?? '—'}
+                          </p>
+                        </div>
+                      </div>
+
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.18em] text-white/55">
+                          Modos disponíveis
+                        </p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {editShippingOptions.availableShippingModes.length ? (
+                            editShippingOptions.availableShippingModes.map((mode) => (
+                              <span
+                                key={mode}
+                                className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1 text-xs text-emerald-200"
+                              >
+                                {mode}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-sm text-white/65">Nenhum modo disponível.</span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.18em] text-white/55">
+                          Bloqueios
+                        </p>
+                        <div className="mt-2 space-y-2">
+                          {editShippingOptions.blockedModes.length ? (
+                            editShippingOptions.blockedModes.map((item) => (
+                              <div
+                                key={item.mode}
+                                className="rounded-xl border border-white/10 bg-black/40 p-3"
+                              >
+                                <p className="text-sm font-medium text-white">{item.mode}</p>
+                                <p className="mt-1 text-xs text-white/70">{item.reason}</p>
+                              </div>
+                            ))
+                          ) : (
+                            <p className="text-sm text-white/65">Sem bloqueios.</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-xl border border-white/10 bg-black/40 p-3">
+                        <p className="text-xs uppercase tracking-[0.18em] text-white/55">
+                          Motivo da análise
+                        </p>
+                        <p className="mt-1 text-sm text-white/80">
+                          {editShippingOptions.analysis.reason}
+                        </p>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-sm text-white/65">Sem leitura logística carregada.</p>
+                  )}
                 </div>
               </div>
             ) : null}

@@ -4,6 +4,7 @@
 import Image, { type ImageLoader } from 'next/image';
 import Link from 'next/link';
 import { use, useEffect, useMemo, useState } from 'react';
+import { fetchJSON, type ApiError } from '../../../src/lib/api';
 
 type Props = {
   // ✅ Next pode entregar params como Promise em Client Components
@@ -32,6 +33,7 @@ type PublicProviderSnapshot = {
   kind?: 'GENERIC' | 'TRANSPORTER' | null;
   city?: string | null;
   uf?: string | null;
+  specialties?: string[] | null;
 
   specialtiesLabel?: string | null;
   types?: { key: string; title: string }[];
@@ -67,6 +69,10 @@ type PublicUserResponse = {
   events: PublicEvent[];
 };
 
+type MeHomeResponse = {
+  home?: Home | null;
+};
+
 function titleFromHandle(handle: string) {
   const h = String(handle || '').replace(/[^a-zA-Z0-9._-]/g, '').trim();
   const base = h || 'usuario';
@@ -94,6 +100,13 @@ function dashFromHome(home?: Home | null) {
 
 function normalizeAvatarUrl(v: unknown) {
   const s = String(v ?? '').trim();
+  if (!s) return '';
+  if (s === 'null' || s === 'undefined') return '';
+  return s;
+}
+
+function normalizePublicText(value: unknown): string {
+  const s = String(value ?? '').trim();
   if (!s) return '';
   if (s === 'null' || s === 'undefined') return '';
   return s;
@@ -234,26 +247,40 @@ export default function PublicUserProfilePage({ params }: Props) {
   const typeReady = counters.purchases !== null && counters.services !== null;
 
   useEffect(() => {
-    try {
-      const token = localStorage.getItem('marto_access');
-      setIsAuthed(Boolean(String(token ?? '').trim()));
+    let alive = true;
 
-      const h = localStorage.getItem('marto_home') as Home | null;
-      if (
-        h === 'consumer' ||
-        h === 'merchant' ||
-        h === 'service_provider' ||
-        h === 'representative' ||
-        h === 'factory'
-      ) {
-        setMyHome(h);
-      } else {
+    (async () => {
+      try {
+        const token = localStorage.getItem('marto_access');
+        const authed = Boolean(String(token ?? '').trim());
+
+        if (!alive) return;
+        setIsAuthed(authed);
+
+        if (!authed) {
+          setMyHome(null);
+          return;
+        }
+
+        const me = await fetchJSON<MeHomeResponse>('/me', { method: 'GET' });
+        if (!alive) return;
+        setMyHome(me.home ?? null);
+      } catch (e: unknown) {
+        const err = e as ApiError;
+        if (!alive) return;
+
+        if (err?.status === 401) {
+          localStorage.removeItem('marto_access');
+        }
+
+        setIsAuthed(false);
         setMyHome(null);
       }
-    } catch {
-      setIsAuthed(false);
-      setMyHome(null);
-    }
+    })();
+
+    return () => {
+      alive = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -342,65 +369,27 @@ export default function PublicUserProfilePage({ params }: Props) {
     }
   }
 
-  if (loading) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-zinc-950 text-white">
-        Carregando perfil…
-      </main>
-    );
-  }
+  const profile = data?.user;
+  const safeName = normalizePublicText(profile?.name) || titleFromHandle(profile?.handle ?? '');
 
-  if (error || !data) {
-    return (
-      <main className="flex min-h-screen items-center justify-center bg-zinc-950 text-white">
-        Perfil não encontrado
-      </main>
-    );
-  }
-
-  const profile = data.user;
-  const safeName = profile.name || titleFromHandle(profile.handle);
-
-  const bioText = String(profile.bio ?? '').trim();
+  const bioText = normalizePublicText(profile?.bio);
   const hasBio = Boolean(bioText);
   const bioLong = bioText.length > 180;
   const bioVisible =
     !hasBio
-      ? '—'
+      ? 'Esse perfil ainda está estruturando sua apresentação pública no Marto.'
       : bioExpanded || !bioLong
         ? bioText
         : `${bioText.slice(0, 180).trim()}…`;
 
   const publicBadge = badgeFromPublic(data);
   const avatar = normalizeAvatarUrl(avatarSrc);
-  const provider = data.provider ?? null;
-  const home = data.home ?? null;
+  const provider = data?.provider ?? null;
+  const home = data?.home ?? null;
   const isMerchantProfile = home === 'merchant';
   const isProviderProfile = home === 'service_provider';
-  const isConsumerProfile = home === 'consumer';
-  const isFactoryProfile = home === 'factory';
-  const isRepresentativeProfile = home === 'representative';
   const providerRating = provider?.reputation?.averageRating ?? null;
   const providerReviewCount = provider?.reputation?.reviewCount ?? 0;
-  const providerKindLabel = !provider
-    ? 'Prestador Marto'
-    : provider.kind === 'TRANSPORTER'
-      ? 'Transportadora Marto'
-      : provider.specialtiesLabel?.trim() || 'Prestador Marto';
-
-  const providerBaseLabel = !provider
-    ? 'Base em definição'
-    : [String(provider.city ?? '').trim(), String(provider.uf ?? '').trim().toUpperCase()]
-        .filter(Boolean)
-        .join(' • ') || 'Base em definição';
-
-  const providerTrustLabel = !provider
-    ? 'Em estruturação'
-    : providerReviewCount >= 8 && (providerRating ?? 0) >= 4.7
-      ? 'Alta confiança'
-      : providerReviewCount >= 3
-        ? 'Confiança em evolução'
-        : 'Baseando reputação';
 
   const providerOperationLine = !provider
     ? 'Operação profissional em evolução no ecossistema.'
@@ -414,20 +403,202 @@ export default function PublicUserProfilePage({ params }: Props) {
           ? `Área atendida: ${provider.regionSummary.trim()}`
           : 'Atendimento profissional em evolução dentro do Marto.';
 
-  const providerPromiseLine = !provider
-    ? 'O Marto transforma histórico real em confiança pública.'
-    : provider.kind === 'TRANSPORTER'
-      ? (() => {
-          const pickup = provider.sla?.pickupMinutes;
-          const delivery = provider.sla?.deliveryMinutes;
+  const providerPublicMeta = useMemo(() => {
+    const specialty = provider?.specialties?.[0] ?? '';
+    const specialtyLabel =
+      specialty === 'assembly'
+        ? 'Montagem'
+        : specialty === 'installation'
+          ? 'Instalação'
+          : specialty === 'technical_visit'
+            ? 'Visita técnica'
+            : specialty === 'delivery'
+              ? 'Entregas'
+              : specialty === 'maintenance'
+                ? 'Manutenção'
+                : specialty === 'electrical'
+                  ? 'Elétrica'
+                  : specialty === 'hydraulic'
+                    ? 'Hidráulica'
+                    : specialty === 'carpentry'
+                      ? 'Marcenaria'
+                    : specialty === 'upholstery'
+                      ? 'Estofaria'
+                      : 'Prestação de serviço';
 
-          if (pickup || delivery) {
-            return `Promessa operacional baseada em SLA real${pickup ? ` • coleta ${pickup} min` : ''}${delivery ? ` • entrega ${delivery} min` : ''}.`;
-          }
+    const cityText = normalizePublicText(provider?.city);
+    const ufText = normalizePublicText(provider?.uf);
+    const areaText =
+      cityText && ufText ? `${cityText} / ${ufText}` : cityText || 'Base territorial em estruturação';
 
-          return 'Promessa operacional baseada em região, disponibilidade e execução real.';
-        })()
-      : 'Confiança construída por pontualidade, execução correta, transparência e avaliações reais.';
+    const kind = provider?.kind ?? 'GENERIC';
+
+    if (kind === 'TRANSPORTER' || specialty === 'delivery') {
+      return {
+        badge: 'Logística Marto',
+        title: 'Entrega logística no Marto',
+        desc:
+          'Este perfil reúne identidade pública, base logística, território de atuação e reputação construída por entregas reais dentro do ecossistema.',
+        baseLabel: 'Entrega logística',
+        areaLabel: areaText,
+        trustLabel: 'Histórico logístico em formação',
+        promise:
+          'No Marto, prazo respeitado, ocorrência registrada e entrega comprovada viram reputação pública e prioridade operacional.',
+      };
+    }
+
+    return {
+      badge: 'Prestador Marto',
+      title: specialty ? `${specialtyLabel} no Marto` : 'Prestador no Marto',
+      desc: specialty
+        ? `Este perfil reúne identidade pública, base profissional de ${specialtyLabel.toLowerCase()}, território de atuação e reputação construída por histórico real.`
+        : 'Este perfil reúne identidade pública, base profissional, território de atuação e reputação construída por histórico real.',
+      baseLabel: specialtyLabel,
+      areaLabel: areaText,
+      trustLabel: specialty ? 'Histórico profissional em formação' : 'Base profissional inicial',
+      promise:
+      'No Marto, execução limpa, checklist, confirmação e avaliação real viram reputação pública e crescimento profissional.',
+    };
+  }, [provider]);
+  const providerSpecialtySignals = useMemo(() => {
+    const specialty = provider?.specialties?.[0] ?? '';
+    const kind = provider?.kind ?? 'GENERIC';
+
+    if (kind === 'TRANSPORTER' || specialty === 'delivery') {
+      return {
+        eyebrow: 'Leitura logística',
+        operationLabel: 'Promessa operacional',
+        operationDesc:
+          'Rota, prazo, confirmação e ocorrência registrada começam a formar reputação logística pública no Marto.',
+        executionLabel: 'Execução em campo',
+        executionDesc:
+          'A confiança cresce quando a entrega é concluída com registro limpo, previsibilidade e consistência real.',
+        trustDesc:
+          'No Marto, a reputação logística nasce de janela cumprida, prova de execução e histórico verificável.',
+        growthLine:
+          'Essa base cresce com entregas reais, recorrência e disciplina operacional.',
+      };
+    }
+
+    switch (specialty) {
+      case 'carpentry':
+        return {
+          eyebrow: 'Leitura profissional',
+          operationLabel: 'Execução e acabamento',
+          operationDesc:
+            'Marcenaria no Marto cresce com ajuste fino, acabamento, montagem limpa e percepção real de qualidade.',
+          executionLabel: 'Confiança em campo',
+          executionDesc:
+            'A reputação aparece quando a execução mostra cuidado, consistência e resultado percebido no ambiente real.',
+          trustDesc:
+            'No Marto, marcenaria bem executada não vira só entrega. Vira histórico profissional visível.',
+          growthLine:
+            'Essa base cresce com serviços concluídos, avaliações e sinais reais de qualidade.',
+        };
+
+      case 'assembly':
+        return {
+          eyebrow: 'Leitura profissional',
+          operationLabel: 'Montagem real',
+          operationDesc:
+            'Montagem no Marto cresce com etapa concluída, estabilidade, acabamento e confirmação limpa do serviço.',
+          executionLabel: 'Consistência operacional',
+          executionDesc:
+            'Quanto mais a operação sustenta montagem limpa e previsível, mais força pública ela ganha.',
+          trustDesc:
+            'No Marto, montar bem vira reputação quando a execução começa a gerar histórico verificável.',
+          growthLine:
+            'Essa base cresce com execução recorrente, confirmação e reputação acumulada.',
+        };
+
+      case 'installation':
+        return {
+          eyebrow: 'Leitura técnica',
+          operationLabel: 'Precisão e validação',
+          operationDesc:
+            'Instalação no Marto cresce com ajuste técnico, validação no local e resultado final consistente.',
+          executionLabel: 'Confiabilidade técnica',
+          executionDesc:
+            'A reputação aumenta quando a instalação é concluída com clareza, precisão e confirmação real.',
+          trustDesc:
+            'No Marto, instalação bem feita vira confiança pública quando a técnica começa a aparecer no histórico.',
+          growthLine:
+            'Essa base cresce com validação, recorrência e leitura técnica real.',
+        };
+
+      case 'technical_visit':
+        return {
+          eyebrow: 'Leitura técnica',
+          operationLabel: 'Diagnóstico e direção',
+          operationDesc:
+            'Visita técnica no Marto cresce com leitura clara, direcionamento correto e postura profissional verificável.',
+          executionLabel: 'Autoridade profissional',
+          executionDesc:
+            'A confiança aparece quando o diagnóstico deixa rastro de clareza, precisão e utilidade real.',
+          trustDesc:
+            'No Marto, visita técnica bem feita vira reputação quando a leitura profissional se torna histórica.',
+          growthLine:
+            'Essa base cresce com diagnósticos consistentes, vínculo real e recorrência de confiança.',
+        };
+
+      case 'maintenance':
+        return {
+          eyebrow: 'Leitura profissional',
+          operationLabel: 'Correção e estabilidade',
+          operationDesc:
+            'Manutenção no Marto cresce com resolução consistente, retorno reduzido e percepção real de estabilidade.',
+          executionLabel: 'Confiabilidade operacional',
+          executionDesc:
+            'A reputação evolui quando a operação mostra correção limpa, constância e bom fechamento do serviço.',
+          trustDesc:
+            'No Marto, manutenção bem resolvida vira reputação quando o histórico começa a mostrar consistência real.',
+          growthLine:
+            'Essa base cresce com resolução, repetição saudável e confiança pública.',
+        };
+
+      default:
+        return {
+          eyebrow: 'Leitura profissional',
+          operationLabel: 'Base operacional',
+          operationDesc:
+            'Esse papel cresce no Marto quando execução, confirmação e histórico começam a formar uma leitura pública coerente.',
+          executionLabel: 'Confiança em evolução',
+          executionDesc:
+            'A reputação aparece quando a operação deixa de ser promessa e começa a gerar histórico verificável.',
+          trustDesc:
+            'No Marto, a base profissional cresce quando o trabalho real começa a ser percebido publicamente.',
+          growthLine:
+            'Essa base cresce com execução, consistência e histórico real.',
+        };
+    }
+  }, [provider]);
+  const heroPrimaryBadge = isProviderProfile
+    ? `Prestador • ${providerPublicMeta.baseLabel}`
+    : publicBadge;
+
+  const heroSecondaryBadge = isProviderProfile
+    ? 'Base profissional pública'
+    : 'Porque reputação importa';
+
+  const heroRoleLine = isProviderProfile
+    ? 'Prestador ativo no ecossistema Marto'
+    : 'Identidade pública do ecossistema Marto';
+
+  if (loading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-zinc-950 text-white">
+        Carregando perfil…
+      </main>
+    );
+  }
+
+  if (error || !data || !profile) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-zinc-950 text-white">
+        Perfil não encontrado
+      </main>
+    );
+  }
 
   return (
     <main className="relative min-h-screen overflow-x-hidden bg-zinc-950 text-white">
@@ -515,43 +686,53 @@ export default function PublicUserProfilePage({ params }: Props) {
               />
             </div>
 
-            <div className="relative flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+              <div className="relative flex flex-col gap-8 lg:flex-row lg:items-start lg:justify-between">
               {/* Identidade */}
-              <div className="flex items-start gap-4">
-                <div className="grid h-16 w-16 place-items-center overflow-hidden rounded-3xl bg-white/10 ring-1 ring-white/15">
-                  {avatar ? (
-                    <MartoImage
-                      src={avatar}
-                      alt={safeName}
-                      size={64}
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    <MartoAvatarPlaceholder alt="Marto" size={64} />
-                  )}
-                </div>
-
-                <div>
-                  <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
-                    {publicBadge}
-                    <span className="opacity-60">•</span>
-                    Porque reputação importa
+                <div className="flex items-start gap-5">
+                  <div className="grid h-18 w-18 place-items-center overflow-hidden rounded-[1.75rem] bg-white/10 ring-1 ring-white/15 shadow-[0_18px_40px_rgba(0,0,0,0.28)]">
+                    {avatar ? (
+                      <MartoImage
+                        src={avatar}
+                        alt={safeName}
+                        size={72}
+                        className="h-full w-full object-cover"
+                      />
+                    ) : (
+                      <MartoAvatarPlaceholder alt="Marto" size={72} />
+                    )}
                   </div>
 
-                  <div className="mt-3 text-2xl font-bold tracking-tight">
-                    {safeName}
-                  </div>
+                  <div className="max-w-2xl">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-100 shadow-[0_8px_24px_rgba(16,185,129,0.12)]">
+                        {heroPrimaryBadge}
+                      </span>
 
-                  <div className="mt-1 flex flex-wrap items-center gap-2 text-sm text-white/70">
-                    <span>@{profile.handle}</span>
+                      <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/65">
+                        {heroSecondaryBadge}
+                      </span>
+                    </div>
 
-                    <button
-                      type="button"
-                      onClick={() => void copyPublicLink()}
-                      className="rounded-lg border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80 hover:bg-white/10"
-                    >
-                      Copiar link
-                    </button>
+                    <div className="mt-4 text-3xl font-semibold tracking-tight text-white sm:text-4xl">
+                      {safeName}
+                    </div>
+
+                    <div className="mt-2 text-sm font-medium text-white/62">
+                      {heroRoleLine}
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-2 text-sm text-white/70">
+                      <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-medium text-white/78">
+                        @{profile.handle}
+                      </span>
+
+                      <button
+                        type="button"
+                        onClick={() => void copyPublicLink()}
+                        className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80 hover:bg-white/10"
+                      >
+                        Copiar link
+                      </button>
 
                     {copyMsg ? (
                       <span className="text-xs text-white/60">{copyMsg}</span>
@@ -559,10 +740,10 @@ export default function PublicUserProfilePage({ params }: Props) {
                   </div>
 
                   {/* ✅ BIO expandível */}
-                  <div className="mt-3 max-w-xl">
-                    <p className="text-sm leading-relaxed text-white/75">
-                      {bioVisible}
-                    </p>
+                    <div className="mt-4 max-w-xl">
+                      <p className="text-[15px] leading-7 text-white/75">
+                        {bioVisible}
+                      </p>
 
                     {hasBio && bioLong ? (
                       <button
@@ -575,104 +756,17 @@ export default function PublicUserProfilePage({ params }: Props) {
                     ) : null}
                   </div>
 
-                  <div className="mt-4 flex flex-wrap gap-2 text-xs text-white/70">
-                    <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1">
-                      histórico &gt; post
+                    <div className="mt-5 flex flex-wrap gap-2 text-xs text-white/70">
+                      <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1">
+                        identidade pública universal
                     </span>
                     <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1">
-                      verificação
+                      reputação baseada em histórico
                     </span>
                     <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1">
-                      relações reais
+                      blocos por papel no ecossistema
                     </span>
                   </div>
-
-                  {isProviderProfile && provider ? (
-                    <div className="mt-6 overflow-hidden rounded-[2rem] border border-white/12 bg-white/[0.055] shadow-[0_0_0_1px_rgba(255,255,255,0.03)]">
-                      <div className="grid gap-0 lg:grid-cols-[1.2fr_0.8fr]">
-                        <div className="p-5 sm:p-6">
-                          <div className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/62">
-                            Pulso profissional
-                          </div>
-
-                          <div className="mt-4 text-2xl font-semibold tracking-tight text-white">
-                            {providerKindLabel}
-                          </div>
-
-                          <p className="mt-3 max-w-2xl text-sm leading-7 text-white/74">
-                            {providerPromiseLine}
-                          </p>
-
-                          <div className="mt-5 grid gap-3 sm:grid-cols-3">
-                            <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-                              <div className="text-[11px] uppercase tracking-[0.14em] text-white/50">
-                                Especialidade
-                              </div>
-                              <div className="mt-2 text-sm font-semibold text-white">
-                                {providerKindLabel}
-                              </div>
-                            </div>
-
-                            <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-                              <div className="text-[11px] uppercase tracking-[0.14em] text-white/50">
-                                Base operacional
-                              </div>
-                              <div className="mt-2 text-sm font-semibold text-white">
-                                {providerBaseLabel}
-                              </div>
-                            </div>
-
-                            <div className="rounded-2xl border border-white/10 bg-black/25 p-4">
-                              <div className="text-[11px] uppercase tracking-[0.14em] text-white/50">
-                                Confiança
-                              </div>
-                              <div className="mt-2 text-sm font-semibold text-white">
-                                {providerTrustLabel}
-                              </div>
-                            </div>
-                          </div>
-
-                          <div className="mt-5 rounded-2xl border border-white/10 bg-black/25 p-4">
-                            <div className="text-[11px] uppercase tracking-[0.14em] text-white/50">
-                              Leitura do Marto
-                            </div>
-                            <div className="mt-2 text-sm leading-7 text-white/74">
-                              {providerOperationLine}
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="border-t border-white/8 bg-black/25 p-5 lg:border-l lg:border-t-0 sm:p-6">
-                          <div className="text-[11px] uppercase tracking-[0.14em] text-white/50">
-                            Reputação pública
-                          </div>
-
-                          <div className="mt-4 rounded-2xl border border-white/10 bg-white/5 p-4">
-                            <div className="text-xs text-white/55">Avaliações verificadas</div>
-                            <div className="mt-1 text-3xl font-semibold text-white">
-                              {providerReviewCount}
-                            </div>
-                          </div>
-
-                          <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-4">
-                            <div className="text-xs text-white/55">Nota média</div>
-                            <div className="mt-1 text-3xl font-semibold text-white">
-                              {providerReviewCount > 0 ? (providerRating ?? '—') : '—'}
-                            </div>
-                          </div>
-
-                          <div className="mt-3 rounded-2xl border border-white/10 bg-white/5 p-4">
-                            <div className="text-xs text-white/55">Leitura atual</div>
-                            <div className="mt-1 text-sm font-semibold text-white">
-                              {providerReviewCount > 0
-                                ? 'Histórico público já começou a ganhar densidade.'
-                                : 'A reputação pública começa a aparecer conforme serviços reais são concluídos e avaliados.'}
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  ) : null}
 
                   {isMerchantProfile ? (
                     <div className="mt-5 grid gap-3 sm:grid-cols-3">
@@ -702,7 +796,7 @@ export default function PublicUserProfilePage({ params }: Props) {
               </div>
 
               {/* Histórico no Marto (leve, sem KPI vazio) */}
-              <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-white/5 p-5 ring-1 ring-white/10">
+              <div className="w-full max-w-lg rounded-3xl border border-white/10 bg-white/[0.06] p-5 ring-1 ring-white/10 shadow-[0_20px_40px_rgba(0,0,0,0.22)]">
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <div className="text-sm font-semibold text-white">
@@ -719,15 +813,15 @@ export default function PublicUserProfilePage({ params }: Props) {
                 </div>
 
                 <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
-                  {isProviderProfile && provider ? (
+                  {isProviderProfile ? (
                     <>
                       <div className="text-sm font-semibold text-white">
                         Histórico profissional público
                       </div>
                       <div className="mt-2 text-sm text-white/70">
-                        No Marto, reputação profissional não nasce de autopromoção. Ela aparece
-                        quando atendimento, entrega, avaliação e vínculo real começam a gerar
-                        histórico verificável.
+                        No Marto, reputação profissional não nasce de autopromoção.
+                        Ela cresce quando serviço concluído, checklist, avaliação e vínculo real
+                        começam a gerar histórico verificável.
                       </div>
                     </>
                   ) : events.length > 0 ? (
@@ -759,6 +853,148 @@ export default function PublicUserProfilePage({ params }: Props) {
                     Consumidor continua leve. */}
               </div>
             </div>
+
+            {isProviderProfile ? (
+              <div className="relative mt-10 overflow-hidden rounded-[2.25rem] border border-emerald-400/20 bg-gradient-to-br from-emerald-500/14 via-white/[0.05] to-white/[0.02] shadow-[0_0_0_1px_rgba(255,255,255,0.03),0_26px_90px_rgba(0,0,0,0.34)]">
+                <div className="pointer-events-none absolute inset-0 opacity-55">
+                  <div
+                    className="absolute inset-0"
+                    style={{
+                      backgroundImage:
+                        'radial-gradient(980px 380px at 8% 0%, rgba(16,185,129,0.18), transparent 46%), radial-gradient(740px 320px at 100% 0%, rgba(255,255,255,0.09), transparent 36%)',
+                    }}
+                  />
+                </div>
+
+                <div className="relative grid gap-0 lg:grid-cols-[1.2fr_0.8fr]">
+                  <div className="p-7 sm:p-8">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="inline-flex items-center rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-emerald-200">
+                        {providerPublicMeta.badge}
+                      </span>
+
+                      <span className="inline-flex items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.16em] text-white/65">
+                        Perfil público profissional
+                      </span>
+                    </div>
+
+                    <h3 className="mt-5 text-3xl font-semibold tracking-tight text-white sm:text-[2.15rem]">
+                      {providerPublicMeta.title}
+                    </h3>
+
+                    <div className="mt-3">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-emerald-200/80">
+                        {providerSpecialtySignals.eyebrow}
+                      </div>
+
+                      <p className="mt-2 max-w-3xl text-[15px] leading-7 text-white/74">
+                        {providerPublicMeta.desc}
+                      </p>
+                    </div>
+
+                    <div className="mt-6 grid gap-3 sm:grid-cols-3">
+                      <div className="rounded-[1.5rem] border border-white/10 bg-black/28 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
+                          Base profissional
+                        </div>
+                        <div className="mt-2 text-lg font-semibold text-white">
+                          {providerPublicMeta.baseLabel}
+                        </div>
+                        <div className="mt-1 text-xs leading-5 text-white/60">
+                          {providerSpecialtySignals.operationDesc}
+                        </div>
+                      </div>
+
+                      <div className="rounded-[1.5rem] border border-white/10 bg-black/28 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
+                          Base territorial
+                        </div>
+                        <div className="mt-2 text-lg font-semibold text-white">
+                          {providerPublicMeta.areaLabel}
+                        </div>
+                        <div className="mt-1 text-xs leading-5 text-white/60">
+                          Essa base territorial ajuda o Marto a ligar execução real com presença profissional pública.
+                        </div>
+                      </div>
+
+                      <div className="rounded-[1.5rem] border border-white/10 bg-black/28 p-5 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
+                          Confiança Marto
+                        </div>
+                        <div className="mt-2 text-lg font-semibold text-white">
+                          {providerPublicMeta.trustLabel}
+                        </div>
+                        <div className="mt-1 text-xs leading-5 text-white/60">
+                          {providerSpecialtySignals.trustDesc}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 rounded-[1.5rem] border border-white/10 bg-black/32 px-5 py-4 text-sm leading-6 text-white/70">
+                      <span className="font-semibold text-white">{providerPublicMeta.promise}</span>{' '}
+                      {providerSpecialtySignals.growthLine}
+                    </div>
+
+                    <div className="mt-5 flex flex-wrap gap-3">
+                      <Link
+                        href="/dash/provider/profile"
+                        className="inline-flex items-center justify-center rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-black transition hover:opacity-90"
+                      >
+                        Refinar base profissional
+                      </Link>
+
+                      <Link
+                        href="/me"
+                        className="inline-flex items-center justify-center rounded-2xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
+                      >
+                        Editar identidade pública
+                      </Link>
+                    </div>
+                  </div>
+
+                  <div className="border-t border-white/8 bg-black/28 p-7 lg:border-l lg:border-t-0 sm:p-8">
+                    <div className="text-[11px] uppercase tracking-[0.14em] text-white/50">
+                      Leitura profissional pública
+                    </div>
+
+                    <div className="mt-4 grid gap-3">
+                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                        <div className="text-xs text-white/55">Avaliações verificadas</div>
+                        <div className="mt-1 text-3xl font-semibold text-white">
+                          {providerReviewCount}
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                        <div className="text-xs text-white/55">Nota média</div>
+                        <div className="mt-1 text-3xl font-semibold text-white">
+                          {providerReviewCount > 0 ? (providerRating ?? '—') : '—'}
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                        <div className="text-xs text-white/55">{providerSpecialtySignals.operationLabel}</div>
+                        <div className="mt-1 text-sm font-semibold text-white">
+                          {providerOperationLine}
+                        </div>
+                        <div className="mt-2 text-xs leading-5 text-white/60">
+                          {providerSpecialtySignals.executionDesc}
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-white/5 p-4">
+                        <div className="text-xs text-white/55">{providerSpecialtySignals.executionLabel}</div>
+                        <div className="mt-1 text-sm font-semibold text-white">
+                          {providerReviewCount > 0
+                            ? 'Seu histórico profissional já começou a ganhar densidade pública.'
+                            : providerSpecialtySignals.growthLine}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
 
           {/* Conteúdo */}
@@ -842,56 +1078,96 @@ export default function PublicUserProfilePage({ params }: Props) {
               ))}
 
               {visibleEvents.length === 0 ? (
-                <div className="rounded-3xl border border-white/10 bg-white/5 p-6">
-                  <div className="text-sm font-semibold text-white">
-                    Ainda sem registros públicos
+                <div className="overflow-hidden rounded-[2rem] border border-white/10 bg-white/5 shadow-[0_20px_50px_rgba(0,0,0,0.18)]">
+                  <div className="border-b border-white/10 px-6 py-5">
+                    <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+                      <div className="max-w-3xl">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/50">
+                          {isProviderProfile ? 'Pipeline profissional público' : 'Registro público'}
+                        </div>
+                        <div className="mt-2 text-lg font-semibold text-white">
+                          {isProviderProfile ? 'Ainda sem histórico profissional público suficiente' : 'Ainda sem registros públicos'}
+                        </div>
+                        <div className="mt-2 text-sm leading-6 text-white/70">
+                          {isProviderProfile
+                            ? 'No Marto, esse espaço cresce com serviços concluídos, checklist, avaliação e consistência real.'
+                            : 'No Marto, o perfil público é consequência do que aconteceu, não um feed vazio.'}
+                        </div>
+                      </div>
+
+                      <div className="inline-flex w-fit items-center rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/65">
+                        {isProviderProfile ? 'Base em formação' : 'Aguardando eventos verificados'}
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="mt-2 text-sm text-white/70">
-                    No Marto, o perfil público é consequência do que aconteceu —
-                    não um feed.
-                  </div>
+                  <div className="grid gap-0 lg:grid-cols-[1.1fr_0.9fr]">
+                    <div className="px-6 py-6">
+                      <div className="rounded-[1.5rem] border border-white/10 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
+                        {isProviderProfile
+                          ? 'Quando sua operação começar a gerar execuções verificadas, o perfil público passa a mostrar densidade profissional de verdade.'
+                          : 'Seus pedidos podem existir, mas só viram “registro público” quando o Marto tiver os eventos verificados (compra, entrega, avaliação, serviço).'}
+                      </div>
 
-                  <div className="mt-4 rounded-2xl border border-white/10 bg-black/25 p-4 text-sm text-white/75 ring-1 ring-white/5">
-                    Seus pedidos podem existir, mas só viram “registro público”
-                    quando o Marto tiver os eventos verificados (compra, entrega,
-                    avaliação, serviço).
-                  </div>
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/65">
+                          {isProviderProfile ? 'Serviços concluídos' : 'Compras verificadas'}
+                        </span>
+                        <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/65">
+                          {isProviderProfile ? 'Checklist e avaliação' : 'Entrega e avaliação'}
+                        </span>
+                        <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs text-white/65">
+                          {isProviderProfile ? 'Consistência operacional' : 'Histórico real do Marto'}
+                        </span>
+                      </div>
+                    </div>
 
-                  <div className="mt-4 flex flex-wrap gap-2">
+                    <div className="border-t border-white/10 bg-black/20 px-6 py-6 lg:border-l lg:border-t-0">
+                      <div className="text-xs font-semibold uppercase tracking-[0.16em] text-white/50">
+                        Próximo movimento
+                      </div>
+                      <div className="mt-2 text-sm leading-6 text-white/70">
+                        {isProviderProfile
+                          ? 'Fortaleça sua base profissional, comece a operar e deixe o histórico público nascer de execução verificável.'
+                          : 'Complete sua jornada no ecossistema para transformar ações reais em leitura pública.'}
+                      </div>
+
+                      <div className="mt-5 flex flex-wrap gap-2">
                     {isAuthed ? (
                       <>
                         <Link
-                          href="/dash/consumer/orders"
-                          className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90"
+                          href={dashFromHome(myHome)}
+                          className="rounded-2xl bg-white px-4 py-2.5 text-sm font-semibold text-black hover:opacity-90"
                         >
-                          Ver meus pedidos
+                          Ir para minha central
                         </Link>
 
                         <Link
-                          href="/me"
-                          className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                          href={isProviderProfile ? '/dash/provider/profile' : '/me'}
+                          className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/10"
                         >
-                          Editar no meu perfil
+                          {isProviderProfile ? 'Refinar base profissional' : 'Editar no meu perfil'}
                         </Link>
                       </>
                     ) : (
                       <>
                         <Link
                           href="/login"
-                          className="rounded-2xl bg-white px-4 py-2 text-sm font-semibold text-black hover:opacity-90"
+                          className="rounded-2xl bg-white px-4 py-2.5 text-sm font-semibold text-black hover:opacity-90"
                         >
                           Criar minha conta Marto
                         </Link>
 
                         <Link
                           href="/login"
-                          className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                          className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-white hover:bg-white/10"
                         >
                           Entrar
                         </Link>
                       </>
                     )}
+                      </div>
+                    </div>
                   </div>
                 </div>
               ) : null}

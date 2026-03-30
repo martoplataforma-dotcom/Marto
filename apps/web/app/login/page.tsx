@@ -8,6 +8,13 @@ import { login } from '../../src/lib/auth';
 import { fetchJSON, type ApiError } from '../../src/lib/api';
 
 type MeResponse = {
+  activeRole?:
+    | 'CONSUMER'
+    | 'MERCHANT'
+    | 'SERVICE_PROVIDER'
+    | 'REPRESENTATIVE'
+    | 'FACTORY'
+    | 'CARRIER';
   home?:
     | 'consumer'
     | 'merchant'
@@ -21,6 +28,23 @@ type MeResponse = {
 type ServiceProviderMeResponse = {
   kind?: 'GENERIC' | 'TRANSPORTER' | null;
 };
+
+function homeFromActiveRole(
+  activeRole?: MeResponse['activeRole'] | null,
+): NonNullable<MeResponse['home']> {
+  switch (activeRole) {
+    case 'MERCHANT':
+      return 'merchant';
+    case 'SERVICE_PROVIDER':
+      return 'service_provider';
+    case 'REPRESENTATIVE':
+      return 'representative';
+    case 'FACTORY':
+      return 'factory';
+    default:
+      return 'consumer';
+  }
+}
 
 function dashFromHome(home?: MeResponse['home'] | null) {
   switch (home) {
@@ -76,7 +100,9 @@ export default function LoginPage() {
         return;
       }
 
-      const home = me?.home ?? 'consumer';
+      const home = me?.activeRole
+        ? homeFromActiveRole(me.activeRole)
+        : me?.home ?? 'consumer';
       const redirectTo = String(me?.redirectTo ?? '').trim();
 
       localStorage.setItem('marto_home', home);

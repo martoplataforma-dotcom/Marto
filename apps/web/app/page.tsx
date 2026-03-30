@@ -8,6 +8,13 @@ import { useRouter } from 'next/navigation';
 type MeResponse = {
   roles?: unknown;
   needsRoleChoice?: boolean;
+  activeRole?:
+    | 'CONSUMER'
+    | 'MERCHANT'
+    | 'SERVICE_PROVIDER'
+    | 'REPRESENTATIVE'
+    | 'FACTORY'
+    | 'CARRIER';
   home?:
     | 'consumer'
     | 'merchant'
@@ -15,6 +22,23 @@ type MeResponse = {
     | 'representative'
     | 'factory';
 };
+
+function homeFromActiveRole(
+  activeRole?: MeResponse['activeRole'] | null,
+): MeResponse['home'] {
+  switch (activeRole) {
+    case 'MERCHANT':
+      return 'merchant';
+    case 'SERVICE_PROVIDER':
+      return 'service_provider';
+    case 'REPRESENTATIVE':
+      return 'representative';
+    case 'FACTORY':
+      return 'factory';
+    default:
+      return 'consumer';
+  }
+}
 
 function getToken() {
   if (typeof window === 'undefined') return null;
@@ -191,18 +215,21 @@ export default function Home() {
         }
 
         const me = (await res.json()) as MeResponse;
-        const needsRoleChoice = me.needsRoleChoice === true || !me.home;
+        const resolvedHome = me.activeRole
+          ? homeFromActiveRole(me.activeRole)
+          : me.home;
+        const needsRoleChoice = me.needsRoleChoice === true || !resolvedHome;
 
         if (needsRoleChoice) {
           router.replace('/choose-role');
           return;
         }
 
-        if (me.home === 'factory') router.replace('/dash/factory');
-        else if (me.home === 'merchant') router.replace('/dash/merchant');
-        else if (me.home === 'service_provider')
+        if (resolvedHome === 'factory') router.replace('/dash/factory');
+        else if (resolvedHome === 'merchant') router.replace('/dash/merchant');
+        else if (resolvedHome === 'service_provider')
           router.replace('/dash/provider/services');
-        else if (me.home === 'representative')
+        else if (resolvedHome === 'representative')
           router.replace('/dash/representative');
         else router.replace('/dash/consumer');
       } catch {

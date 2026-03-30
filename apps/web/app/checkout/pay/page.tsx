@@ -23,7 +23,14 @@ type MartoPayResponse = {
   idempotent?: boolean;
   stage?: MartoPayStage;
   message?: string;
-  order: { reservedUntil?: Date | string | null } & Record<string, unknown>;
+  order: {
+    reservedUntil?: Date | string | null;
+    selectedShippingMode?: ShippingMode | null;
+    destinationZipCode?: string | null;
+    originZipCodeSnapshot?: string | null;
+    estimatedDays?: number | null;
+    shippingPriceCents?: number | null;
+  } & Record<string, unknown>;
   payment?: { status?: string } | null;
   payout?: { status?: string } | null;
   pixCharge?:
@@ -34,6 +41,67 @@ type MartoPayResponse = {
       }
     | null;
 };
+
+type ShippingMode =
+  | 'CORREIOS'
+  | 'TRANSPORTADORA'
+  | 'LOCAL_DELIVERY'
+  | 'PICKUP';
+
+type ShippingSize = 'SMALL' | 'MEDIUM' | 'LARGE';
+
+type ShippingOptionsResponse = {
+  analysis: {
+    shippingSize: ShippingSize;
+    canUseCorreios: boolean;
+    shouldPrioritizeTransportadora: boolean;
+    recommendedShippingModes: ShippingMode[];
+    reason: string;
+  };
+  availableShippingModes: ShippingMode[];
+  blockedModes: Array<{
+    mode: ShippingMode;
+    reason: string;
+  }>;
+  suggestedPrimaryShippingMode: ShippingMode | null;
+};
+
+function getShippingLabel(mode: ShippingMode): string {
+  if (mode === 'CORREIOS') return 'Correios';
+  if (mode === 'TRANSPORTADORA') return 'Transportadora';
+  if (mode === 'LOCAL_DELIVERY') return 'Entrega local';
+  if (mode === 'PICKUP') return 'Retirada';
+  return mode;
+}
+
+function getShippingEstimatedDays(mode: ShippingMode): number {
+  if (mode === 'CORREIOS') return 5;
+  if (mode === 'TRANSPORTADORA') return 7;
+  if (mode === 'LOCAL_DELIVERY') return 1;
+  if (mode === 'PICKUP') return 0;
+  return 0;
+}
+
+function getShippingPriceCents(mode: ShippingMode): number {
+  if (mode === 'CORREIOS') return 2500;
+  if (mode === 'TRANSPORTADORA') return 4500;
+  if (mode === 'LOCAL_DELIVERY') return 1500;
+  if (mode === 'PICKUP') return 0;
+  return 0;
+}
+
+function formatShippingPriceBRL(priceCents: number): string {
+  return new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+  }).format(priceCents / 100);
+}
+
+function formatShippingEta(days: number): string {
+  if (days === 0) return 'Retirada imediata';
+  if (days === 1) return '1 dia';
+  return `${days} dias`;
+}
 
 function getErrorMessage(error: unknown, fallback: string) {
   if (error instanceof Error && error.message) return error.message;
@@ -66,6 +134,13 @@ export default function CheckoutPayPage() {
   const [loading, setLoading] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [destinationZipCode, setDestinationZipCode] = useState('');
+  const [selectedShippingMode, setSelectedShippingMode] =
+    useState<ShippingMode | null>(null);
+  const [shippingOptions, setShippingOptions] =
+    useState<ShippingOptionsResponse | null>(null);
+  const [shippingOptionsLoading, setShippingOptionsLoading] = useState(false);
+  const [shippingOptionsError, setShippingOptionsError] = useState<string | null>(null);
 
   const [orderId, setOrderId] = useState<string | null>(orderIdFromQuery);
   const [pay, setPay] = useState<MartoPayResponse | null>(null);
@@ -82,6 +157,16 @@ export default function CheckoutPayPage() {
   async function createOrder(): Promise<string> {
     if (orderId) return orderId;
 
+    if (!destinationZipCode.trim()) {
+      setErr('Informe o CEP de destino.');
+      return Promise.reject(new Error('Informe o CEP de destino.'));
+    }
+
+    if (!selectedShippingMode) {
+      setErr('Escolha um modo de frete.');
+      return Promise.reject(new Error('Escolha um modo de frete.'));
+    }
+
     const created = await fetchJSON<{ id: string }>('/orders', {
       method: 'POST',
       headers: {
@@ -90,6 +175,8 @@ export default function CheckoutPayPage() {
       },
       body: JSON.stringify({
         merchantId,
+        destinationZipCode: destinationZipCode.trim() || undefined,
+        selectedShippingMode: selectedShippingMode ?? undefined,
         items: [
           {
             productId,
@@ -104,6 +191,27 @@ export default function CheckoutPayPage() {
     if (!id) throw new Error('Falha ao criar pedido.');
     setOrderId(id);
     return id;
+  }
+
+  async function loadShippingOptions(productId: string) {
+    setShippingOptionsLoading(true);
+    setShippingOptionsError(null);
+
+    try {
+      const res = await fetchJSON<ShippingOptionsResponse>(
+        `/public/products/${productId}/shipping-options`,
+      );
+      setShippingOptions(res);
+      setSelectedShippingMode(res.suggestedPrimaryShippingMode ?? null);
+    } catch (err) {
+      setShippingOptions(null);
+      setSelectedShippingMode(null);
+      setShippingOptionsError(
+        err instanceof Error ? err.message : 'Falha ao carregar opções de frete.',
+      );
+    } finally {
+      setShippingOptionsLoading(false);
+    }
   }
 
   async function startPay() {
@@ -176,8 +284,25 @@ export default function CheckoutPayPage() {
   }
 
   useEffect(() => {
+    if (!productId) return;
+    void loadShippingOptions(productId);
+  }, [productId]);
+
+  useEffect(() => {
     let alive = true;
     let t: ReturnType<typeof setTimeout> | null = null;
+
+    if (
+      !orderIdFromQuery &&
+      !orderId &&
+      (!destinationZipCode.trim() || !selectedShippingMode)
+    ) {
+      setLoading(false);
+      return () => {
+        alive = false;
+        if (t) clearTimeout(t);
+      };
+    }
 
     async function boot() {
       try {
@@ -228,7 +353,7 @@ export default function CheckoutPayPage() {
       if (t) clearTimeout(t);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [destinationZipCode, orderId, orderIdFromQuery, selectedShippingMode]);
 
   useEffect(() => {
     const untilRaw = pay?.order?.reservedUntil;
@@ -267,6 +392,15 @@ export default function CheckoutPayPage() {
   const stage = pay?.stage;
   const pix = pay?.pixCharge;
   const brCode = String(pix?.brCode ?? '').trim();
+  const selectedShippingPriceCents = selectedShippingMode
+    ? getShippingPriceCents(selectedShippingMode)
+    : 0;
+  const selectedShippingEstimatedDays = selectedShippingMode
+    ? getShippingEstimatedDays(selectedShippingMode)
+    : null;
+  const unitPriceCents = Math.round(Number(unitPriceStr) * 100);
+  const itemsSubtotalCents = unitPriceCents * qty;
+  const orderTotalCents = itemsSubtotalCents + selectedShippingPriceCents;
 
   const isCaptured =
     stage === 'captured' ||
@@ -363,6 +497,184 @@ export default function CheckoutPayPage() {
               ) : null}
 
               <div className="mt-5">
+                <div className="rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                  <div>
+                    <p className="text-sm font-semibold text-white">Entrega no Marto</p>
+                    <p className="text-xs text-white/70">
+                      Informe o destino e escolha um modo de envio disponível.
+                    </p>
+                  </div>
+
+                  <div className="mt-4">
+                    <label className="mb-2 block text-xs uppercase tracking-[0.18em] text-white/55">
+                      CEP de destino
+                    </label>
+                    <input
+                      value={destinationZipCode}
+                      onChange={(e) => setDestinationZipCode(e.target.value)}
+                      placeholder="00000-000"
+                      className="w-full rounded-xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white outline-none"
+                    />
+                  </div>
+
+                  {shippingOptionsLoading ? (
+                    <p className="mt-4 text-sm text-white/70">Carregando opções de frete...</p>
+                  ) : shippingOptionsError ? (
+                    <p className="mt-4 text-sm text-rose-300">{shippingOptionsError}</p>
+                  ) : shippingOptions ? (
+                    <div className="mt-4 space-y-4">
+                      <div className="rounded-xl border border-white/10 bg-black/40 p-3">
+                        <p className="text-xs uppercase tracking-[0.18em] text-white/55">
+                          Modo principal sugerido
+                        </p>
+                        <p className="mt-1 text-sm font-medium text-white">
+                          {shippingOptions.suggestedPrimaryShippingMode ?? '—'}
+                        </p>
+                      </div>
+
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.18em] text-white/55">
+                          Escolha o frete
+                        </p>
+
+                        <div className="mt-2 space-y-2">
+                          {shippingOptions.availableShippingModes.map((mode) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() => setSelectedShippingMode(mode)}
+                              className={`w-full rounded-xl border px-3 py-3 text-left text-sm transition ${
+                                selectedShippingMode === mode
+                                  ? 'border-white/30 bg-white/10 text-white'
+                                  : 'border-white/10 bg-black/40 text-white/80 hover:border-white/20 hover:bg-white/5'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-3">
+                                <div>
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-medium">
+                                      {getShippingLabel(mode)}
+                                    </span>
+                                    {shippingOptions.suggestedPrimaryShippingMode === mode ? (
+                                      <span className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-2 py-0.5 text-[11px] text-emerald-200">
+                                        sugerido
+                                      </span>
+                                    ) : null}
+                                  </div>
+
+                                  <p className="mt-1 text-xs text-white/65">
+                                    Prazo estimado:{' '}
+                                    {formatShippingEta(getShippingEstimatedDays(mode))}
+                                  </p>
+                                </div>
+
+                                <div className="text-right">
+                                  <p className="text-sm font-semibold text-white">
+                                    {formatShippingPriceBRL(getShippingPriceCents(mode))}
+                                  </p>
+                                </div>
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="mt-4 text-sm text-white/65">Sem opções de frete carregadas.</p>
+                  )}
+                </div>
+
+                <div className="rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                  <p className="text-sm font-semibold text-white">Resumo logístico</p>
+
+                  <div className="mt-4 space-y-3 text-sm">
+                    <div className="flex items-center justify-between gap-3 text-white/80">
+                      <span>Subtotal dos itens</span>
+                      <span>{formatShippingPriceBRL(itemsSubtotalCents)}</span>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 text-white/80">
+                      <span>Frete</span>
+                      <span>
+                        {selectedShippingMode
+                          ? formatShippingPriceBRL(selectedShippingPriceCents)
+                          : '—'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 text-white/80">
+                      <span>Modo escolhido</span>
+                      <span>
+                        {selectedShippingMode ? getShippingLabel(selectedShippingMode) : '—'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 text-white/80">
+                      <span>Prazo estimado</span>
+                      <span>
+                        {selectedShippingEstimatedDays === null
+                          ? '—'
+                          : formatShippingEta(selectedShippingEstimatedDays)}
+                      </span>
+                    </div>
+
+                    <div className="h-px bg-white/10" />
+
+                    <div className="flex items-center justify-between gap-3 text-white">
+                      <span className="font-medium">Total</span>
+                      <span className="text-base font-semibold">
+                        {formatShippingPriceBRL(orderTotalCents)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                  <p className="text-sm font-semibold text-white">Logística confirmada</p>
+                  <p className="mt-1 text-xs text-white/70">
+                    Dados reais gravados no pedido após a criação/confirmação.
+                  </p>
+
+                  <div className="mt-4 space-y-3 text-sm">
+                    <div className="flex items-center justify-between gap-3 text-white/80">
+                      <span>Modo de frete</span>
+                      <span>
+                        {pay?.order?.selectedShippingMode
+                          ? getShippingLabel(pay.order.selectedShippingMode)
+                          : '—'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 text-white/80">
+                      <span>CEP de destino</span>
+                      <span>{pay?.order?.destinationZipCode ?? '—'}</span>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 text-white/80">
+                      <span>CEP de origem</span>
+                      <span>{pay?.order?.originZipCodeSnapshot ?? '—'}</span>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 text-white/80">
+                      <span>Prazo estimado</span>
+                      <span>
+                        {typeof pay?.order?.estimatedDays === 'number'
+                          ? formatShippingEta(pay.order.estimatedDays)
+                          : '—'}
+                      </span>
+                    </div>
+
+                    <div className="flex items-center justify-between gap-3 text-white/80">
+                      <span>Frete</span>
+                      <span>
+                        {typeof pay?.order?.shippingPriceCents === 'number'
+                          ? formatShippingPriceBRL(pay.order.shippingPriceCents)
+                          : '—'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
                 <div className="text-sm font-semibold text-white/85">
                   Copia e cola (BR Code)
                 </div>

@@ -138,6 +138,13 @@ type ServiceProviderSummary = {
   specialties?: string[] | null;
 };
 
+type MeIdentityResponse = {
+  handle?: string | null;
+  profile?: {
+    handle?: string | null;
+  } | null;
+};
+
 type ProviderIncomingRequest = {
   id: string;
   orderId: string;
@@ -334,6 +341,7 @@ function compactText(value?: string | null, max = 140): string | null {
 
 export default function ProviderServicesPage() {
   const [specialties, setSpecialties] = useState<string[]>([]);
+  const [accountHandle, setAccountHandle] = useState('');
   const [providerLoading, setProviderLoading] = useState(true);
   const [incomingRequests, setIncomingRequests] = useState<ProviderIncomingRequest[]>(
     [],
@@ -356,13 +364,18 @@ export default function ProviderServicesPage() {
       try {
         setProviderLoading(true);
 
-        const sp = await fetchJSON<ServiceProviderSummary | null>('/service-providers/me');
+        const [sp, me] = await Promise.all([
+          fetchJSON<ServiceProviderSummary | null>('/service-providers/me'),
+          fetchJSON<MeIdentityResponse>('/me'),
+        ]);
 
         if (!alive) return;
         setSpecialties(normalizeSpecialties(sp?.specialties));
+        setAccountHandle(String(me?.profile?.handle ?? me?.handle ?? '').trim());
       } catch {
         if (!alive) return;
         setSpecialties([]);
+        setAccountHandle('');
       } finally {
         if (alive) setProviderLoading(false);
       }
@@ -441,12 +454,85 @@ export default function ProviderServicesPage() {
   }, []);
 
   const isDelivery = useMemo(() => specialties.includes('delivery'), [specialties]);
+  const primarySpecialty = specialties[0] ?? '';
   const primarySpecialtyLabel = useMemo(
     () => getPrimarySpecialtyLabel(specialties),
     [specialties],
   );
   const hasPrimarySpecialty = specialties.length > 0;
+  const publicProfileHref = accountHandle ? `/u/${accountHandle}` : '';
   const isActivationMode = !providerLoading && !hasPrimarySpecialty;
+  const operationEntryMeta = useMemo(() => {
+    if (!hasPrimarySpecialty) {
+      return {
+        cta: 'Escolher especialidade',
+        heroHint:
+          'Antes de configurar agenda, região e promessa operacional, defina sua base profissional no Marto.',
+        configTitle: 'Base profissional',
+        configDesc:
+          'Escolha a especialidade principal que representa sua operação para o Marto começar a te posicionar corretamente.',
+        configCta: 'Escolher',
+      };
+    }
+
+    if (isDelivery) {
+      return {
+        cta: 'Refinar operação logística',
+        heroHint:
+          'Sua base logística já foi lida. Agora refine região, tipos de entrega, SLA e consistência operacional.',
+        configTitle: 'Base logística',
+        configDesc:
+          'Entrega é a base principal da sua operação. Revise sua estrutura sempre que quiser ajustar posicionamento e leitura do Marto.',
+        configCta: 'Refinar',
+      };
+    }
+
+    switch (primarySpecialty) {
+      case 'assembly':
+        return {
+          cta: 'Refinar operação de montagem',
+          heroHint:
+            'Sua base de montagem já foi lida. Agora o foco é dar nitidez à agenda, região e execução.',
+          configTitle: 'Base de montagem',
+          configDesc:
+            'Ajuste sua base profissional para o Marto te posicionar melhor em missões de montagem, execução e acabamento.',
+          configCta: 'Refinar',
+        };
+
+      case 'installation':
+        return {
+          cta: 'Refinar operação de instalação',
+          heroHint:
+            'Sua base de instalação já foi lida. Agora o foco é conectar posicionamento técnico com agenda e SLA.',
+          configTitle: 'Base de instalação',
+          configDesc:
+            'Ajuste sua base profissional para o Marto te posicionar melhor em instalações, validações e execução técnica.',
+          configCta: 'Refinar',
+        };
+
+      case 'technical_visit':
+        return {
+          cta: 'Refinar operação técnica',
+          heroHint:
+            'Sua base técnica já foi lida. Agora o foco é transformar leitura profissional em encaixe operacional.',
+          configTitle: 'Base técnica',
+          configDesc:
+            'Ajuste sua base profissional para o Marto te posicionar melhor em visitas técnicas, diagnóstico e direcionamento.',
+          configCta: 'Refinar',
+        };
+
+      default:
+        return {
+          cta: `Refinar operação de ${primarySpecialtyLabel.toLowerCase()}`,
+          heroHint:
+            'Sua base profissional já foi lida. Agora o foco é transformar essa leitura em operação cada vez mais nítida.',
+          configTitle: `Base de ${primarySpecialtyLabel.toLowerCase()}`,
+          configDesc:
+            'Revise sua base profissional para manter a leitura do Marto coerente com sua atuação principal.',
+          configCta: 'Refinar',
+      };
+    }
+  }, [hasPrimarySpecialty, isDelivery, primarySpecialty, primarySpecialtyLabel]);
 
   // ✅ snapshots reais para prontidão
   const agendaRaw = useSyncExternalStore(
@@ -514,6 +600,322 @@ export default function ProviderServicesPage() {
       total: 3,
     };
   }, [isDelivery, readiness]);
+
+  const operationHeroMeta = useMemo(() => {
+    const ready = operationReadiness.done === operationReadiness.total;
+
+    if (isActivationMode) {
+      return {
+        heroTitle: 'Escolha sua base profissional no Marto',
+        heroDesc:
+          'Sua especialidade principal define como o Marto vai te posicionar, quais missões combinam com você, como sua reputação cresce e que sinais passam a construir sua autoridade no ecossistema.',
+        focusEmptyTitle: 'Sua jornada começa pela base profissional',
+        focusEmptyDesc:
+          'Antes de agenda, região, SLA e fila, o Marto precisa entender quem você é profissionalmente dentro do ecossistema.',
+        trustValue: 'Em ativação',
+        trustDesc:
+          'O Marto ainda não deve te tratar como operação recorrente enquanto sua base principal não estiver definida.',
+        nextTitle: 'Operação guiada por especialidade',
+        nextDesc:
+          'Sua central muda de estado e passa a organizar operação, encaixe e evolução conforme a base escolhida.',
+      };
+    }
+
+    if (isDelivery) {
+      return {
+        heroTitle: ready
+          ? 'Sua operação logística está pronta para ganhar ritmo'
+          : 'Estruture sua operação logística no Marto',
+        heroDesc: ready
+          ? 'Agenda, região, tipos de entrega e SLA já formam uma base que o Marto consegue distribuir com mais confiança.'
+          : 'Sua base logística ainda precisa ficar nítida. O Marto lê agenda, região, tipos e SLA para transformar disponibilidade em distribuição real.',
+        focusEmptyTitle: ready
+          ? 'Sua rota já pode começar a ganhar ritmo'
+          : 'Sua operação logística ainda está ganhando forma',
+        focusEmptyDesc: ready
+          ? 'Com a base completa, o Marto começa a distribuir melhor entregas, janelas e promessas reais.'
+          : 'Quando a base logística fica sólida, o Marto começa a te encaixar com mais precisão nas rotas.',
+        trustValue: ready
+          ? 'Alta'
+          : operationReadiness.done >= Math.max(1, operationReadiness.total - 1)
+            ? 'Em subida'
+            : 'Inicial',
+        trustDesc:
+          'O Marto cruza prontidão logística, resposta e consistência para decidir quanta confiança operacional pode depositar na sua base.',
+        nextTitle: ready ? 'Ganhar ritmo de rota' : 'Fechar sua base logística',
+        nextDesc: ready
+          ? 'Agora o valor vem de resposta rápida, execução limpa e confiabilidade em rota, janela e SLA.'
+          : 'Agenda, região, tipos de entrega e SLA bem definidos fazem o Marto te encaixar com muito mais precisão.',
+      };
+    }
+
+    switch (primarySpecialty) {
+      case 'assembly':
+        return {
+          heroTitle: ready
+            ? 'Sua operação de montagem está pronta para ganhar ritmo'
+            : 'Estruture sua operação de montagem no Marto',
+          heroDesc: ready
+            ? 'Agenda, região e SLA já dão uma base para o Marto te encaixar em missões de montagem com mais confiança.'
+            : 'Sua base de montagem ainda precisa ficar nítida. O Marto lê agenda, região e SLA para transformar disponibilidade em execução real.',
+          focusEmptyTitle: ready
+            ? 'Sua base de montagem já pode ganhar ritmo'
+            : 'Sua operação de montagem ainda está ganhando forma',
+          focusEmptyDesc: ready
+            ? 'Com a base montada, o Marto começa a te posicionar melhor em montagem, execução e acabamento.'
+            : 'Quando sua base de montagem fica sólida, o Marto começa a te encaixar com mais precisão em missões de execução.',
+          trustValue: ready
+            ? 'Alta'
+            : operationReadiness.done >= Math.max(1, operationReadiness.total - 1)
+              ? 'Em subida'
+              : 'Inicial',
+          trustDesc:
+            'O Marto cruza prontidão, resposta e consistência de execução para decidir quanta confiança operacional pode depositar na sua base de montagem.',
+          nextTitle: ready ? 'Ganhar ritmo de execução' : 'Fechar sua base de montagem',
+          nextDesc: ready
+            ? 'Agora o valor vem de resposta rápida, execução limpa, acabamento e reputação acumulada.'
+            : 'Agenda, região e SLA bem definidos fazem o Marto te encaixar melhor em missões de montagem.',
+        };
+
+      case 'installation':
+        return {
+          heroTitle: ready
+            ? 'Sua operação de instalação está pronta para ganhar ritmo'
+            : 'Estruture sua operação de instalação no Marto',
+          heroDesc: ready
+            ? 'Agenda, região e SLA já dão uma base para o Marto te encaixar em instalações com mais confiança.'
+            : 'Sua base de instalação ainda precisa ficar nítida. O Marto lê agenda, região e SLA para transformar disponibilidade em execução técnica real.',
+          focusEmptyTitle: ready
+            ? 'Sua base de instalação já pode ganhar ritmo'
+            : 'Sua operação de instalação ainda está ganhando forma',
+          focusEmptyDesc: ready
+            ? 'Com a base consolidada, o Marto começa a te posicionar melhor em validações, ajustes e instalação.'
+            : 'Quando sua base de instalação fica sólida, o Marto começa a te encaixar com mais precisão em missões técnicas.',
+          trustValue: ready
+            ? 'Alta'
+            : operationReadiness.done >= Math.max(1, operationReadiness.total - 1)
+              ? 'Em subida'
+              : 'Inicial',
+          trustDesc:
+            'O Marto cruza prontidão, resposta e consistência técnica para decidir quanta confiança operacional pode depositar na sua base de instalação.',
+          nextTitle: ready ? 'Ganhar ritmo técnico' : 'Fechar sua base de instalação',
+          nextDesc: ready
+            ? 'Agora o valor vem de resposta rápida, ajuste limpo, validação no local e reputação acumulada.'
+            : 'Agenda, região e SLA bem definidos fazem o Marto te encaixar melhor em instalações e validações técnicas.',
+        };
+
+      case 'technical_visit':
+        return {
+          heroTitle: ready
+            ? 'Sua operação de visita técnica está pronta para ganhar ritmo'
+            : 'Estruture sua operação de visita técnica no Marto',
+          heroDesc: ready
+            ? 'Agenda, região e SLA já dão uma base para o Marto te encaixar em visitas técnicas com mais confiança.'
+            : 'Sua base técnica ainda precisa ficar nítida. O Marto lê agenda, região e SLA para transformar disponibilidade em diagnóstico e direcionamento real.',
+          focusEmptyTitle: ready
+            ? 'Sua base técnica já pode ganhar ritmo'
+            : 'Sua operação técnica ainda está ganhando forma',
+          focusEmptyDesc: ready
+            ? 'Com a base consolidada, o Marto começa a te posicionar melhor em leitura profissional, visita e direcionamento.'
+            : 'Quando sua base técnica fica sólida, o Marto começa a te encaixar com mais precisão em visitas e diagnósticos.',
+          trustValue: ready
+            ? 'Alta'
+            : operationReadiness.done >= Math.max(1, operationReadiness.total - 1)
+              ? 'Em subida'
+              : 'Inicial',
+          trustDesc:
+            'O Marto cruza prontidão, resposta e consistência técnica para decidir quanta confiança operacional pode depositar na sua base de visita técnica.',
+          nextTitle: ready ? 'Ganhar ritmo de diagnóstico' : 'Fechar sua base técnica',
+          nextDesc: ready
+            ? 'Agora o valor vem de resposta rápida, leitura clara, direcionamento e reputação acumulada.'
+            : 'Agenda, região e SLA bem definidos fazem o Marto te encaixar melhor em visitas e diagnósticos.',
+        };
+
+      default:
+        return {
+          heroTitle: ready
+            ? `Sua operação de ${primarySpecialtyLabel.toLowerCase()} está pronta para ganhar ritmo`
+            : `Estruture sua operação de ${primarySpecialtyLabel.toLowerCase()} no Marto`,
+          heroDesc: ready
+            ? `Agenda, região e SLA já dão uma base para o Marto te encaixar em missões de ${primarySpecialtyLabel.toLowerCase()} com mais confiança.`
+            : `Sua base de ${primarySpecialtyLabel.toLowerCase()} ainda precisa ficar nítida. O Marto lê agenda, região e SLA para transformar disponibilidade em operação real.`,
+          focusEmptyTitle: ready
+            ? `Sua base de ${primarySpecialtyLabel.toLowerCase()} já pode ganhar ritmo`
+            : `Sua operação de ${primarySpecialtyLabel.toLowerCase()} ainda está ganhando forma`,
+          focusEmptyDesc: ready
+            ? `Com a base consolidada, o Marto começa a te posicionar melhor em ${primarySpecialtyLabel.toLowerCase()} e execução recorrente.`
+            : `Quando sua base de ${primarySpecialtyLabel.toLowerCase()} fica sólida, o Marto começa a te encaixar com mais precisão.`,
+          trustValue: ready
+            ? 'Alta'
+            : operationReadiness.done >= Math.max(1, operationReadiness.total - 1)
+              ? 'Em subida'
+              : 'Inicial',
+          trustDesc: `O Marto cruza prontidão, resposta e consistência para decidir quanta confiança operacional pode depositar na sua base de ${primarySpecialtyLabel.toLowerCase()}.`,
+          nextTitle: ready
+            ? 'Ganhar ritmo de execução'
+            : `Fechar sua base de ${primarySpecialtyLabel.toLowerCase()}`,
+          nextDesc: ready
+            ? 'Agora o valor vem de resposta rápida, execução limpa e reputação acumulada.'
+            : `Agenda, região e SLA bem definidos fazem o Marto te encaixar melhor em missões de ${primarySpecialtyLabel.toLowerCase()}.`,
+        };
+    }
+  }, [
+    isActivationMode,
+    isDelivery,
+    operationReadiness.done,
+    operationReadiness.total,
+    primarySpecialty,
+    primarySpecialtyLabel,
+  ]);
+  const operationGainMeta = useMemo(() => {
+    if (isActivationMode) {
+      return {
+        eyebrow: 'Primeiro ganho',
+        title: 'Sua base profissional abre a porta do crescimento no Marto',
+        desc:
+          'Antes de ganhar ritmo, prioridade e reputação, o Marto precisa entender qual é a sua base profissional dentro do ecossistema.',
+        items: [
+          {
+            title: 'Posicionamento',
+            desc: 'Sua especialidade principal define como o Marto te lê e em quais missões você começa a aparecer.',
+          },
+          {
+            title: 'Leitura operacional',
+            desc: 'Agenda, região, SLA e sinais futuros só ganham valor real quando sua base profissional está definida.',
+          },
+          {
+            title: 'Evolução',
+            desc: 'Depois da escolha, sua operação começa a acumular reputação, consistência e prioridade de forma coerente.',
+          },
+        ],
+        footer:
+          'Primeiro o Marto entende quem você é. Depois ele começa a te dar ritmo, confiança e crescimento.',
+      };
+    }
+
+    if (isDelivery) {
+      return {
+        eyebrow: 'Como você cresce',
+        title: 'No Marto, logística cresce com confiança operacional',
+        desc:
+          'Sua evolução vem de rota bem lida, prazo cumprido, execução consistente e confiança acumulada em entrega real.',
+        items: [
+          {
+            title: 'Confiabilidade em rota',
+            desc: 'Pontualidade, janela respeitada e consistência logística fazem o Marto confiar mais na sua base.',
+          },
+          {
+            title: 'Prioridade nas próximas entregas',
+            desc: 'Quem sustenta boa execução e resposta rápida tende a ganhar mais força na distribuição.',
+          },
+          {
+            title: 'Dados que viram valor',
+            desc: 'Cada operação gera leitura real de rota, região, tempo e recorrência dentro do ecossistema.',
+          },
+        ],
+        footer:
+          'No Marto, entrega limpa não vira só conclusão. Vira confiança, prioridade e histórico operacional.',
+      };
+    }
+
+    switch (primarySpecialty) {
+      case 'assembly':
+        return {
+          eyebrow: 'Como você cresce',
+          title: 'No Marto, montagem cresce com execução e acabamento',
+          desc:
+            'Sua evolução vem de execução consistente, acabamento limpo, confirmação real e reputação acumulada a cada missão.',
+          items: [
+            {
+              title: 'Reputação por execução',
+              desc: 'Montagem bem concluída, confirmação e consistência aumentam sua força operacional no ecossistema.',
+            },
+            {
+              title: 'Prioridade em novas missões',
+              desc: 'Quem executa bem tende a receber mais espaço nas próximas missões de montagem.',
+            },
+            {
+              title: 'Dados que constroem autoridade',
+              desc: 'Cada serviço gera leitura real de tempo, região, recorrência e qualidade entregue.',
+            },
+          ],
+          footer:
+            'No Marto, montar bem não vira só serviço concluído. Vira autoridade operacional.',
+        };
+
+      case 'installation':
+        return {
+          eyebrow: 'Como você cresce',
+          title: 'No Marto, instalação cresce com precisão e validação',
+          desc:
+            'Sua evolução vem de ajuste técnico, validação no local, execução limpa e confiança acumulada em campo.',
+          items: [
+            {
+              title: 'Reputação técnica',
+              desc: 'Instalação bem executada e validada aumenta sua leitura de confiabilidade dentro do ecossistema.',
+            },
+            {
+              title: 'Prioridade por consistência',
+              desc: 'Quem entrega instalação limpa, resposta rápida e precisão tende a ganhar mais prioridade.',
+            },
+            {
+              title: 'Dados reais de campo',
+              desc: 'Cada instalação gera sinais de tempo, região, padrão técnico e recorrência operacional.',
+            },
+          ],
+          footer:
+            'No Marto, instalar bem não vira só entrega final. Vira confiança técnica acumulada.',
+        };
+
+      case 'technical_visit':
+        return {
+          eyebrow: 'Como você cresce',
+          title: 'No Marto, visita técnica cresce com leitura profissional',
+          desc:
+            'Sua evolução vem de diagnóstico claro, direcionamento consistente, comunicação limpa e confiança técnica real.',
+          items: [
+            {
+              title: 'Reputação por clareza',
+              desc: 'Leitura precisa, postura profissional e boa orientação aumentam sua força dentro do ecossistema.',
+            },
+            {
+              title: 'Prioridade em novos diagnósticos',
+              desc: 'Quem gera boa leitura técnica tende a ganhar mais espaço em novas visitas e análises.',
+            },
+            {
+              title: 'Dados que fortalecem sua base',
+              desc: 'Cada visita gera sinais reais de região, recorrência, tipo de problema e padrão operacional.',
+            },
+          ],
+          footer:
+            'No Marto, diagnosticar bem não vira só visita concluída. Vira confiança profissional.',
+        };
+
+      default:
+        return {
+          eyebrow: 'Como você cresce',
+          title: `No Marto, ${primarySpecialtyLabel.toLowerCase()} cresce com consistência real`,
+          desc:
+            'Sua evolução vem de resposta boa, execução consistente, confiança acumulada e sinais reais gerados em cada operação.',
+          items: [
+            {
+              title: 'Reputação operacional',
+              desc: 'Execução limpa, confirmação e consistência fazem o Marto confiar mais na sua base.',
+            },
+            {
+              title: 'Prioridade nas próximas missões',
+              desc: 'Quem sustenta boa operação tende a ganhar mais espaço nas próximas oportunidades.',
+            },
+            {
+              title: 'Dados que viram valor',
+              desc: 'Cada operação gera leitura real de tempo, região, recorrência e padrão de execução.',
+            },
+          ],
+          footer:
+            'No Marto, operação bem feita não vira só conclusão. Vira histórico, prioridade e crescimento.',
+        };
+    }
+  }, [isActivationMode, isDelivery, primarySpecialty, primarySpecialtyLabel]);
 
   const requestStats = useMemo(() => {
     const requested = incomingRequests.filter(
@@ -637,27 +1039,11 @@ export default function ProviderServicesPage() {
 
                   <div className="mt-5 max-w-3xl">
                     <h1 className="text-3xl font-semibold tracking-tight text-white sm:text-4xl">
-                      {providerLoading
-                        ? title
-                        : isActivationMode
-                          ? 'Escolha sua base profissional no Marto'
-                          : operationReadiness.done === operationReadiness.total
-                            ? `${title} pronta para ganhar ritmo`
-                            : `${title} em construção inteligente`}
+                      {providerLoading ? title : operationHeroMeta.heroTitle}
                     </h1>
 
                     <p className="mt-4 max-w-2xl text-sm leading-7 text-white/75 sm:text-[15px]">
-                      {providerLoading
-                        ? 'O Marto está lendo sua base operacional.'
-                        : isActivationMode
-                          ? 'Sua especialidade principal define como o Marto vai te posicionar, quais missões combinam com você, como sua reputação cresce e que sinais passam a construir sua autoridade no ecossistema.'
-                          : operationReadiness.done === operationReadiness.total
-                            ? isDelivery
-                              ? 'Sua operação já consegue sustentar janelas, região e promessa real. Agora o Marto pode começar a encaixar entregas com mais confiança.'
-                              : 'Sua operação já consegue sustentar agenda, região e promessa real. Agora o Marto pode começar a encaixar atendimentos com mais confiança.'
-                            : isDelivery
-                              ? 'Antes de virar fluxo recorrente, sua operação precisa ficar nítida para o ecossistema. O Marto lê agenda, região, tipos e SLA para transformar disponibilidade em distribuição.'
-                              : 'Antes de virar fluxo recorrente, sua operação precisa ficar nítida para o ecossistema. O Marto lê agenda, região e SLA para transformar disponibilidade em distribuição.'}
+                      {providerLoading ? 'O Marto está lendo sua base operacional.' : operationHeroMeta.heroDesc}
                     </p>
                   </div>
 
@@ -722,7 +1108,9 @@ export default function ProviderServicesPage() {
                             {primarySpecialtyLabel}
                           </div>
                           <div className="mt-1 text-xs leading-5 text-white/60">
-                            Base principal que o Marto está usando para te posicionar.
+                            {hasPrimarySpecialty
+                              ? 'Essa é a base principal que o Marto está usando para te posicionar, organizar sua operação e construir sua reputação.'
+                              : 'Sem base definida, o Marto ainda não consegue te posicionar com precisão no ecossistema.'}
                           </div>
                         </div>
 
@@ -760,7 +1148,7 @@ export default function ProviderServicesPage() {
                           href="/dash/provider/profile"
                           className="inline-flex items-center justify-center rounded-2xl bg-white px-4 py-2.5 text-sm font-semibold text-black transition hover:opacity-90"
                         >
-                          Estruturar operação
+                          {operationEntryMeta.cta}
                         </Link>
 
                         <Link
@@ -770,6 +1158,15 @@ export default function ProviderServicesPage() {
                           Abrir agenda
                         </Link>
 
+                        {publicProfileHref ? (
+                          <Link
+                            href={publicProfileHref}
+                            className="inline-flex items-center justify-center rounded-2xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/10"
+                          >
+                            Perfil público
+                          </Link>
+                        ) : null}
+
                         <a
                           href="#provider-requests"
                           className="inline-flex items-center justify-center rounded-2xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/10"
@@ -777,6 +1174,10 @@ export default function ProviderServicesPage() {
                           Ver encaixes
                         </a>
                       </div>
+
+                      <p className="mt-3 max-w-2xl text-xs leading-6 text-white/58">
+                        {operationEntryMeta.heroHint}
+                      </p>
                     </>
                   )}
                 </div>
@@ -830,63 +1231,46 @@ export default function ProviderServicesPage() {
                 </div>
               ) : (
                 <div className="grid gap-3 lg:grid-cols-[1.2fr_0.8fr_0.8fr]">
-                  <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
-                      Atendimento em foco
-                    </div>
-                    <div className="mt-2 text-lg font-semibold text-white">
-                      {focusRequest
-                        ? focusRequest.title
-                        : isDelivery
-                          ? 'Sua operação ainda está ganhando forma para começar a receber encaixes'
-                          : 'Sua operação ainda está ganhando forma para começar a receber atendimentos'}
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-white/68">
-                      {focusRequest?.notes
-                        ? focusRequest.notes
-                        : operationReadiness.done === operationReadiness.total
-                          ? 'Sua base já está forte o suficiente para começar a entrar em distribuição real dentro do Marto.'
-                          : 'Quando sua base operacional ficar sólida, o Marto começa a te posicionar com mais precisão e recorrência.'}
-                    </p>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <Chip>Especialidade: {primarySpecialtyLabel}</Chip>
-                      <Chip>Prontidão: {operationReadiness.done}/{operationReadiness.total}</Chip>
-                      {focusRequest ? <Chip>Pedido {focusRequest.orderId.slice(0, 8)}</Chip> : null}
+                    <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
+                        Atendimento em foco
+                      </div>
+                      <div className="mt-2 text-lg font-semibold text-white">
+                        {focusRequest ? focusRequest.title : operationHeroMeta.focusEmptyTitle}
+                      </div>
+                      <p className="mt-2 text-sm leading-6 text-white/68">
+                        {focusRequest?.notes ? focusRequest.notes : operationHeroMeta.focusEmptyDesc}
+                      </p>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Chip>Especialidade: {primarySpecialtyLabel}</Chip>
+                        <Chip>Prontidão: {operationReadiness.done}/{operationReadiness.total}</Chip>
+                        {focusRequest ? <Chip>Pedido {focusRequest.orderId.slice(0, 8)}</Chip> : null}
                     </div>
                   </div>
 
-                  <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
-                      Leitura de confiança
+                    <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
+                        Leitura de confiança
+                      </div>
+                      <div className="mt-2 text-2xl font-semibold text-white">
+                        {operationHeroMeta.trustValue}
+                      </div>
+                      <p className="mt-2 text-sm leading-6 text-white/68">
+                        {operationHeroMeta.trustDesc}
+                      </p>
                     </div>
-                    <div className="mt-2 text-2xl font-semibold text-white">
-                      {operationReadiness.done === operationReadiness.total
-                        ? 'Alta'
-                        : operationReadiness.done >= Math.max(1, operationReadiness.total - 1)
-                          ? 'Em subida'
-                          : 'Inicial'}
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-white/68">
-                      O Marto cruza sua prontidão, sua resposta e sua consistência para decidir
-                      quanta confiança operacional pode depositar na sua base.
-                    </p>
-                  </div>
 
-                  <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
-                    <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
-                      Próximo salto
+                    <div className="rounded-3xl border border-white/10 bg-black/30 p-4">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
+                        Próximo salto
+                      </div>
+                      <div className="mt-2 text-lg font-semibold text-white">
+                        {operationHeroMeta.nextTitle}
+                      </div>
+                      <p className="mt-2 text-sm leading-6 text-white/68">
+                        {operationHeroMeta.nextDesc}
+                      </p>
                     </div>
-                    <div className="mt-2 text-lg font-semibold text-white">
-                      {operationReadiness.done === operationReadiness.total
-                        ? 'Ganhar ritmo de execução'
-                        : 'Fechar sua base operacional'}
-                    </div>
-                    <p className="mt-2 text-sm leading-6 text-white/68">
-                      {operationReadiness.done === operationReadiness.total
-                        ? 'Agora o valor vem de resposta rápida, execução limpa e reputação acumulada.'
-                        : 'Agenda, região e SLA bem definidos fazem o Marto te encaixar com muito mais precisão.'}
-                    </p>
-                  </div>
                 </div>
               )}
             </div>
@@ -1434,9 +1818,15 @@ export default function ProviderServicesPage() {
 
         {/* CONFIGURAR OPERAÇÃO */}
         <section className="mb-6">
-          <div className="mb-3 flex items-center justify-between">
-            <div className="text-sm font-semibold text-white">Configurar sua operação</div>
-            <div className="text-xs text-white/55">MVP • UI pronta, lógica evolui depois</div>
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-white">Configurar sua operação</div>
+              <p className="mt-1 text-xs text-white/55">{operationEntryMeta.heroHint}</p>
+            </div>
+
+            <div className="text-xs text-white/55">
+              {hasPrimarySpecialty ? 'Base lida • lapidação contínua' : 'Primeiro passo • definir base'}
+            </div>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-2">
@@ -1469,14 +1859,13 @@ export default function ProviderServicesPage() {
                 />
               </Link>
             ) : (
-              <div className="block opacity-70">
+              <Link href="/dash/provider/profile" className="block">
                 <ActionCard
-                  title="Tipos operacionais"
-                  desc="Esse módulo será adaptado à sua especialidade em uma próxima lapidação do Marto."
-                  cta="Em evolução"
-                  disabled
+                  title={operationEntryMeta.configTitle}
+                  desc={operationEntryMeta.configDesc}
+                  cta={operationEntryMeta.configCta}
                 />
-              </div>
+              </Link>
             )}
 
             <Link href="/dash/provider/services/sla" className="block">
@@ -1491,18 +1880,44 @@ export default function ProviderServicesPage() {
 
         {/* COMO VOCÊ GANHA */}
         <section className="mb-6 rounded-3xl border border-white/10 bg-white/5 p-6 shadow-sm backdrop-blur">
-          <div className="text-sm font-semibold text-white">Como você ganha no Marto</div>
-          <ul className="mt-3 grid gap-2 text-sm text-white/70">
-            <li className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              <span className="font-semibold text-white">Reputação</span> sobe com pontualidade e confirmação.
-            </li>
-            <li className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              Quem tem reputação recebe <span className="font-semibold text-white">prioridade</span> nas próximas rotas.
-            </li>
-            <li className="rounded-2xl border border-white/10 bg-white/5 p-4">
-              Cada operação gera <span className="font-semibold text-white">dados reais</span> (tempo, região, recorrência).
-            </li>
-          </ul>
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+            <div className="max-w-3xl">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                {operationGainMeta.eyebrow}
+              </div>
+
+              <div className="mt-2 text-xl font-semibold tracking-tight text-white sm:text-2xl">
+                {operationGainMeta.title}
+              </div>
+
+              <p className="mt-2 text-sm leading-6 text-white/68">
+                {operationGainMeta.desc}
+              </p>
+            </div>
+
+            <Link
+              href="/dash/provider/profile"
+              className="inline-flex w-fit items-center justify-center rounded-2xl border border-white/15 bg-white/5 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/10"
+            >
+              Refinar base →
+            </Link>
+          </div>
+
+          <div className="mt-5 grid gap-3 lg:grid-cols-3">
+            {operationGainMeta.items.map((item) => (
+              <div
+                key={item.title}
+                className="rounded-[1.5rem] border border-white/10 bg-white/[0.04] p-5"
+              >
+                <div className="text-sm font-semibold text-white">{item.title}</div>
+                <p className="mt-2 text-sm leading-6 text-white/68">{item.desc}</p>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-4 rounded-[1.5rem] border border-white/10 bg-black/30 px-4 py-3 text-sm leading-6 text-white/70">
+            {operationGainMeta.footer}
+          </div>
         </section>
 
         {/* PERFIL */}

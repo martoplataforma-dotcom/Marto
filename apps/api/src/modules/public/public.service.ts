@@ -1,7 +1,9 @@
 // apps/api/src/modules/public/public.service.ts
-import { Injectable } from '@nestjs/common';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import type { OrderStatus } from '@prisma/client';
+import { resolveUserHome } from '../../common/users/resolve-user-home';
+import { resolveProductShippingOptionsFromEntities } from '../logistics/shipping/resolve-product-shipping-options-from-entities';
 
 type PublicEventType = 'PURCHASE' | 'SERVICE' | 'OTHER';
 
@@ -34,6 +36,24 @@ function formatDateBR(d: Date | string | null | undefined): string {
   return `${dd}/${mm}/${yyyy}`;
 }
 
+function asText(value: unknown): string | null {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  return null;
+}
+
+function normalizePublicText(value: unknown): string | null {
+  const s = (asText(value) ?? '').trim();
+  if (!s) return null;
+
+  const lowered = s.toLowerCase();
+  if (lowered === 'null' || lowered === 'undefined') return null;
+
+  return s;
+}
+
 const SPECIALTY_LABELS: Record<string, string> = {
   assembly: 'Montagem',
   installation: 'Instalação',
@@ -61,6 +81,50 @@ function specialtyLabelList(values: string[] | null | undefined) {
 export class PublicService {
   constructor(private readonly prisma: PrismaService) {}
 
+  async getProductShippingOptions(productId: string) {
+    const product = await this.prisma.product.findUnique({
+      where: { id: productId },
+      select: {
+        id: true,
+        merchantId: true,
+        requiresShipping: true,
+        weightGrams: true,
+        lengthCm: true,
+        widthCm: true,
+        heightCm: true,
+        allowCorreios: true,
+        allowTransportadora: true,
+        allowLocalDelivery: true,
+        allowPickup: true,
+      },
+    });
+
+    if (!product) {
+      throw new NotFoundException('Produto não encontrado.');
+    }
+
+    const merchant = await this.prisma.merchant.findUnique({
+      where: { id: product.merchantId },
+      select: {
+        id: true,
+        originZipCode: true,
+        supportsCorreios: true,
+        supportsTransportadora: true,
+        supportsLocalDelivery: true,
+        supportsPickup: true,
+      },
+    });
+
+    if (!merchant) {
+      throw new NotFoundException('Merchant do produto não encontrado.');
+    }
+
+    return resolveProductShippingOptionsFromEntities({
+      product,
+      expeditorProfile: merchant,
+    });
+  }
+
   async getPublicUserByHandle(handleRaw: string) {
     const handle = String(handleRaw || '')
       .trim()
@@ -77,10 +141,28 @@ export class PublicService {
         bio: true,
         avatarUrl: true,
         createdAt: true,
+        consumer: { select: { id: true } },
+        merchant: { select: { id: true } },
+        serviceProvider: { select: { id: true } },
+        representative: { select: { id: true } },
+        factory: { select: { id: true } },
+        roles: {
+          select: {
+            role: true,
+          },
+        },
       },
     });
 
     if (!user) return null;
+    const home = resolveUserHome({
+      consumer: user.consumer,
+      merchant: user.merchant,
+      serviceProvider: user.serviceProvider,
+      representative: user.representative,
+      factory: user.factory,
+      roles: user.roles,
+    });
 
     const provider = await this.prisma.serviceProvider.findUnique({
       where: { userId: user.id },
@@ -109,8 +191,8 @@ export class PublicService {
 
     const providerUf =
       provider?.address && typeof provider.address === 'object'
-        ? String(
-            (provider.address as Record<string, unknown>).uf ?? '',
+        ? (
+            asText((provider.address as Record<string, unknown>).uf) ?? ''
           ).trim() || null
         : null;
 
@@ -177,10 +259,11 @@ export class PublicService {
 
     return {
       ok: true,
+      home,
       user: {
         handle: user.handle,
-        name: user.displayName ?? user.handle,
-        bio: user.bio ?? null,
+        name: normalizePublicText(user.displayName) ?? user.handle,
+        bio: normalizePublicText(user.bio),
         avatarUrl: user.avatarUrl ?? null,
         since: user.createdAt,
       },
@@ -189,6 +272,9 @@ export class PublicService {
             kind: provider.kind,
             city: provider.city ?? null,
             uf: providerUf,
+            specialties: Array.isArray(provider.specialties)
+              ? provider.specialties
+              : [],
             specialtiesLabel: providerSpecialties.length
               ? providerSpecialties.join(' • ')
               : null,

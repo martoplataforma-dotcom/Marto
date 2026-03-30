@@ -49,6 +49,13 @@ type ServiceArea = {
   radiusKm?: number;
 };
 
+type MeIdentityResponse = {
+  handle?: string | null;
+  profile?: {
+    handle?: string | null;
+  } | null;
+};
+
 function asServiceArea(value: unknown): ServiceArea | null {
   if (!value || typeof value !== 'object') return null;
   return value as ServiceArea;
@@ -220,6 +227,7 @@ export default function ProviderProfilePage() {
   const [areaCitiesText, setAreaCitiesText] = useState('');
   const [areaRadiusKm, setAreaRadiusKm] = useState<number>(60);
   const [specialties, setSpecialties] = useState<string[]>([]);
+  const [accountHandle, setAccountHandle] = useState('');
 
   const kind: ServiceProviderKind = useMemo(() => {
     if (data?.kind === 'TRANSPORTER') return 'TRANSPORTER';
@@ -246,6 +254,7 @@ export default function ProviderProfilePage() {
     kind === 'TRANSPORTER'
       ? '/dash/provider/transporter'
       : '/dash/provider/services';
+  const publicProfileHref = accountHandle.trim() ? `/u/${accountHandle.trim()}` : '';
 
   const baseSignals = useMemo(() => {
     const docDigits = onlyDigits(document);
@@ -403,9 +412,13 @@ export default function ProviderProfilePage() {
       setLoading(true);
       setMsg({ kind: 'none' });
 
-      const sp = await fetchJSON<ServiceProvider | null>('/service-providers/me');
+      const [sp, me] = await Promise.all([
+        fetchJSON<ServiceProvider | null>('/service-providers/me'),
+        fetchJSON<MeIdentityResponse>('/me'),
+      ]);
       setData(sp);
       setSpecialties(normalizeSpecialties(sp?.specialties));
+      setAccountHandle(String(me?.profile?.handle ?? me?.handle ?? '').trim());
 
       setDocument(getDocumentDigits(sp));
       setCep(getCepDigits(sp));
@@ -970,14 +983,14 @@ export default function ProviderProfilePage() {
                   <div className="grid gap-4 sm:col-span-2 lg:grid-cols-2">
                     <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-4">
                       <div className="text-sm font-semibold text-white">
-                        Handle do prestador
+                        Handle público da conta
                       </div>
                       <div className="mt-2 text-lg font-semibold text-white">
-                        Ainda não definido
+                        {accountHandle ? `@${accountHandle}` : 'Ainda não definido'}
                       </div>
                       <p className="mt-1 text-sm leading-6 text-white/65">
-                        O perfil público próprio do prestador ainda não foi ativado. Aqui ele
-                        começa do zero, sem herdar o handle do lojista ou da conta global.
+                        O prestador usa a identidade pública universal da conta em /u/[handle].
+                        Aqui você estrutura a camada profissional sem criar outro handle separado.
                       </p>
                     </div>
 
@@ -989,24 +1002,33 @@ export default function ProviderProfilePage() {
                         Leitura protegida por papel
                       </div>
                       <p className="mt-1 text-sm leading-6 text-white/65">
-                        O perfil público do prestador será criado em estrutura própria, sem
-                        misturar identidade global da conta com o papel de lojista.
+                        A identidade pública é criada na conta central do Marto. O prestador lê essa
+                        base aqui e depois evolui seu papel profissional sem misturar com o lojista.
                       </p>
 
                       <div className="mt-3 flex flex-wrap gap-2">
                         <Link
-                          href="#provider-public-profile"
+                          href="/me"
                           className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
                         >
-                          Criar identidade pública
+                          Editar identidade pública
                         </Link>
 
-                        <Link
-                          href="#provider-public-profile"
-                          className="pointer-events-none rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white/40"
-                        >
-                          Abrir perfil público
-                        </Link>
+                        {publicProfileHref ? (
+                          <Link
+                            href={publicProfileHref}
+                            className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                          >
+                            Abrir perfil público
+                          </Link>
+                        ) : (
+                          <span
+                            aria-disabled="true"
+                            className="pointer-events-none rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white/40"
+                          >
+                            Perfil público em preparação
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1120,8 +1142,15 @@ export default function ProviderProfilePage() {
                   disabled={saving || loading}
                   className="rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-black hover:opacity-90 disabled:opacity-60"
                 >
-                  {saving ? 'Salvando…' : 'Salvar'}
+                  {saving ? 'Salvando base...' : 'Salvar base profissional'}
                 </button>
+
+                <Link
+                  href={backHref}
+                  className="inline-flex items-center justify-center rounded-2xl border border-white/15 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
+                >
+                  Ir para meu painel
+                </Link>
 
                 <button
                   onClick={() => void load()}

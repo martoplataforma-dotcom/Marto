@@ -521,6 +521,7 @@ model User {
   bio          String?
   displayName  String?
   handle       String?  @unique
+  activeRole   RoleCode?
   updatedAt    DateTime @updatedAt
 
   consumer        Consumer?
