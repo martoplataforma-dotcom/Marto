@@ -80,9 +80,16 @@ type UpdateProductResponse =
   | { ok: true; updated: ProductItem }
   | { ok: false; message: string };
 
+type HotspotDraft = {
+  x: number;
+  y: number;
+  title: string;
+  description: string;
+};
+
 type ImageInsight = {
   overview?: string[]; // 3 linhas
-  hotspots?: unknown[]; // vamos ignorar agora
+  hotspots?: HotspotDraft[];
 };
 
 function toRelativeUploadsPath(urlOrPath: string) {
@@ -144,6 +151,26 @@ function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
 }
 
+function clampPct(n: number) {
+  return Math.max(4, Math.min(96, Number(n)));
+}
+
+function normalizeHotspots(hs: unknown): HotspotDraft[] {
+  if (!Array.isArray(hs)) return [];
+
+  return hs
+    .map((item) => {
+      const r = asRecord(item);
+      return {
+        x: clampPct(Number(r?.x ?? 50)),
+        y: clampPct(Number(r?.y ?? 50)),
+        title: String(r?.title ?? '').trim(),
+        description: String(r?.description ?? '').trim(),
+      };
+    })
+    .filter((item) => Number.isFinite(item.x) && Number.isFinite(item.y));
+}
+
 function normalizeInsightsForLen(
   len: number,
   existing: unknown,
@@ -153,7 +180,7 @@ function normalizeInsightsForLen(
         const r = asRecord(it);
         return {
           overview: normalizeOverview3(r?.overview),
-          hotspots: Array.isArray(r?.hotspots) ? (r.hotspots as unknown[]) : [],
+          hotspots: normalizeHotspots(r?.hotspots),
         };
       })
     : [];
@@ -162,12 +189,11 @@ function normalizeInsightsForLen(
   while (next.length < len) next.push({ overview: ['', '', ''], hotspots: [] });
   if (next.length > len) next.length = len;
 
-  // força overview sempre com 3 linhas
   for (let i = 0; i < next.length; i++) {
     next[i] = {
       ...next[i],
       overview: normalizeOverview3(next[i]?.overview),
-      hotspots: Array.isArray(next[i]?.hotspots) ? next[i]!.hotspots : [],
+      hotspots: normalizeHotspots(next[i]?.hotspots),
     };
   }
 
@@ -198,13 +224,13 @@ function catalogLabelInv(inv?: InventoryMode | null) {
 function catalogSummary(cat?: Partial<CatalogSpec> | null) {
   if (!cat) return null;
 
-  const kind = (cat.kind ?? 'PHYSICAL') as ProductKind;
-  const inventoryMode = (cat.inventoryMode ?? 'INFINITE') as InventoryMode;
-  const prepDays = String(cat.prepDays ?? '').trim();
-  const stockTotal = String(cat.stockTotal ?? '').trim();
+  const normalized = normalizeCatalogSpec(
+    cat,
+    (cat.kind ?? 'PHYSICAL') as ProductKind,
+  );
 
-  const options = Array.isArray(cat.options) ? cat.options : [];
-  const variants = Array.isArray(cat.variants) ? cat.variants : [];
+  const { kind, inventoryMode, prepDays, stockTotal, options, variants } =
+    normalized;
 
   const hasOptions =
     options.some((o) => String(o?.name ?? '').trim() && (o?.values ?? []).length > 0);
@@ -306,7 +332,7 @@ function Sheet({
           </button>
         </div>
 
-        <div className="max-h-[92vh] overflow-auto p-5 sm:h-[calc(100%-64px)] sm:max-h-none">
+        <div className="scrollbar-marto max-h-[92vh] overflow-auto p-5 sm:h-[calc(100%-64px)] sm:max-h-none">
           {children}
         </div>
       </div>
@@ -692,7 +718,10 @@ function extractCatalogBlock(desc: string): Partial<CatalogSpec> {
     }
   }
 
-  if (variants.length) out.variants = variants;
+  if (variants.length) {
+    out.variants = variants;
+    out.options = normalizeCatalogOptions([], variants);
+  }
 
   return out;
 }
@@ -728,6 +757,81 @@ function buildCatalogBlock(cat: CatalogSpec) {
   }
 
   return `${CATALOG_MARKER_START}${lines.join('\n')}${CATALOG_MARKER_END}`;
+}
+
+function normalizeCatalogOptions(
+  options: Array<{ name: string; values: string[] }> | null | undefined,
+  variants: VariantRow[] = [],
+) {
+  const map = new Map<string, Set<string>>();
+
+  for (const opt of Array.isArray(options) ? options : []) {
+    const name = String(opt?.name ?? '').trim();
+    if (!name) continue;
+
+    if (!map.has(name)) map.set(name, new Set());
+
+    for (const raw of Array.isArray(opt?.values) ? opt.values : []) {
+      const value = String(raw ?? '').trim();
+      if (value) map.get(name)!.add(value);
+    }
+  }
+
+  for (const variant of Array.isArray(variants) ? variants : []) {
+    const key = String(variant?.key ?? '').trim();
+    if (!key) continue;
+
+    for (const piece of key.split('|').map((item) => item.trim()).filter(Boolean)) {
+      const eq = piece.indexOf('=');
+      if (eq <= 0) continue;
+
+      const name = piece.slice(0, eq).trim();
+      const value = piece.slice(eq + 1).trim();
+      if (!name || !value) continue;
+
+      if (!map.has(name)) map.set(name, new Set());
+      map.get(name)!.add(value);
+    }
+  }
+
+  return Array.from(map.entries()).map(([name, values]) => ({
+    name,
+    values: Array.from(values),
+  }));
+}
+
+function normalizeCatalogSpec(
+  input: Partial<CatalogSpec> | null | undefined,
+  fallbackKind: ProductKind = 'PHYSICAL',
+): CatalogSpec {
+  const variants: VariantRow[] = Array.isArray(input?.variants)
+    ? input.variants
+        .map((item) => ({
+          key: String(item?.key ?? '').trim(),
+          sku: String(item?.sku ?? '').trim(),
+          stock: String(item?.stock ?? '').trim(),
+        }))
+        .filter((item) => item.key)
+    : [];
+
+  const kind =
+    input?.kind === 'PHYSICAL' ||
+    input?.kind === 'DIGITAL' ||
+    input?.kind === 'SERVICE'
+      ? input.kind
+      : fallbackKind;
+
+  const inventoryMode: InventoryMode =
+    input?.inventoryMode === 'LIMITED' ? 'LIMITED' : 'INFINITE';
+
+  return {
+    kind,
+    inventoryMode,
+    stockTotal: String(input?.stockTotal ?? '').trim(),
+    prepDays: String(input?.prepDays ?? '').trim(),
+    options: normalizeCatalogOptions(input?.options ?? [], variants),
+    variants,
+  };
 }
 
 // combos (cartesian)
@@ -814,6 +918,123 @@ function WizardCard({
   );
 }
 
+function SurfaceMetric({
+  label,
+  value,
+  hint,
+  tone = 'neutral',
+}: {
+  label: string;
+  value: string | number;
+  hint?: string;
+  tone?: 'neutral' | 'good' | 'warn';
+}) {
+  const toneCls =
+    tone === 'good'
+      ? 'border-emerald-400/20 bg-emerald-400/10'
+      : tone === 'warn'
+        ? 'border-amber-400/20 bg-amber-400/10'
+        : 'border-white/10 bg-black/35';
+
+  return (
+    <div className={classNames('rounded-3xl border p-4', toneCls)}>
+      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+        {label}
+      </div>
+      <div className="mt-2 text-2xl font-semibold text-white/92">{value}</div>
+      {hint ? <div className="mt-1 text-xs text-white/62">{hint}</div> : null}
+    </div>
+  );
+}
+
+function SurfaceRail({
+  label,
+  value,
+  total,
+  tone = 'neutral',
+}: {
+  label: string;
+  value: number;
+  total: number;
+  tone?: 'neutral' | 'good' | 'warn';
+}) {
+  const pct =
+    total > 0 ? Math.max(0, Math.min(100, Math.round((value / total) * 100))) : 0;
+
+  const fillCls =
+    tone === 'good'
+      ? 'bg-emerald-300/80'
+      : tone === 'warn'
+        ? 'bg-amber-300/80'
+        : 'bg-white/75';
+
+  return (
+    <div className="rounded-2xl border border-white/10 bg-black/35 p-3">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs font-semibold text-white/78">{label}</div>
+        <div className="text-xs font-semibold text-white/62">
+          {value}/{total}
+        </div>
+      </div>
+
+      <div className="mt-2 h-2 overflow-hidden rounded-full bg-white/8">
+        <div className={classNames('h-full rounded-full', fillCls)} style={{ width: `${pct}%` }} />
+      </div>
+
+      <div className="mt-2 text-[11px] text-white/52">{pct}% do catálogo</div>
+    </div>
+  );
+}
+
+function FormSection({
+  eyebrow,
+  title,
+  description,
+  children,
+}: {
+  eyebrow?: string;
+  title: string;
+  description?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="rounded-[28px] border border-white/12 bg-black/30 p-5">
+      <div className="mb-4">
+        {eyebrow ? (
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/48">
+            {eyebrow}
+          </div>
+        ) : null}
+
+        <div className="mt-2 text-lg font-semibold text-white/92">{title}</div>
+
+        {description ? (
+          <div className="mt-1 text-sm leading-6 text-white/64">{description}</div>
+        ) : null}
+      </div>
+
+      {children}
+    </section>
+  );
+}
+
+function SoftHint({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/52">
+        {title}
+      </div>
+      <div className="mt-2 text-sm leading-6 text-white/70">{children}</div>
+    </div>
+  );
+}
+
 /** ✅ Dropzone simples (sem libs) */
 function FilesDropzone({
   label,
@@ -837,6 +1058,13 @@ function FilesDropzone({
   const [dragFrom, setDragFrom] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState<number | null>(null);
   const [dragZoneOver, setDragZoneOver] = useState(false);
+  const [photoEditorIdx, setPhotoEditorIdx] = useState<number | null>(null);
+  const [photoEditorTab, setPhotoEditorTab] = useState<
+    'overview' | 'hotspots'
+  >('overview');
+  const [hotspotSelectedIdx, setHotspotSelectedIdx] = useState<number | null>(
+    null,
+  );
 
   const previews = useMemo(() => {
     const out = files.map((f) => ({ file: f, url: URL.createObjectURL(f) }));
@@ -844,6 +1072,26 @@ function FilesDropzone({
   }, [files]);
 
   const ins = insights ?? [];
+
+  function updateInsightAt(
+    index: number,
+    updater: (prev: ImageInsight) => ImageInsight,
+  ) {
+    if (!setInsights) return;
+
+    const next = normalizeInsightsForLen(files.length, ins);
+    const current = next[index] ?? { overview: ['', '', ''], hotspots: [] };
+    next[index] = updater(current);
+    setInsights(next);
+  }
+
+  const editingHotspots =
+    photoEditorIdx !== null ? normalizeHotspots(ins[photoEditorIdx]?.hotspots) : [];
+
+  const selectedHotspot =
+    photoEditorIdx !== null && hotspotSelectedIdx !== null
+      ? editingHotspots[hotspotSelectedIdx] ?? null
+      : null;
 
   useEffect(() => {
     return () => {
@@ -972,62 +1220,58 @@ function FilesDropzone({
                 </div>
 
                 <div className="p-2">
-                  {/* Visão rápida */}
-                  {setInsights ? (
-                    <div className="px-2 pb-2">
-                      <div className="mb-1 text-[10px] font-semibold text-white/70">
-                        Visão rápida (3 linhas)
-                      </div>
+                  <div className="grid gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPhotoEditorIdx(idx);
+                        setPhotoEditorTab('overview');
+                        setHotspotSelectedIdx(null);
+                      }}
+                      className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/10"
+                      disabled={disabled}
+                    >
+                      Visão rápida
+                    </button>
 
-                      {[0, 1, 2].map((lineIdx) => {
-                        const ov = normalizeOverview3(ins[idx]?.overview);
-                        const val = ov[lineIdx] ?? '';
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPhotoEditorIdx(idx);
+                        setPhotoEditorTab('hotspots');
+                        const hs = normalizeHotspots(ins[idx]?.hotspots);
+                        setHotspotSelectedIdx(hs.length ? 0 : null);
+                      }}
+                      className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/10"
+                      disabled={disabled}
+                    >
+                      Pontos relevantes
+                    </button>
 
-                        return (
-                          <input
-                            key={`ov-${idx}-${lineIdx}`}
-                            value={val}
-                            onChange={(e) => {
-                              const v = e.target.value;
-
-                              const next = Array.isArray(ins) ? [...ins] : [];
-                              const cur = next[idx] ?? { overview: ['', '', ''], hotspots: [] };
-                              const nextOv = normalizeOverview3(cur.overview);
-                              nextOv[lineIdx] = v;
-
-                              next[idx] = { ...cur, overview: nextOv };
-                              setInsights(next);
-                            }}
-                            maxLength={42}
-                            placeholder={
-                              lineIdx === 0
-                                ? 'Ex: MDF de alta densidade'
-                                : lineIdx === 1
-                                  ? 'Ex: Acabamento nogueira'
-                                  : 'Ex: Resistente a riscos'
-                            }
-                            className="mb-2 w-full rounded-xl border border-white/15 bg-black/80 px-3 py-2 text-xs text-white/85 outline-none placeholder:text-white/50"
-                            disabled={disabled}
-                          />
-                        );
-                      })}
-
-                      <div className="mt-1 text-[10px] text-white/60">
-                        Aparece no botão “i” na página do produto.
-                      </div>
+                    <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-[10px] font-semibold text-white/60">
+                      {normalizeHotspots(ins[idx]?.hotspots).length} ponto(s) •
+                      foto {idx + 1}
                     </div>
-                  ) : null}
+                  </div>
                 </div>
 
                 <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-2 bg-black/60 px-2 py-1">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFiles(removeAt(files, idx));
-                      if (setInsights) {
-                        setInsights(removeAt(normalizeInsightsForLen(files.length, ins), idx));
-                      }
-                    }}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setFiles(removeAt(files, idx));
+                        if (setInsights) {
+                          setInsights(removeAt(normalizeInsightsForLen(files.length, ins), idx));
+                        }
+
+                        if (photoEditorIdx === idx) {
+                          setPhotoEditorIdx(null);
+                          setPhotoEditorTab('overview');
+                          setHotspotSelectedIdx(null);
+                        } else if (photoEditorIdx !== null && photoEditorIdx > idx) {
+                          setPhotoEditorIdx(photoEditorIdx - 1);
+                        }
+                      }}
                     className="rounded-lg bg-white/10 px-2 py-1 text-[10px] font-semibold text-white hover:bg-white/15"
                     disabled={disabled}
                     title="Remover"
@@ -1037,6 +1281,339 @@ function FilesDropzone({
                 </div>
               </div>
             ))}
+          </div>
+        ) : null}
+
+        {setInsights && photoEditorIdx !== null && previews[photoEditorIdx] ? (
+          <div className="mt-5 rounded-3xl border border-white/15 bg-black/35 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-white/90">
+                  Editor da foto selecionada
+                </div>
+                <div className="mt-1 text-xs text-white/65">
+                  A miniatura seleciona a foto. A edição profunda acontece aqui
+                  embaixo.
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setPhotoEditorIdx(null);
+                  setPhotoEditorTab('overview');
+                  setHotspotSelectedIdx(null);
+                }}
+                className="rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/10"
+              >
+                Fechar editor
+              </button>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setPhotoEditorTab('overview')}
+                className={classNames(
+                  'rounded-2xl border px-4 py-2 text-xs font-semibold',
+                  photoEditorTab === 'overview'
+                    ? 'border-white/30 bg-white/10 text-white'
+                    : 'border-white/15 bg-white/5 text-white/80 hover:bg-white/10',
+                )}
+              >
+                Visão rápida
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setPhotoEditorTab('hotspots')}
+                className={classNames(
+                  'rounded-2xl border px-4 py-2 text-xs font-semibold',
+                  photoEditorTab === 'hotspots'
+                    ? 'border-white/30 bg-white/10 text-white'
+                    : 'border-white/15 bg-white/5 text-white/80 hover:bg-white/10',
+                )}
+              >
+                Pontos relevantes
+              </button>
+            </div>
+
+            <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+              <div>
+                <div className="overflow-hidden rounded-3xl border border-white/15 bg-black">
+                  <div
+                    className="relative"
+                    onClick={(e) => {
+                      if (photoEditorTab !== 'hotspots') return;
+
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const x = clampPct(((e.clientX - rect.left) / rect.width) * 100);
+                      const y = clampPct(((e.clientY - rect.top) / rect.height) * 100);
+
+                      const nextPoint: HotspotDraft = {
+                        x,
+                        y,
+                        title: '',
+                        description: '',
+                      };
+
+                      const nextIndex = editingHotspots.length;
+
+                      updateInsightAt(photoEditorIdx, (prev) => ({
+                        ...prev,
+                        hotspots: [...normalizeHotspots(prev.hotspots), nextPoint],
+                      }));
+
+                      setHotspotSelectedIdx(nextIndex);
+                    }}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={previews[photoEditorIdx].url}
+                      alt={previews[photoEditorIdx].file.name}
+                      className="h-auto w-full object-cover"
+                    />
+
+                    <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_top,rgba(0,0,0,0.14),rgba(0,0,0,0.03))]" />
+
+                    {editingHotspots.map((hs, pointIdx) => {
+                      const active = hotspotSelectedIdx === pointIdx;
+
+                      return (
+                        <span
+                          key={`${pointIdx}-${hs.x}-${hs.y}`}
+                          className="absolute -translate-x-1/2 -translate-y-1/2"
+                          style={{ left: `${hs.x}%`, top: `${hs.y}%` }}
+                        >
+                          <span
+                            className={classNames(
+                              'relative block h-5 w-5 rounded-full border',
+                              active
+                                ? 'border-white/80 bg-white/25'
+                                : 'border-white/55 bg-white/12',
+                            )}
+                          >
+                            <span className="absolute inset-[3px] rounded-full bg-white/95" />
+                          </span>
+                        </span>
+                      );
+                    })}
+
+                    <div className="absolute left-3 top-3 rounded-full border border-white/15 bg-black/50 px-3 py-1 text-[11px] font-semibold text-white/82 backdrop-blur">
+                      {photoEditorTab === 'hotspots'
+                        ? 'clique para adicionar ponto'
+                        : 'foto selecionada'}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-2 text-xs text-white/60">
+                  {photoEditorTab === 'hotspots'
+                    ? 'Use poucos pontos e apenas em detalhes realmente relevantes.'
+                    : 'Essas 3 linhas viram a leitura rápida da foto na página pública.'}
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/15 bg-black/40 p-4">
+                {photoEditorTab === 'overview' ? (
+                  <>
+                    <div className="text-xs font-semibold uppercase tracking-[0.14em] text-white/56">
+                      visão rápida da foto
+                    </div>
+
+                    <div className="mt-3 grid gap-3">
+                      {[0, 1, 2].map((lineIdx) => {
+                        const ov = normalizeOverview3(ins[photoEditorIdx]?.overview);
+                        const val = ov[lineIdx] ?? '';
+
+                        return (
+                          <label key={`overview-editor-${photoEditorIdx}-${lineIdx}`} className="grid gap-2">
+                            <span className="text-xs font-semibold text-white/65">
+                              Linha {lineIdx + 1}
+                            </span>
+                            <input
+                              value={val}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                updateInsightAt(photoEditorIdx, (prev) => {
+                                  const nextOv = normalizeOverview3(prev.overview);
+                                  nextOv[lineIdx] = v;
+                                  return { ...prev, overview: nextOv };
+                                });
+                              }}
+                              maxLength={42}
+                              placeholder={
+                                lineIdx === 0
+                                  ? 'Ex.: MDF de alta densidade'
+                                  : lineIdx === 1
+                                    ? 'Ex.: Acabamento nogueira'
+                                    : 'Ex.: Resistente a riscos'
+                              }
+                              className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
+                              disabled={disabled}
+                            />
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-xs font-semibold uppercase tracking-[0.14em] text-white/56">
+                      pontos desta foto
+                    </div>
+
+                    {editingHotspots.length === 0 ? (
+                      <div className="mt-3 text-sm text-white/65">
+                        Ainda não há pontos nesta foto.
+                      </div>
+                    ) : (
+                      <div className="mt-3 space-y-2">
+                        {editingHotspots.map((hs, pointIdx) => (
+                          <button
+                            key={`list-${pointIdx}-${hs.x}-${hs.y}`}
+                            type="button"
+                            onClick={() => setHotspotSelectedIdx(pointIdx)}
+                            className={classNames(
+                              'w-full rounded-2xl border px-3 py-3 text-left',
+                              hotspotSelectedIdx === pointIdx
+                                ? 'border-white/35 bg-white/[0.06]'
+                                : 'border-white/10 bg-white/[0.03] hover:border-white/20',
+                            )}
+                          >
+                            <div className="text-sm font-semibold text-white/88">
+                              {hs.title || `Ponto ${pointIdx + 1}`}
+                            </div>
+                            <div className="mt-1 text-[11px] text-white/56">
+                              X {Math.round(hs.x)}% • Y {Math.round(hs.y)}%
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {selectedHotspot ? (
+                      <div className="mt-4 border-t border-white/10 pt-4">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="text-sm font-semibold text-white/88">
+                            Editar ponto {hotspotSelectedIdx! + 1}
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (photoEditorIdx === null || hotspotSelectedIdx === null) return;
+
+                              updateInsightAt(photoEditorIdx, (prev) => ({
+                                ...prev,
+                                hotspots: normalizeHotspots(prev.hotspots).filter(
+                                  (_, i) => i !== hotspotSelectedIdx,
+                                ),
+                              }));
+
+                              const nextLen = editingHotspots.length - 1;
+                              setHotspotSelectedIdx(nextLen > 0 ? 0 : null);
+                            }}
+                            className="rounded-xl border border-rose-400/20 bg-rose-400/10 px-3 py-2 text-xs font-semibold text-rose-100 hover:bg-rose-400/15"
+                          >
+                            Remover ponto
+                          </button>
+                        </div>
+
+                        <div className="mt-3 grid gap-3">
+                          <label className="grid gap-2">
+                            <span className="text-xs font-semibold text-white/65">Título</span>
+                            <input
+                              value={selectedHotspot.title}
+                              onChange={(e) => {
+                                if (photoEditorIdx === null || hotspotSelectedIdx === null) return;
+
+                                updateInsightAt(photoEditorIdx, (prev) => {
+                                  const nextHotspots = normalizeHotspots(prev.hotspots);
+                                  nextHotspots[hotspotSelectedIdx] = {
+                                    ...nextHotspots[hotspotSelectedIdx]!,
+                                    title: e.target.value,
+                                  };
+                                  return { ...prev, hotspots: nextHotspots };
+                                });
+                              }}
+                              placeholder="Ex.: Braço"
+                              className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
+                            />
+                          </label>
+
+                          <label className="grid gap-2">
+                            <span className="text-xs font-semibold text-white/65">Descrição</span>
+                            <textarea
+                              value={selectedHotspot.description}
+                              onChange={(e) => {
+                                if (photoEditorIdx === null || hotspotSelectedIdx === null) return;
+
+                                updateInsightAt(photoEditorIdx, (prev) => {
+                                  const nextHotspots = normalizeHotspots(prev.hotspots);
+                                  nextHotspots[hotspotSelectedIdx] = {
+                                    ...nextHotspots[hotspotSelectedIdx]!,
+                                    description: e.target.value,
+                                  };
+                                  return { ...prev, hotspots: nextHotspots };
+                                });
+                              }}
+                              placeholder="Ex.: MDF laminado, acabamento nogueira."
+                              rows={4}
+                              className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
+                            />
+                          </label>
+
+                          <div className="grid grid-cols-2 gap-3">
+                            <label className="grid gap-2">
+                              <span className="text-xs font-semibold text-white/65">Posição X</span>
+                              <input
+                                value={selectedHotspot.x}
+                                onChange={(e) => {
+                                  if (photoEditorIdx === null || hotspotSelectedIdx === null) return;
+
+                                  updateInsightAt(photoEditorIdx, (prev) => {
+                                    const nextHotspots = normalizeHotspots(prev.hotspots);
+                                    nextHotspots[hotspotSelectedIdx] = {
+                                      ...nextHotspots[hotspotSelectedIdx]!,
+                                      x: clampPct(Number(e.target.value)),
+                                    };
+                                    return { ...prev, hotspots: nextHotspots };
+                                  });
+                                }}
+                                inputMode="decimal"
+                                className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
+                              />
+                            </label>
+
+                            <label className="grid gap-2">
+                              <span className="text-xs font-semibold text-white/65">Posição Y</span>
+                              <input
+                                value={selectedHotspot.y}
+                                onChange={(e) => {
+                                  if (photoEditorIdx === null || hotspotSelectedIdx === null) return;
+
+                                  updateInsightAt(photoEditorIdx, (prev) => {
+                                    const nextHotspots = normalizeHotspots(prev.hotspots);
+                                    nextHotspots[hotspotSelectedIdx] = {
+                                      ...nextHotspots[hotspotSelectedIdx]!,
+                                      y: clampPct(Number(e.target.value)),
+                                    };
+                                    return { ...prev, hotspots: nextHotspots };
+                                  });
+                                }}
+                                inputMode="decimal"
+                                className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
+                              />
+                            </label>
+                          </div>
+                        </div>
+                      </div>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            </div>
           </div>
         ) : null}
       </div>
@@ -1055,112 +1632,178 @@ function CatalogEditor({
 }) {
   const kindLabel =
     cat.kind === 'PHYSICAL'
-      ? 'FÍSICO'
+      ? 'Físico'
       : cat.kind === 'DIGITAL'
-        ? 'DIGITAL'
-        : 'SERVIÇO';
+        ? 'Digital'
+        : 'Serviço';
 
   const invLabel =
-    cat.inventoryMode === 'INFINITE' ? 'ESTOQUE INFINITO' : 'ESTOQUE LIMITADO';
+    cat.inventoryMode === 'INFINITE' ? 'Infinito' : 'Limitado';
+
+  const hasOptions = cat.options.some(
+    (opt) => String(opt?.name ?? '').trim() && (opt?.values ?? []).length > 0,
+  );
+
+  const hasVariants = cat.variants.length > 0;
+
+  const activeOptionGroups = cat.options
+    .map((opt, idx) => ({
+      idx,
+      name: String(opt?.name ?? '').trim(),
+      values: (opt?.values ?? []).map((v) => String(v ?? '').trim()).filter(Boolean),
+    }))
+    .filter((opt) => opt.name || opt.values.length);
+
+  const hasRenderableStructure = activeOptionGroups.some(
+    (group) => group.name && group.values.length > 0,
+  );
+
+  const canBuildVariants =
+    cat.kind === 'PHYSICAL' &&
+    activeOptionGroups.length > 0 &&
+    activeOptionGroups.every((group) => group.name && group.values.length > 0);
+
+  const usesVariantStock =
+    cat.kind === 'PHYSICAL' &&
+    cat.inventoryMode === 'LIMITED' &&
+    hasVariants;
+
+  const catalogModeText =
+    cat.kind === 'PHYSICAL'
+      ? cat.inventoryMode === 'LIMITED'
+        ? hasVariants
+          ? 'A peça opera com estoque por combinação.'
+          : 'A peça opera com estoque controlado.'
+        : 'A peça opera sem limite de estoque no MVP.'
+      : 'A peça opera sem estoque físico no MVP.';
 
   return (
-    <div className="rounded-3xl border border-white/15 bg-black/35 p-5">
-      <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <div className="text-sm font-semibold text-white/90">
-            Venda & disponibilidade (Marto)
+    <div className="grid gap-5">
+      <div className="rounded-[28px] border border-white/12 bg-black/28 p-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="text-sm font-semibold text-white/90">
+              Modelo comercial da peça
+            </div>
+            <div className="mt-1 text-sm leading-6 text-white/64">
+              Defina como essa peça existe no catálogo: natureza, inventário e preparação.
+            </div>
           </div>
-          <div className="mt-1 text-xs text-white/65">
-            Isso vira confiança e reduz dor de cabeça no pós-venda.
+
+          <div className="flex flex-wrap gap-2">
+            <Chip text={kindLabel.toUpperCase()} />
+            <Chip text={`ESTOQUE ${invLabel.toUpperCase()}`} />
           </div>
         </div>
-        <div className="flex flex-wrap gap-2">
-          <Chip text={kindLabel} />
-          <Chip text={invLabel} />
+
+        <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white/70">
+          {catalogModeText}
         </div>
-      </div>
 
-      <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <label className="grid gap-2">
-          <span className="text-xs font-semibold text-white/65">Tipo</span>
-          <select
-            value={cat.kind}
-            onChange={(e) => {
-              const nextKind = e.target.value as ProductKind;
-              setCat((p) => ({
-                ...p,
-                kind: nextKind,
-                inventoryMode:
-                  nextKind === 'PHYSICAL' ? p.inventoryMode : 'INFINITE',
-                stockTotal: nextKind === 'PHYSICAL' ? p.stockTotal : '',
-              }));
-            }}
-            className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm font-semibold text-white/85 outline-none focus:border-white/30"
-            disabled={disabled}
-          >
-            <option value="PHYSICAL">Físico</option>
-            <option value="DIGITAL">Digital</option>
-            <option value="SERVICE">Serviço</option>
-          </select>
-        </label>
+        <div className="mt-4 grid gap-4 xl:grid-cols-3">
+          <label className="grid gap-2">
+            <span className="text-xs font-semibold text-white/65">Tipo</span>
+            <select
+              value={cat.kind}
+              onChange={(e) => {
+                const nextKind = e.target.value as ProductKind;
+                setCat((p) => ({
+                  ...p,
+                  kind: nextKind,
+                  inventoryMode:
+                    nextKind === 'PHYSICAL' ? p.inventoryMode : 'INFINITE',
+                  stockTotal: nextKind === 'PHYSICAL' ? p.stockTotal : '',
+                }));
+              }}
+              className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm font-semibold text-white/88 outline-none focus:border-white/30"
+              disabled={disabled}
+            >
+              <option value="PHYSICAL">Físico</option>
+              <option value="DIGITAL">Digital</option>
+              <option value="SERVICE">Serviço</option>
+            </select>
+          </label>
 
-        <label className="grid gap-2">
-          <span className="text-xs font-semibold text-white/65">Inventário</span>
-          <select
-            value={cat.inventoryMode}
-            onChange={(e) =>
-              setCat((p) => ({ ...p, inventoryMode: e.target.value as InventoryMode }))
-            }
-            className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm font-semibold text-white/85 outline-none focus:border-white/30"
-            disabled={disabled || cat.kind !== 'PHYSICAL'}
-            title={cat.kind !== 'PHYSICAL' ? 'Digital/serviço: infinito no MVP' : undefined}
-          >
-            <option value="INFINITE">Infinito</option>
-            <option value="LIMITED">Limitado</option>
-          </select>
-        </label>
+          <label className="grid gap-2">
+            <span className="text-xs font-semibold text-white/65">Inventário</span>
+            <select
+              value={cat.inventoryMode}
+              onChange={(e) =>
+                setCat((p) => ({
+                  ...p,
+                  inventoryMode: e.target.value as InventoryMode,
+                }))
+              }
+              className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm font-semibold text-white/88 outline-none focus:border-white/30"
+              disabled={disabled || cat.kind !== 'PHYSICAL'}
+              title={
+                cat.kind !== 'PHYSICAL'
+                  ? 'Digital/serviço: infinito no MVP'
+                  : undefined
+              }
+            >
+              <option value="INFINITE">Infinito</option>
+              <option value="LIMITED">Limitado</option>
+            </select>
+          </label>
 
-        <label className="grid gap-2">
-          <span className="text-xs font-semibold text-white/65">
-            Prazo de preparação (dias)
-          </span>
-          <input
-            value={cat.prepDays}
-            onChange={(e) => setCat((p) => ({ ...p, prepDays: e.target.value }))}
-            className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-            placeholder="Ex.: 2"
-            inputMode="numeric"
-            disabled={disabled}
-          />
-        </label>
-
-        {cat.inventoryMode === 'LIMITED' && cat.kind === 'PHYSICAL' ? (
           <label className="grid gap-2">
             <span className="text-xs font-semibold text-white/65">
-              Estoque (sem variações)
+              Prazo de preparação (dias)
             </span>
             <input
-              value={cat.stockTotal}
-              onChange={(e) => setCat((p) => ({ ...p, stockTotal: e.target.value }))}
-              className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-              placeholder="Ex.: 12"
+              value={cat.prepDays}
+              onChange={(e) => setCat((p) => ({ ...p, prepDays: e.target.value }))}
+              className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none focus:border-white/30"
+              placeholder="Ex.: 2"
               inputMode="numeric"
               disabled={disabled}
             />
           </label>
+        </div>
+
+        {cat.inventoryMode === 'LIMITED' && cat.kind === 'PHYSICAL' ? (
+          <div className="mt-4">
+            {usesVariantStock ? (
+              <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-100">
+                Estoque por combinação ativo.
+                <div className="mt-1 text-xs text-emerald-100/80">
+                  O estoque geral sai de cena quando existem escolhas reais da peça.
+                </div>
+              </div>
+            ) : (
+              <label className="grid gap-2">
+                <span className="text-xs font-semibold text-white/65">Estoque base</span>
+                <input
+                  value={cat.stockTotal}
+                  onChange={(e) =>
+                    setCat((p) => ({ ...p, stockTotal: e.target.value }))
+                  }
+                  className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none focus:border-white/30"
+                  placeholder="Ex.: 12"
+                  inputMode="numeric"
+                  disabled={disabled}
+                />
+                <div className="text-[11px] text-white/50">
+                  Use isso apenas quando a peça não tiver combinações.
+                </div>
+              </label>
+            )}
+          </div>
         ) : null}
       </div>
 
-      {/* VARIAÇÕES */}
-      <div className="mt-5 rounded-3xl border border-white/15 bg-black/40 p-4">
-        <div className="flex flex-wrap items-start justify-between gap-2">
-          <div>
-            <div className="text-sm font-semibold text-white/90">Variações (Marto)</div>
-            <div className="mt-1 text-xs text-white/65">
-              Sem mudar preço (por enquanto): variação controla SKU e estoque.
-            </div>
+      <div className="rounded-[28px] border border-white/12 bg-black/28 p-5">
+        <div>
+          <div className="text-sm font-semibold text-white/90">
+            Escolhas reais do cliente
           </div>
-
+          <div className="mt-1 text-sm leading-6 text-white/64">
+            Estruture propriedades como cor, tamanho e voltagem. Quando necessário,
+            isso vira combinação operacional da peça.
+          </div>
+        </div>
+        <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
             type="button"
             onClick={() =>
@@ -1169,7 +1812,7 @@ function CatalogEditor({
                 options: [...p.options, { name: '', values: [] }],
               }))
             }
-            className="rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/10 disabled:opacity-60"
+            className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-xs font-semibold text-white/85 hover:bg-white/10 disabled:opacity-60"
             disabled={disabled || cat.kind !== 'PHYSICAL'}
             title={
               cat.kind !== 'PHYSICAL'
@@ -1179,163 +1822,303 @@ function CatalogEditor({
           >
             + Adicionar propriedade
           </button>
+
+          {cat.options.length ? (
+            <button
+              type="button"
+              onClick={() => {
+                const keys = cartesian(cat.options);
+                const variants: VariantRow[] = keys.map((k) => {
+                  const existing = cat.variants.find((v) => v.key === k);
+                  return (
+                    existing ?? {
+                      key: k,
+                      sku: '',
+                      stock: '',
+                    }
+                  );
+                });
+
+                setCat((p) => ({
+                  ...p,
+                  variants,
+                }));
+              }}
+              className={classNames(
+                'rounded-2xl px-4 py-2 text-xs font-semibold disabled:opacity-60',
+                canBuildVariants
+                  ? 'bg-white/10 text-white hover:bg-white/15'
+                  : 'border border-white/10 bg-black/30 text-white/45',
+              )}
+              disabled={disabled || !canBuildVariants}
+              title={
+                !canBuildVariants
+                  ? 'Preencha nome e valores de cada propriedade antes de montar combinações.'
+                  : undefined
+              }
+            >
+              {hasVariants ? 'Atualizar combinações' : 'Montar combinações'}
+            </button>
+          ) : null}
+
+          {cat.options.length && !canBuildVariants ? (
+            <span className="text-[11px] text-white/48">
+              Complete nome e valores para liberar as combinações.
+            </span>
+          ) : null}
         </div>
 
-        {cat.options.length ? (
-          <div className="mt-4 grid gap-3">
-            {cat.options.map((opt, idx) => (
-              <div key={idx} className="rounded-2xl border border-white/15 bg-black/40 p-3">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <label className="grid gap-2">
-                    <span className="text-xs font-semibold text-white/65">Propriedade</span>
-                    <input
-                      value={opt.name}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setCat((p) => {
-                          const next = [...p.options];
-                          next[idx] = { ...next[idx], name: v };
-                          return { ...p, options: next };
-                        });
-                      }}
-                      className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                      placeholder="Ex.: Cor"
-                      disabled={disabled}
-                    />
-                  </label>
-
-                  <label className="grid gap-2">
-                    <span className="text-xs font-semibold text-white/65">Valores (vírgula)</span>
-                    <input
-                      value={opt.values.join(', ')}
-                      onChange={(e) => {
-                        const values = e.target.value
-                          .split(',')
-                          .map((x) => x.trim())
-                          .filter(Boolean);
-
-                        setCat((p) => {
-                          const next = [...p.options];
-                          next[idx] = { ...next[idx], values };
-                          return { ...p, options: next };
-                        });
-                      }}
-                      className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                      placeholder="Ex.: Preto, Marrom"
-                      disabled={disabled}
-                    />
-                  </label>
+        {!cat.options.length ? (
+          <div className="mt-4 rounded-2xl border border-dashed border-white/15 bg-white/[0.02] p-5 text-sm text-white/64">
+            Sem variações por enquanto. Adicione propriedades como{' '}
+            <span className="font-semibold text-white/84">Cor</span>,{' '}
+            <span className="font-semibold text-white/84">Tamanho</span> ou{' '}
+            <span className="font-semibold text-white/84">Voltagem</span>.
+          </div>
+        ) : (
+          <>
+            {hasRenderableStructure ? (
+              <div className="mt-4 rounded-2xl border border-white/10 bg-black/35 p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                  Estrutura ativa
                 </div>
 
                 <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCat((p) => {
-                        const next = p.options.filter((_, i) => i !== idx);
-                        // se remove opções, zera variants também (evita chaves velhas)
-                        return { ...p, options: next, variants: [] };
-                      });
-                    }}
-                    className="rounded-2xl border border-white/15 bg-black/40 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-black/55 disabled:opacity-60"
-                    disabled={disabled}
-                  >
-                    Remover
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const keys = cartesian(cat.options);
-                      const variants: VariantRow[] = keys.map((k) => {
-                        const existing = cat.variants.find((v) => v.key === k);
-                        return (
-                          existing ?? {
-                            key: k,
-                            sku: '',
-                            stock: '',
-                          }
-                        );
-                      });
-
-                      setCat((p) => ({
-                        ...p,
-                        variants,
-                      }));
-                    }}
-                    className="rounded-2xl bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-60"
-                    disabled={disabled}
-                  >
-                    Gerar combinações
-                  </button>
-                </div>
-              </div>
-            ))}
-
-            {cat.variants.length ? (
-              <div className="rounded-2xl border border-white/15 bg-black/35 p-3">
-                <div className="mb-2 text-xs font-semibold text-white/70">
-                  Combinações ({cat.variants.length})
-                </div>
-
-                <div className="grid gap-2">
-                  {cat.variants.map((v, i) => (
-                    <div
-                      key={v.key}
-                      className="grid gap-2 rounded-2xl border border-white/10 bg-black/40 p-3 lg:grid-cols-[1fr_200px_140px]"
-                    >
-                      <div className="text-xs font-semibold text-white/85">{v.key}</div>
-
-                      <input
-                        value={v.sku}
-                        onChange={(e) => {
-                          const sku = e.target.value;
-                          setCat((p) => {
-                            const next = [...p.variants];
-                            next[i] = { ...next[i], sku };
-                            return { ...p, variants: next };
-                          });
-                        }}
-                        className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                        placeholder="SKU"
-                        disabled={disabled}
-                      />
-
-                      {cat.inventoryMode === 'LIMITED' && cat.kind === 'PHYSICAL' ? (
-                        <input
-                          value={v.stock}
-                          onChange={(e) => {
-                            const stock = e.target.value;
-                            setCat((p) => {
-                              const next = [...p.variants];
-                              next[i] = { ...next[i], stock };
-                              return { ...p, variants: next };
-                            });
-                          }}
-                          className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                          placeholder="Estoque"
-                          inputMode="numeric"
-                          disabled={disabled}
-                        />
-                      ) : (
-                        <div className="flex items-center text-xs text-white/55">Estoque infinito</div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="mt-2 text-[11px] text-white/55">
-                  Regra Marto: se inventário é{' '}
-                  <span className="font-semibold text-white/75">Limitado</span> e há variações,
-                  o estoque vale por variação (não pelo “estoque total”).
+                  {activeOptionGroups
+                    .filter((group) => group.name && group.values.length > 0)
+                    .map((group) => (
+                      <div
+                        key={`active-opt-${group.idx}`}
+                        className="rounded-full border border-white/15 bg-black/40 px-3 py-2 text-xs text-white/80"
+                      >
+                        <span className="font-semibold text-white/90">{group.name}</span>
+                        <span className="text-white/55">
+                          {' '}• {group.values.length} valor(es)
+                        </span>
+                      </div>
+                    ))}
                 </div>
               </div>
             ) : null}
-          </div>
-        ) : (
-          <div className="mt-3 text-xs text-white/60">
-            Sem variações por enquanto. (Opcional) Adicione “Cor”, “Tamanho”, “Voltagem” etc.
-          </div>
+
+            <div className="mt-4 grid gap-3">
+              {cat.options.map((opt, idx) => {
+                const values = (opt.values ?? []).filter(Boolean);
+
+                return (
+                  <div
+                    key={idx}
+                    className="rounded-2xl border border-white/10 bg-black/35 p-4"
+                  >
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="grid gap-3 xl:grid-cols-[200px_minmax(0,1fr)]">
+                          <label className="grid gap-2">
+                            <span className="text-xs font-semibold text-white/65">
+                              Propriedade
+                            </span>
+                            <input
+                              value={opt.name}
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                setCat((p) => {
+                                  const next = [...p.options];
+                                  next[idx] = { ...next[idx], name: v };
+                                  return { ...p, options: next };
+                                });
+                              }}
+                              className="rounded-2xl border border-white/15 bg-black/80 px-4 py-2.5 text-sm text-white/90 outline-none focus:border-white/30"
+                              placeholder="Ex.: Cor"
+                              disabled={disabled}
+                            />
+                          </label>
+
+                          <label className="grid gap-2">
+                            <span className="text-xs font-semibold text-white/65">
+                              Valores
+                            </span>
+                            <input
+                              value={opt.values.join(', ')}
+                              onChange={(e) => {
+                                const values = e.target.value
+                                  .split(',')
+                                  .map((x) => x.trim())
+                                  .filter(Boolean);
+
+                                setCat((p) => {
+                                  const next = [...p.options];
+                                  next[idx] = { ...next[idx], values };
+                                  return { ...p, options: next };
+                                });
+                              }}
+                              className="rounded-2xl border border-white/15 bg-black/80 px-4 py-2.5 text-sm text-white/90 outline-none focus:border-white/30"
+                              placeholder="Ex.: Preto, Marrom, Off-white"
+                              disabled={disabled}
+                            />
+                          </label>
+                        </div>
+
+                        {values.length ? (
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            {values.map((value, valueIdx) => (
+                              <span
+                                key={`${idx}-${valueIdx}-${value}`}
+                                className="inline-flex items-center rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/82"
+                              >
+                                {value}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <div className="mt-3 text-[11px] text-white/48">
+                            Adicione os valores separados por vírgula.
+                          </div>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCat((p) => {
+                            const next = p.options.filter((_, i) => i !== idx);
+                            return { ...p, options: next, variants: [] };
+                          });
+                        }}
+                        className="rounded-2xl border border-white/15 bg-black/40 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-black/55 disabled:opacity-60"
+                        disabled={disabled}
+                      >
+                        Remover
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {canBuildVariants && !cat.variants.length ? (
+              <div className="mt-4 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">
+                Estrutura pronta para virar combinação operacional.
+                <div className="mt-1 text-xs text-emerald-100/80">
+                  Agora você já pode montar as combinações reais da peça.
+                </div>
+              </div>
+            ) : null}
+
+            {cat.variants.length ? (
+              <div className="mt-5 rounded-2xl border border-white/10 bg-black/35 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-white/88">
+                      Combinações operacionais
+                    </div>
+                    <div className="mt-1 text-xs text-white/60">
+                      Cada combinação representa uma escolha real que a peça suporta.
+                    </div>
+                  </div>
+
+                  <Chip text={`${cat.variants.length} combinação(ões)`} />
+                </div>
+
+                <div className="mt-4 grid gap-3">
+                  {cat.variants.map((v, i) => {
+                    const pairs = parseVariantKey(v.key);
+
+                    return (
+                      <div
+                        key={v.key}
+                        className="rounded-2xl border border-white/10 bg-black/40 p-4"
+                      >
+                        <div className="flex flex-wrap gap-2">
+                          {pairs.length ? (
+                            pairs.map((pair, pairIdx) => (
+                              <span
+                                key={`${v.key}-${pairIdx}-${pair.name}-${pair.value}`}
+                                className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-1.5 text-xs text-white/85"
+                              >
+                                <span className="text-white/55">{pair.name}</span>
+                                <span className="font-semibold text-white">
+                                  {pair.value}
+                                </span>
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-xs font-semibold text-white/85">
+                              {v.key}
+                            </span>
+                          )}
+                        </div>
+
+                        <div
+                          className={classNames(
+                            'mt-4 grid gap-3',
+                            cat.inventoryMode === 'LIMITED' && cat.kind === 'PHYSICAL'
+                              ? 'xl:grid-cols-[minmax(0,1fr)_180px]'
+                              : 'xl:grid-cols-[minmax(0,1fr)]',
+                          )}
+                        >
+                          <label className="grid gap-2">
+                            <span className="text-xs font-semibold text-white/65">
+                              SKU da combinação
+                            </span>
+                            <input
+                              value={v.sku}
+                              onChange={(e) => {
+                                const sku = e.target.value;
+                                setCat((p) => {
+                                  const next = [...p.variants];
+                                  next[i] = { ...next[i], sku };
+                                  return { ...p, variants: next };
+                                });
+                              }}
+                              className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none focus:border-white/30"
+                              placeholder="Ex.: COSTELA-BRACO-PRATA"
+                              disabled={disabled}
+                            />
+                          </label>
+
+                          {cat.inventoryMode === 'LIMITED' && cat.kind === 'PHYSICAL' ? (
+                            <label className="grid gap-2">
+                              <span className="text-xs font-semibold text-white/65">
+                                Estoque da combinação
+                              </span>
+                              <input
+                                value={v.stock}
+                                onChange={(e) => {
+                                  const stock = e.target.value;
+                                  setCat((p) => {
+                                    const next = [...p.variants];
+                                    next[i] = { ...next[i], stock };
+                                    return { ...p, variants: next };
+                                  });
+                                }}
+                                className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none focus:border-white/30"
+                                placeholder="Ex.: 5"
+                                inputMode="numeric"
+                                disabled={disabled}
+                              />
+                            </label>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                <div className="mt-3 text-[11px] text-white/55">
+                  Regra Marto: quando existem combinações em inventário limitado,
+                  o estoque deixa de ser geral e passa a valer por combinação.
+                </div>
+              </div>
+            ) : hasOptions ? (
+              <div className="mt-4 rounded-2xl border border-dashed border-white/15 bg-white/[0.02] p-4 text-sm text-white/65">
+                Estrutura pronta. Agora clique em{' '}
+                <span className="font-semibold text-white/85">
+                  Montar combinações
+                </span>{' '}
+                para gerar a camada operacional da peça.
+              </div>
+            ) : null}
+          </>
         )}
       </div>
     </div>
@@ -1409,6 +2192,231 @@ function catalogHasVariants(cat: {
     );
   const hasVars = Array.isArray(cat.variants) && cat.variants.length > 0;
   return hasOpts && hasVars;
+}
+
+function parseVariantKey(key: string) {
+  return String(key ?? '')
+    .split('|')
+    .map((piece) => piece.trim())
+    .filter(Boolean)
+    .map((piece) => {
+      const eq = piece.indexOf('=');
+      if (eq <= 0) return null;
+
+      const name = piece.slice(0, eq).trim();
+      const value = piece.slice(eq + 1).trim();
+
+      if (!name || !value) return null;
+      return { name, value };
+    })
+    .filter(Boolean) as Array<{ name: string; value: string }>;
+}
+
+function buildOptionsFromVariants(variants: VariantRow[] = []) {
+  const map = new Map<string, Set<string>>();
+
+  for (const variant of variants) {
+    for (const pair of parseVariantKey(variant.key)) {
+      if (!map.has(pair.name)) map.set(pair.name, new Set());
+      map.get(pair.name)!.add(pair.value);
+    }
+  }
+
+  return Array.from(map.entries()).map(([name, values]) => ({
+    name,
+    values: Array.from(values),
+  }));
+}
+
+function uniqueStrings(values: string[]) {
+  return Array.from(
+    new Set(
+      values
+        .map((item) => String(item ?? '').trim())
+        .filter(Boolean),
+    ),
+  );
+}
+
+function normalizeColorName(value: string) {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[_-]+/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+function optionLooksLikeColor(name: string) {
+  const n = normalizeColorName(name);
+  return (
+    n === 'cor' ||
+    n === 'cores' ||
+    n === 'color' ||
+    n === 'colors' ||
+    n === 'tonalidade'
+  );
+}
+
+function colorSwatchStyle(value: string): React.CSSProperties {
+  const n = normalizeColorName(value);
+
+  const palette: Record<string, React.CSSProperties> = {
+    preto: { background: '#111111', borderColor: 'rgba(255,255,255,0.18)' },
+    branco: { background: '#f8fafc', borderColor: 'rgba(255,255,255,0.28)' },
+    'off white': { background: '#f3efe5', borderColor: 'rgba(255,255,255,0.22)' },
+    offwhite: { background: '#f3efe5', borderColor: 'rgba(255,255,255,0.22)' },
+    bege: { background: '#d6c2a1', borderColor: 'rgba(255,255,255,0.18)' },
+    creme: { background: '#efe3c2', borderColor: 'rgba(255,255,255,0.18)' },
+    marfim: { background: '#f5efdd', borderColor: 'rgba(255,255,255,0.18)' },
+    nude: { background: '#c8a07a', borderColor: 'rgba(255,255,255,0.18)' },
+    prata: {
+      background:
+        'linear-gradient(135deg, #f3f4f6 0%, #d7dce2 30%, #8e97a4 62%, #eef2f7 100%)',
+      borderColor: 'rgba(255,255,255,0.22)',
+    },
+    cinza: { background: '#9ca3af', borderColor: 'rgba(255,255,255,0.18)' },
+    grafite: { background: '#4b5563', borderColor: 'rgba(255,255,255,0.18)' },
+    chumbo: { background: '#374151', borderColor: 'rgba(255,255,255,0.18)' },
+    dourado: {
+      background:
+        'linear-gradient(135deg, #fef3c7 0%, #f59e0b 35%, #b45309 70%, #fde68a 100%)',
+      borderColor: 'rgba(255,255,255,0.2)',
+    },
+    ouro: {
+      background:
+        'linear-gradient(135deg, #fef3c7 0%, #f59e0b 35%, #b45309 70%, #fde68a 100%)',
+      borderColor: 'rgba(255,255,255,0.2)',
+    },
+    marrom: { background: '#6f4e37', borderColor: 'rgba(255,255,255,0.18)' },
+    cafe: { background: '#6f4e37', borderColor: 'rgba(255,255,255,0.18)' },
+    castanho: { background: '#7c5a43', borderColor: 'rgba(255,255,255,0.18)' },
+    caramelo: { background: '#b8793b', borderColor: 'rgba(255,255,255,0.18)' },
+    vermelho: { background: '#dc2626', borderColor: 'rgba(255,255,255,0.18)' },
+    vinho: { background: '#7f1d1d', borderColor: 'rgba(255,255,255,0.18)' },
+    bordo: { background: '#7f1d1d', borderColor: 'rgba(255,255,255,0.18)' },
+    azul: { background: '#2563eb', borderColor: 'rgba(255,255,255,0.18)' },
+    'azul marinho': { background: '#1e3a8a', borderColor: 'rgba(255,255,255,0.18)' },
+    verde: { background: '#16a34a', borderColor: 'rgba(255,255,255,0.18)' },
+    oliva: { background: '#556b2f', borderColor: 'rgba(255,255,255,0.18)' },
+    amarelo: { background: '#facc15', borderColor: 'rgba(255,255,255,0.18)' },
+    laranja: { background: '#f97316', borderColor: 'rgba(255,255,255,0.18)' },
+    rosa: { background: '#ec4899', borderColor: 'rgba(255,255,255,0.18)' },
+    roxo: { background: '#7c3aed', borderColor: 'rgba(255,255,255,0.18)' },
+    lilas: { background: '#a78bfa', borderColor: 'rgba(255,255,255,0.18)' },
+    transparente: {
+      background:
+        'linear-gradient(45deg, #111 25%, #222 25%, #222 50%, #111 50%, #111 75%, #222 75%, #222 100%)',
+      backgroundSize: '10px 10px',
+      borderColor: 'rgba(255,255,255,0.2)',
+    },
+    multicolor: {
+      background:
+        'linear-gradient(90deg, #ef4444 0%, #f59e0b 20%, #eab308 40%, #22c55e 60%, #3b82f6 80%, #a855f7 100%)',
+      borderColor: 'rgba(255,255,255,0.2)',
+    },
+  };
+
+  return (
+    palette[n] ?? {
+      background:
+        'linear-gradient(135deg, rgba(255,255,255,0.28), rgba(255,255,255,0.08))',
+      borderColor: 'rgba(255,255,255,0.18)',
+    }
+  );
+}
+
+function variationCountLabel(count: number) {
+  return `${count} ${count === 1 ? 'VARIAÇÃO' : 'VARIAÇÕES'}`;
+}
+
+function normalizeLiveReadingLine(value: string) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return '';
+
+  const isAllCaps =
+    raw === raw.toUpperCase() && /[A-ZÀ-Ý]/.test(raw);
+
+  if (!isAllCaps) return raw;
+
+  return raw
+    .toLowerCase()
+    .split(' ')
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ');
+}
+
+function colorPresenceStyle(value: string): React.CSSProperties {
+  const n = normalizeColorName(value);
+
+  if (n === 'prata') {
+    return {
+      background:
+        'linear-gradient(135deg, rgba(255,255,255,0.22) 0%, rgba(215,220,226,0.18) 30%, rgba(142,151,164,0.22) 62%, rgba(255,255,255,0.12) 100%)',
+      borderColor: 'rgba(255,255,255,0.16)',
+      boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.04)',
+    };
+  }
+
+  if (n === 'dourado' || n === 'ouro') {
+    return {
+      background:
+        'linear-gradient(135deg, rgba(254,243,199,0.18) 0%, rgba(245,158,11,0.16) 35%, rgba(180,83,9,0.18) 70%, rgba(253,230,138,0.12) 100%)',
+      borderColor: 'rgba(255,255,255,0.14)',
+      boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.04)',
+    };
+  }
+
+  return {
+    background: 'rgba(255,255,255,0.035)',
+    borderColor: 'rgba(255,255,255,0.1)',
+    boxShadow: 'inset 0 0 0 1px rgba(255,255,255,0.03)',
+  };
+}
+
+function firstNonEmptyOverview(insights?: ImageInsight[] | null) {
+  const list = Array.isArray(insights) ? insights : [];
+
+  for (const item of list) {
+    const lines = normalizeOverview3(item?.overview)
+      .map((line) => String(line ?? '').trim())
+      .filter(Boolean);
+
+    if (lines.length) return lines;
+  }
+
+  return [] as string[];
+}
+
+function buildCardCatalogLens(cat?: Partial<CatalogSpec> | null) {
+  const normalized = normalizeCatalogSpec(cat ?? null);
+
+  const optionGroups = normalized.options
+    .map((opt) => ({
+      name: String(opt?.name ?? '').trim(),
+      values: (opt?.values ?? [])
+        .map((v) => String(v ?? '').trim())
+        .filter(Boolean),
+    }))
+    .filter((opt) => opt.name && opt.values.length)
+    .slice(0, 3);
+
+  const combinations = normalized.variants
+    .slice(0, 3)
+    .map((variant) =>
+      parseVariantKey(variant.key)
+        .map((pair) => `${pair.name}: ${pair.value}`)
+        .join(' • '),
+    )
+    .filter(Boolean);
+
+  return {
+    optionGroups,
+    combinations,
+    totalCombinations: normalized.variants.length,
+  };
 }
 
 function checklistForDraft(input: {
@@ -1615,6 +2623,119 @@ export default function MerchantProductsPage() {
     collection: '',
     version: '',
   });
+  const [createSheetOpen, setCreateSheetOpen] = useState(false);
+
+  const createHasDraft =
+    !!title.trim() ||
+    !!description.trim() ||
+    !!price.trim() ||
+    files.length > 0 ||
+    productServices.length > 0 ||
+    hasAnyTech(spec) ||
+    !!idn.handle.trim() ||
+    !!dna.skuRoot.trim() ||
+    !!dna.collection.trim() ||
+    !!dna.version.trim() ||
+    cat.options.length > 0 ||
+    cat.variants.length > 0 ||
+    !!cat.prepDays.trim() ||
+    !!cat.stockTotal.trim();
+
+  const createStructureScore = [
+    {
+      label: 'Base',
+      done: !!title.trim() && !!price.trim(),
+    },
+    {
+      label: 'Fotos',
+      done: files.length > 0,
+    },
+    {
+      label: 'Catálogo',
+      done:
+        cat.options.length > 0 ||
+        cat.variants.length > 0 ||
+        !!cat.prepDays.trim() ||
+        !!cat.stockTotal.trim(),
+    },
+    {
+      label: 'Ficha',
+      done: hasAnyTech(spec),
+    },
+  ];
+
+  const createReadinessCount = createStructureScore.filter((item) => item.done).length;
+
+  const createLauncherStatus = !createHasDraft
+    ? 'CRIADOR RECOLHIDO'
+    : createReadinessCount >= 4
+      ? 'PRONTO PARA REVISÃO'
+      : `RASCUNHO • ${stepLabel(newStep).toUpperCase()}`;
+
+  const createDraftState = !createHasDraft
+    ? 'RASCUNHO VAZIO'
+    : createReadinessCount >= 4
+      ? 'PRONTO PARA REVISÃO'
+      : createReadinessCount === 0
+        ? 'INICIANDO'
+        : `EM CONSTRUÇÃO • ${stepLabel(newStep).toUpperCase()}`;
+
+  const createDraftTone: 'neutral' | 'good' | 'warn' =
+    !createHasDraft
+      ? 'neutral'
+      : createReadinessCount >= 4
+        ? 'good'
+        : 'warn';
+
+  function resetCreateDraft() {
+    setNewStep('BASIC');
+    setTitle('');
+    setDescription('');
+    setPrice('');
+    setProductServices([]);
+    setFiles([]);
+    setImageInsights([]);
+    setUploadProgress('');
+    setSpec({
+      weightKg: '',
+      lengthCm: '',
+      widthCm: '',
+      heightCm: '',
+      sku: '',
+      barcode: '',
+      brand: '',
+      tags: '',
+    });
+    setCat({
+      kind: 'PHYSICAL',
+      inventoryMode: 'INFINITE',
+      stockTotal: '',
+      prepDays: '',
+      options: [],
+      variants: [],
+    });
+    setIdn({ handle: '' });
+    setDna({
+      skuRoot: '',
+      collection: '',
+      version: '',
+    });
+  }
+
+  function openCreateSheet() {
+    setCreateSheetOpen(true);
+  }
+
+  function closeCreateSheet() {
+    if (saving || uploading) return;
+    setCreateSheetOpen(false);
+  }
+
+  function discardCreateDraft() {
+    if (saving || uploading) return;
+    resetCreateDraft();
+    setCreateSheetOpen(false);
+  }
 
   // edição inline
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -1640,7 +2761,13 @@ export default function MerchantProductsPage() {
   const [eFiles, setEFiles] = useState<File[]>([]);
   const [eKeepInsights, setEKeepInsights] = useState<ImageInsight[]>([]);
   const [eInsights, setEInsights] = useState<ImageInsight[]>([]);
-  const [eOpenInsightIdx, setEOpenInsightIdx] = useState<number | null>(null);
+  const [ePhotoEditorIdx, setEPhotoEditorIdx] = useState<number | null>(null);
+  const [ePhotoEditorTab, setEPhotoEditorTab] = useState<
+    'overview' | 'hotspots'
+  >('overview');
+  const [eHotspotSelectedIdx, setEHotspotSelectedIdx] = useState<number | null>(
+    null,
+  );
   const [eUploading, setEUploading] = useState(false);
   const [eUploadProgress, setEUploadProgress] = useState('');
 
@@ -1649,6 +2776,16 @@ export default function MerchantProductsPage() {
   const [eKeepCaptions, setEKeepCaptions] = useState<string[]>([]);
   const [dragFromIdx, setDragFromIdx] = useState<number | null>(null);
   const [dragOverIdx, setDragOverIdx] = useState<number | null>(null);
+
+  const eCurrentEditingHotspots =
+    ePhotoEditorIdx !== null
+      ? normalizeHotspots(eKeepInsights[ePhotoEditorIdx]?.hotspots)
+      : [];
+
+  const eCurrentSelectedHotspot =
+    ePhotoEditorIdx !== null && eHotspotSelectedIdx !== null
+      ? eCurrentEditingHotspots[eHotspotSelectedIdx] ?? null
+      : null;
 
   // Ficha técnica (edição)
   const [eSpec, setESpec] = useState<TechSpec>({
@@ -1989,38 +3126,9 @@ useEffect(() => {
         return;
       }
 
-      setTitle('');
-      setDescription('');
-      setPrice('');
-      setProductServices([]);
-      setFiles([]);
-      setImageInsights([]);
-      setSpec({
-        weightKg: '',
-        lengthCm: '',
-        widthCm: '',
-        heightCm: '',
-        sku: '',
-        barcode: '',
-        brand: '',
-        tags: '',
-      });
-      setCat({
-        kind: 'PHYSICAL',
-        inventoryMode: 'INFINITE',
-        stockTotal: '',
-        prepDays: '',
-        options: [],
-        variants: [],
-      });
-      setIdn({ handle: '' });
-      setDna({
-        skuRoot: '',
-        collection: '',
-        version: '',
-      });
-
       await loadProducts();
+      resetCreateDraft();
+      setCreateSheetOpen(false);
       setMsg('Produto criado.');
     } catch (e: unknown) {
       const err = e as ApiError;
@@ -2107,47 +3215,64 @@ useEffect(() => {
     );
     setEDesc(base);
 
-    // se tiver meta, usa meta; senão, fallback nos marcadores antigos
+    // combina meta + bloco antigo do catálogo para não perder propriedades
     const extractedTech = metaTech ?? extractTechBlock(p.description ?? '');
-    const extractedCat = metaCat ?? extractCatalogBlock(p.description ?? '');
+    const descCat = extractCatalogBlock(p.description ?? '');
+
+    const mergedVariants =
+      Array.isArray(metaCat?.variants) && metaCat.variants.length
+        ? metaCat.variants
+        : Array.isArray(descCat.variants) && descCat.variants.length
+          ? descCat.variants
+          : [];
+
+    const mergedCatSource: Partial<CatalogSpec> = {
+      ...(descCat ?? {}),
+      ...(metaCat ?? {}),
+      variants: mergedVariants,
+      options: normalizeCatalogOptions(
+        [
+          ...(Array.isArray(descCat.options) ? descCat.options : []),
+          ...(Array.isArray(metaCat?.options) ? metaCat.options : []),
+        ],
+        mergedVariants,
+      ),
+    };
+
     const productKind =
-      p.productType === 'PHYSICAL' || p.productType === 'DIGITAL' || p.productType === 'SERVICE'
+      p.productType === 'PHYSICAL' ||
+      p.productType === 'DIGITAL' ||
+      p.productType === 'SERVICE'
         ? p.productType
-        : extractedCat.kind === 'PHYSICAL' ||
-            extractedCat.kind === 'DIGITAL' ||
-            extractedCat.kind === 'SERVICE'
-          ? extractedCat.kind
+        : mergedCatSource.kind === 'PHYSICAL' ||
+            mergedCatSource.kind === 'DIGITAL' ||
+            mergedCatSource.kind === 'SERVICE'
+          ? mergedCatSource.kind
           : 'PHYSICAL';
 
     setESpec({
-      weightKg: formatOptionalWeightKgFromGrams(p.weightGrams) || String(extractedTech.weightKg ?? ''),
+      weightKg:
+        formatOptionalWeightKgFromGrams(p.weightGrams) ||
+        String(extractedTech.weightKg ?? ''),
       lengthCm:
-        (typeof p.lengthCm === 'number' && p.lengthCm > 0
+        typeof p.lengthCm === 'number' && p.lengthCm > 0
           ? String(p.lengthCm)
-          : String(extractedTech.lengthCm ?? '')),
+          : String(extractedTech.lengthCm ?? ''),
       widthCm:
-        (typeof p.widthCm === 'number' && p.widthCm > 0
+        typeof p.widthCm === 'number' && p.widthCm > 0
           ? String(p.widthCm)
-          : String(extractedTech.widthCm ?? '')),
+          : String(extractedTech.widthCm ?? ''),
       heightCm:
-        (typeof p.heightCm === 'number' && p.heightCm > 0
+        typeof p.heightCm === 'number' && p.heightCm > 0
           ? String(p.heightCm)
-          : String(extractedTech.heightCm ?? '')),
+          : String(extractedTech.heightCm ?? ''),
       sku: String(extractedTech.sku ?? ''),
       barcode: String(extractedTech.barcode ?? ''),
       brand: String(extractedTech.brand ?? ''),
       tags: String(extractedTech.tags ?? ''),
     });
 
-    setECat({
-      ...(metaCat ?? {}),
-      kind: productKind,
-      inventoryMode: (extractedCat.inventoryMode as InventoryMode) ?? 'INFINITE',
-      stockTotal: String(extractedCat.stockTotal ?? ''),
-      prepDays: String(extractedCat.prepDays ?? ''),
-      options: Array.isArray(extractedCat.options) ? extractedCat.options : [],
-      variants: Array.isArray(extractedCat.variants) ? extractedCat.variants : [],
-    });
+    setECat(normalizeCatalogSpec(mergedCatSource, productKind));
 
     setEPrice((p.priceCents / 100).toFixed(2).replace('.', ','));
     setEFiles([]);
@@ -2162,7 +3287,9 @@ useEffect(() => {
       normalizeInsightsForLen((p.images ?? []).length, p.imageInsights ?? []),
     );
     setEInsights(normalizeInsightsForLen(0, []));
-    setEOpenInsightIdx(null);
+    setEPhotoEditorIdx(null);
+    setEPhotoEditorTab('overview');
+    setEHotspotSelectedIdx(null);
     setEProductServices(
       Array.isArray(
         (p as { serviceLinks?: Array<{ serviceType?: string | null }> })
@@ -2200,6 +3327,9 @@ useEffect(() => {
     setEKeepCaptions([]);
     setEKeepInsights([]);
     setEInsights([]);
+    setEPhotoEditorIdx(null);
+    setEPhotoEditorTab('overview');
+    setEHotspotSelectedIdx(null);
     setEProductServices([]);
     setESpec({
       weightKg: '',
@@ -2277,7 +3407,12 @@ useEffect(() => {
       ? `${stripCatalogBlock(withDna ?? '')}\n\n${buildCatalogBlock(eCat)}`
       : buildCatalogBlock(eCat);
 
-    const insightsToSend = normalizeInsightsForLen(baseImgs.length, eKeepInsights);
+    const keepInsights = normalizeInsightsForLen(baseImgs.length, eKeepInsights);
+    const newInsights = normalizeInsightsForLen(eFiles.length, eInsights);
+    const insightsToSend = normalizeInsightsForLen(
+      imagesToSend?.length ?? 0,
+      [...keepInsights, ...newInsights],
+    );
     const requiresShipping = eCat.kind === 'PHYSICAL';
     const productType = eCat.kind;
 
@@ -2380,87 +3515,909 @@ useEffect(() => {
     return { total, active, withImg, withTech, withCatalog, ready };
   }, [products]);
 
+  const pendingCount = Math.max(0, stats.total - stats.ready);
+  const missingPhotoCount = Math.max(0, stats.total - stats.withImg);
+  const missingTechCount = Math.max(0, stats.total - stats.withTech);
+  const missingCatalogCount = Math.max(0, stats.total - stats.withCatalog);
+  const readinessPct =
+    stats.total > 0 ? Math.round((stats.ready / stats.total) * 100) : 0;
+
+  const focusTitle =
+    missingPhotoCount > 0
+      ? 'Completar fotos de capa'
+      : missingCatalogCount > 0
+        ? 'Estruturar catálogo ativo'
+        : missingTechCount > 0
+          ? 'Fechar ficha técnica'
+          : pendingCount > 0
+            ? 'Empurrar itens para pronto (MVP)'
+            : 'Catálogo saudável';
+
+  const focusHint =
+    missingPhotoCount > 0
+      ? `${missingPhotoCount} item(ns) ainda precisam de foto para ganhar confiança visual.`
+      : missingCatalogCount > 0
+        ? `${missingCatalogCount} item(ns) ainda estão sem catálogo completo.`
+        : missingTechCount > 0
+          ? `${missingTechCount} item(ns) ainda podem ganhar ficha técnica para reduzir dúvida.`
+          : pendingCount > 0
+            ? `${pendingCount} item(ns) já têm base e pedem acabamento final para virar reputação.`
+            : 'Agora o foco pode migrar para refino de vitrine, serviço e performance.';
+
+  const createWizardBody = (
+    <div className="mt-4 grid gap-4">
+      {newStep === 'BASIC' ? (
+        <div className="grid gap-5">
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                Nome
+              </div>
+              <div className="mt-2 text-sm font-semibold text-white/90">
+                {title.trim() || 'Ainda não definido'}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                Preço
+              </div>
+              <div className="mt-2 text-sm font-semibold text-white/90">
+                {price.trim() ? `R$ ${price.trim()}` : 'Ainda não definido'}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                Serviços
+              </div>
+              <div className="mt-2 text-sm font-semibold text-white/90">
+                {productServices.length} ligado(s)
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                Handle
+              </div>
+              <div className="mt-2 text-sm font-semibold text-white/90">
+                {slugifyMarto(idn.handle || title) || 'Ainda não definido'}
+              </div>
+            </div>
+          </div>
+
+          <FormSection
+            eyebrow="Essência da peça"
+            title="Base comercial do produto"
+            description="Defina o que o cliente entende rápido: nome forte, descrição que reduz dúvida e preço claro."
+          >
+            <div className="grid gap-4">
+              <label className="grid gap-2">
+                <span className="text-sm font-semibold text-white/84">Nome do produto</span>
+                <input
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  placeholder="Ex.: Mesa Lua 1,60m"
+                  className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                  disabled={saving || uploading}
+                />
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-sm font-semibold text-white/84">Descrição</span>
+                <textarea
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  rows={4}
+                  placeholder="Foque no que evita dúvidas: material, medidas, acabamento, uso, sensação da peça..."
+                  className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                  disabled={saving || uploading}
+                />
+              </label>
+
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                <label className="grid gap-2">
+                  <span className="text-sm font-semibold text-white/84">Preço (R$)</span>
+                  <input
+                    value={price}
+                    onChange={(e) => setPrice(e.target.value)}
+                    placeholder="Ex.: 1299,90"
+                    className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                    disabled={saving || uploading}
+                  />
+                </label>
+
+                <SoftHint title="Marto dica">
+                  Um bom nome + uma descrição sem dúvida + um preço claro já
+                  colocam a peça em posição mais forte antes mesmo das fotos e
+                  do catálogo.
+                </SoftHint>
+              </div>
+            </div>
+          </FormSection>
+
+          <FormSection
+            eyebrow="Ecossistema ligado"
+            title="Serviços associados ao produto"
+            description="Selecione os serviços que podem entrar no ciclo real da compra, entrega, instalação e suporte."
+          >
+            <div className="grid gap-3 sm:grid-cols-2">
+              {PRODUCT_SERVICE_OPTIONS.map((option) => {
+                const selected = productServices.includes(option.key);
+
+                return (
+                  <button
+                    key={option.key}
+                    type="button"
+                    onClick={() => {
+                      setProductServices((prev) =>
+                        prev.includes(option.key)
+                          ? prev.filter((item) => item !== option.key)
+                          : [...prev, option.key],
+                      );
+                    }}
+                    className={classNames(
+                      'rounded-2xl border px-4 py-4 text-left transition',
+                      selected
+                        ? 'border-emerald-400/20 bg-emerald-400/10'
+                        : 'border-white/12 bg-black/35 hover:bg-black/50',
+                    )}
+                    disabled={saving || uploading}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="text-sm font-semibold text-white/88">{option.label}</div>
+                      <Chip
+                        text={selected ? 'Ligado' : 'Opcional'}
+                        tone={selected ? 'good' : 'neutral'}
+                      />
+                    </div>
+
+                    <div className="mt-2 text-xs leading-5 text-white/58">
+                      {option.key === 'assembly'
+                        ? 'Para peças que pedem montagem no destino.'
+                        : option.key === 'installation'
+                          ? 'Quando a entrega evolui para instalação real.'
+                          : option.key === 'maintenance'
+                            ? 'Suporte e manutenção pós-compra.'
+                            : option.key === 'delivery'
+                              ? 'Entrega como parte do ciclo operacional.'
+                              : 'Serviço técnico ligado à decisão de compra.'}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </FormSection>
+
+          <FormSection
+            eyebrow="Identidade pública"
+            title="Handle e rastreio da peça"
+            description="Curto, estável e legível. Essa identidade ajuda a peça a ganhar memória dentro do ecossistema."
+          >
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_260px]">
+              <label className="grid gap-2">
+                <span className="text-sm font-semibold text-white/84">Handle público</span>
+                <input
+                  value={idn.handle}
+                  onChange={(e) => setIdn({ handle: e.target.value })}
+                  placeholder="Ex.: mesa-lua-160"
+                  className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                  disabled={saving || uploading}
+                />
+              </label>
+
+              <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                  Prévia
+                </div>
+                <div className="mt-2 text-sm font-semibold text-white/90">
+                  /p/{slugifyMarto(idn.handle || title) || 'sua-peca'}
+                </div>
+                <div className="mt-2 text-xs leading-5 text-white/58">
+                  O Marto normaliza o handle para ficar estável e legível.
+                </div>
+              </div>
+            </div>
+          </FormSection>
+
+          <FormSection
+            eyebrow="DNA operacional"
+            title="Rastreio interno da peça"
+            description="Use esse bloco para organizar SKU raiz, coleção e versão operacional."
+          >
+            <div className="grid gap-4 sm:grid-cols-3">
+              <label className="grid gap-2">
+                <span className="text-sm font-semibold text-white/84">SKU raiz</span>
+                <input
+                  value={dna.skuRoot}
+                  onChange={(e) => setDna((p) => ({ ...p, skuRoot: e.target.value }))}
+                  placeholder="Ex.: MESA-LUA"
+                  className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                  disabled={saving || uploading}
+                />
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-sm font-semibold text-white/84">Coleção / linha</span>
+                <input
+                  value={dna.collection}
+                  onChange={(e) => setDna((p) => ({ ...p, collection: e.target.value }))}
+                  placeholder="Ex.: Linha Lua"
+                  className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                  disabled={saving || uploading}
+                />
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-sm font-semibold text-white/84">Versão</span>
+                <input
+                  value={dna.version}
+                  onChange={(e) => setDna((p) => ({ ...p, version: e.target.value }))}
+                  placeholder="Ex.: v1 / 2026-A"
+                  className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                  disabled={saving || uploading}
+                />
+              </label>
+            </div>
+          </FormSection>
+        </div>
+      ) : null}
+
+      {newStep === 'PHOTOS' ? (
+        <div className="grid gap-5">
+          <FormSection
+            eyebrow="Imagem viva"
+            title="Fotos e leitura visual"
+            description="A capa vende confiança. As demais fotos aprofundam material, textura, detalhe e contexto de uso."
+          >
+            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
+              <FilesDropzone
+                label="Fotos do produto"
+                hint="Recomendado: 1024px+. Formatos: WEBP/PNG/JPEG/GIF. A 1ª vira capa."
+                files={files}
+                setFiles={(next) => {
+                  setFiles(next);
+                  setImageInsights(normalizeInsightsForLen(next.length, imageInsights));
+                }}
+                insights={imageInsights}
+                setInsights={setImageInsights}
+                disabled={saving || uploading}
+                maxFiles={10}
+              />
+
+              <div className="grid gap-3">
+                <SoftHint title="Ordem Marto">
+                  Comece com uma foto clara e frontal. Depois mostre textura,
+                  detalhe, canto, composição e contexto de uso.
+                </SoftHint>
+
+                <SoftHint title="Leitura viva">
+                  Use a visão rápida para transformar a foto em compreensão: o
+                  que a peça transmite, resolve ou destaca.
+                </SoftHint>
+
+                <SoftHint title="Pontos relevantes">
+                  Marque poucos pontos, apenas os que realmente ajudam o cliente
+                  a entender a peça sem fricção.
+                </SoftHint>
+              </div>
+            </div>
+          </FormSection>
+        </div>
+      ) : null}
+
+      {newStep === 'CATALOG' ? (
+        <div className="grid gap-5">
+          <FormSection
+            eyebrow="Operação comercial"
+            title="Catálogo ativo e disponibilidade"
+            description="Defina o modelo comercial da peça e as escolhas reais do cliente, sem duplicar resumo e sem poluir a leitura."
+          >
+            <CatalogEditor
+              cat={cat}
+              setCat={(updater) => setCat((prev) => updater(prev))}
+              disabled={saving || uploading}
+            />
+          </FormSection>
+        </div>
+      ) : null}
+
+      {newStep === 'TECH' ? (
+        <div className="grid gap-5">
+          <FormSection
+            eyebrow="Dado limpo"
+            title="Ficha técnica e base logística"
+            description="Isso aumenta confiança, ajuda no frete e transforma a peça em dado operacional mais confiável."
+          >
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm text-white/62">
+                Preencha o que realmente ajuda o cliente e a operação.
+              </div>
+
+              {hasAnyTech(spec) ? (
+                <Chip text="FICHA EM CONSTRUÇÃO" tone="good" />
+              ) : (
+                <Chip text="AINDA OPCIONAL" tone="neutral" />
+              )}
+            </div>
+
+            <div className="grid gap-5">
+              <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                <div className="mb-4 text-sm font-semibold text-white/88">
+                  Estrutura física
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                  <label className="grid gap-2">
+                    <span className="text-xs font-semibold text-white/65">Peso (kg)</span>
+                    <input
+                      value={spec.weightKg}
+                      onChange={(e) => setSpec((p) => ({ ...p, weightKg: e.target.value }))}
+                      className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none placeholder:text-white/50 focus:border-white/30"
+                      placeholder="Ex.: 12,5"
+                      disabled={saving || uploading}
+                      inputMode="decimal"
+                    />
+                  </label>
+
+                  <label className="grid gap-2">
+                    <span className="text-xs font-semibold text-white/65">Comprimento (cm)</span>
+                    <input
+                      value={spec.lengthCm}
+                      onChange={(e) => setSpec((p) => ({ ...p, lengthCm: e.target.value }))}
+                      className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none placeholder:text-white/50 focus:border-white/30"
+                      placeholder="Ex.: 160"
+                      disabled={saving || uploading}
+                      inputMode="numeric"
+                    />
+                  </label>
+
+                  <label className="grid gap-2">
+                    <span className="text-xs font-semibold text-white/65">Largura (cm)</span>
+                    <input
+                      value={spec.widthCm}
+                      onChange={(e) => setSpec((p) => ({ ...p, widthCm: e.target.value }))}
+                      className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none placeholder:text-white/50 focus:border-white/30"
+                      placeholder="Ex.: 90"
+                      disabled={saving || uploading}
+                      inputMode="numeric"
+                    />
+                  </label>
+
+                  <label className="grid gap-2">
+                    <span className="text-xs font-semibold text-white/65">Altura (cm)</span>
+                    <input
+                      value={spec.heightCm}
+                      onChange={(e) => setSpec((p) => ({ ...p, heightCm: e.target.value }))}
+                      className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none placeholder:text-white/50 focus:border-white/30"
+                      placeholder="Ex.: 75"
+                      disabled={saving || uploading}
+                      inputMode="numeric"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                <div className="mb-4 text-sm font-semibold text-white/88">
+                  Rastreio comercial
+                </div>
+
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <label className="grid gap-2">
+                    <span className="text-xs font-semibold text-white/65">SKU (interno)</span>
+                    <input
+                      value={spec.sku}
+                      onChange={(e) => setSpec((p) => ({ ...p, sku: e.target.value }))}
+                      className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none placeholder:text-white/50 focus:border-white/30"
+                      placeholder="Ex.: MESA-LUA-160"
+                      disabled={saving || uploading}
+                    />
+                  </label>
+
+                  <label className="grid gap-2">
+                    <span className="text-xs font-semibold text-white/65">Código de barras</span>
+                    <input
+                      value={spec.barcode}
+                      onChange={(e) => setSpec((p) => ({ ...p, barcode: e.target.value }))}
+                      className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none placeholder:text-white/50 focus:border-white/30"
+                      placeholder="Ex.: 7891234567890"
+                      disabled={saving || uploading}
+                      inputMode="numeric"
+                    />
+                  </label>
+
+                  <label className="grid gap-2">
+                    <span className="text-xs font-semibold text-white/65">Marca</span>
+                    <input
+                      value={spec.brand}
+                      onChange={(e) => setSpec((p) => ({ ...p, brand: e.target.value }))}
+                      className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none placeholder:text-white/50 focus:border-white/30"
+                      placeholder="Ex.: Marto Studio"
+                      disabled={saving || uploading}
+                    />
+                  </label>
+
+                  <label className="grid gap-2">
+                    <span className="text-xs font-semibold text-white/65">
+                      Tags (separe por vírgula)
+                    </span>
+                    <input
+                      value={spec.tags}
+                      onChange={(e) => setSpec((p) => ({ ...p, tags: e.target.value }))}
+                      className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none placeholder:text-white/50 focus:border-white/30"
+                      placeholder="Ex.: mesa, jantar, madeira, 6 lugares"
+                      disabled={saving || uploading}
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <SoftHint title="Marto nota">
+                Por enquanto, a ficha técnica ainda é salva dentro da descrição
+                no padrão Marto. A base está pronta para migrar isso depois para
+                campos reais no banco.
+              </SoftHint>
+            </div>
+          </FormSection>
+        </div>
+      ) : null}
+
+      {newStep === 'REVIEW' ? (
+        <>
+          {(() => {
+            const hasVariants = catalogHasVariants(cat);
+            const items = checklistForDraft({
+              kind: cat.kind,
+              inventoryMode: cat.inventoryMode,
+              prepDays: cat.prepDays,
+              photosCount: files.length,
+              description,
+              spec,
+              hasVariants,
+              variants: (cat.variants ?? []).map((v) => ({
+                sku: v.sku,
+                stock: v.stock,
+              })),
+              stockTotal: cat.stockTotal,
+            });
+
+            const s = scoreFromChecklist(items);
+            const completedCount = items.filter((it) => it.done).length;
+
+            const reviewStateLabel =
+              s.score >= 85
+                ? 'PEÇA FORTE'
+                : s.score >= 60
+                  ? 'BOA BASE'
+                  : 'EM LAPIDAÇÃO';
+
+            const reviewStateTone: 'neutral' | 'good' | 'warn' =
+              s.score >= 85 ? 'good' : s.score >= 60 ? 'warn' : 'neutral';
+
+            const kindLabel =
+              cat.kind === 'PHYSICAL'
+                ? 'Físico'
+                : cat.kind === 'DIGITAL'
+                  ? 'Digital'
+                  : 'Serviço';
+
+            const inventoryLabel =
+              cat.inventoryMode === 'LIMITED' ? 'Limitado' : 'Infinito';
+
+            return (
+              <div className="grid gap-5">
+                <FormSection
+                  eyebrow="Pronto para nascer"
+                  title="Revisão final da peça"
+                  description="Aqui o Marto fecha a leitura operacional antes de publicar a nova peça no catálogo."
+                >
+                  <div className="grid gap-4">
+                    <div className="rounded-[28px] border border-white/10 bg-black/30 p-5">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-semibold text-white/90">
+                            Maturidade da peça
+                          </div>
+                          <div className="mt-1 text-xs text-white/60">
+                            Quanto mais completo, menos atrito, mais clareza e
+                            mais confiança.
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Chip text={reviewStateLabel} tone={reviewStateTone} />
+                          <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/85">
+                            {s.score}/100
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-white/10">
+                        <div
+                          className="h-full rounded-full bg-white/70"
+                          style={{ width: `${s.score}%` }}
+                        />
+                      </div>
+
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                        <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                            Checklist
+                          </div>
+                          <div className="mt-2 text-lg font-semibold text-white/92">
+                            {completedCount}/{items.length}
+                          </div>
+                          <div className="mt-1 text-xs text-white/58">
+                            Critérios já cumpridos
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                            Estrutura
+                          </div>
+                          <div className="mt-2 text-lg font-semibold text-white/92">
+                            {kindLabel} • {inventoryLabel}
+                          </div>
+                          <div className="mt-1 text-xs text-white/58">
+                            Modelo comercial atual da peça
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[28px] border border-white/10 bg-black/30 p-5">
+                      <div className="text-sm font-semibold text-white/90">
+                        Checklist operacional
+                      </div>
+                      <div className="mt-1 text-xs text-white/60">
+                        O Marto usa esta leitura para entender o quanto a peça
+                        já está pronta para nascer no catálogo.
+                      </div>
+
+                      <div className="mt-4 grid gap-3">
+                        {items.map((it) => (
+                          <div
+                            key={it.id}
+                            className="rounded-2xl border border-white/10 bg-black/35 p-4"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="text-sm font-semibold text-white/88">
+                                  {it.label}
+                                </div>
+                                {it.hint ? (
+                                  <div className="mt-1 text-xs leading-6 text-white/58">
+                                    {it.hint}
+                                  </div>
+                                ) : null}
+                              </div>
+
+                              <Chip
+                                text={it.done ? 'OK' : 'PENDENTE'}
+                                tone={it.done ? 'good' : 'warn'}
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                          Nome
+                        </div>
+                        <div className="mt-2 text-sm font-semibold text-white/90">
+                          {title || '—'}
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                          Preço
+                        </div>
+                        <div className="mt-2 text-sm font-semibold text-white/90">
+                          {price || '—'}
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                          Fotos
+                        </div>
+                        <div className="mt-2 text-sm font-semibold text-white/90">
+                          {files.length} foto(s)
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                          Escolhas
+                        </div>
+                        <div className="mt-2 text-sm font-semibold text-white/90">
+                          {cat.variants.length} combinação(ões)
+                        </div>
+                      </div>
+                    </div>
+
+                    {s.recs.length ? (
+                      <SoftHint title="Próximos passos Marto">
+                        <div className="grid gap-2">
+                          {s.recs.map((r, idx) => (
+                            <div key={idx} className="text-sm text-white/72">
+                              • <span className="font-semibold text-white/86">{r.label}</span>
+                              {r.hint ? (
+                                <span className="text-white/56"> — {r.hint}</span>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      </SoftHint>
+                    ) : null}
+                  </div>
+                </FormSection>
+
+                <FormSection
+                  eyebrow="Confirmação"
+                  title="Publicar a nova peça no catálogo"
+                  description="Quando tudo estiver coerente, finalize a criação e deixe o item entrar no sistema."
+                >
+                  <div className="grid gap-4">
+                    <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-sm leading-6 text-white/68">
+                      O Marto vai criar o produto com base comercial, imagens,
+                      catálogo, identidade e ficha do jeito que você estruturou
+                      no painel.
+                    </div>
+
+                    <button
+                      onClick={createProduct}
+                      disabled={saving || uploading}
+                      className="w-full rounded-2xl bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15 disabled:opacity-60"
+                    >
+                      {uploading
+                        ? uploadProgress
+                          ? `Enviando (${uploadProgress})…`
+                          : 'Enviando…'
+                        : saving
+                          ? 'Salvando…'
+                          : 'Criar produto'}
+                    </button>
+                  </div>
+                </FormSection>
+              </div>
+            );
+          })()}
+        </>
+      ) : null}
+    </div>
+  );
+
   return (
     <main className="min-h-screen bg-neutral-950 text-white">
       <MartoBackground />
 
-      <div className="mx-auto max-w-6xl p-6">
-        {/* HEADER */}
-        <div className="mb-6 flex flex-wrap items-start justify-between gap-3">
-          <div>
-            <div className="inline-flex items-center gap-2">
-              <h1 className="text-2xl font-bold text-white/90">Produtos</h1>
-              <Chip text="Merchant OS" />
+      <div className="mx-auto max-w-[1480px] p-6">
+        {/* HERO + ESTRUTURA */}
+        <div className="mb-6 grid gap-6">
+          <div className="rounded-[32px] border border-white/15 bg-neutral-950/80 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="max-w-4xl">
+                  <div className="inline-flex items-center gap-2">
+                    <h1 className="text-3xl font-bold tracking-tight text-white/92">
+                      Central de Produtos
+                    </h1>
+                    <Chip text="Merchant OS" />
+                  </div>
+
+                  <p className="mt-3 text-sm leading-6 text-white/72">
+                    No Marto, produto não é anúncio solto. É ativo operacional do ecossistema:
+                    vitrine, serviço, pós-compra, reputação e dado. Aqui você prepara o catálogo
+                    para vender com mais clareza e menos atrito.
+                  </p>
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={openCreateSheet}
+                    className="rounded-2xl bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
+                  >
+                    Criar produto
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const el = document.getElementById('produtos-cadastrados');
+                      el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                    }}
+                    className="rounded-2xl border border-white/15 bg-black/40 px-4 py-2 text-sm font-semibold text-white/82 hover:bg-black/55"
+                  >
+                    Ver catálogo
+                  </button>
+
+                  <Link
+                    href="/dash/merchant"
+                    className="rounded-2xl border border-white/15 bg-black/40 px-4 py-2 text-sm font-semibold text-white/82 hover:bg-black/55"
+                  >
+                    Voltar ao dashboard
+                  </Link>
+                </div>
+              </div>
+
+              {msg ? (
+                <div className="mt-4 rounded-2xl border border-white/15 bg-black/40 px-4 py-3 text-sm text-white/82">
+                  {msg}
+                </div>
+              ) : null}
+
+              <div className="mt-6 grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
+                <SurfaceMetric
+                  label="Catálogo total"
+                  value={stats.total}
+                  hint="Itens registrados no lojista"
+                />
+
+                <SurfaceMetric
+                  label="Prontos (MVP)"
+                  value={stats.ready}
+                  hint={`${readinessPct}% do catálogo já cruzou o mínimo`}
+                  tone={stats.ready > 0 ? 'good' : 'neutral'}
+                />
+
+                <SurfaceMetric
+                  label="Ativos"
+                  value={stats.active}
+                  hint="Itens já ligados na vitrine"
+                  tone={stats.active > 0 ? 'good' : 'neutral'}
+                />
+
+                <SurfaceMetric
+                  label="Em lapidação"
+                  value={pendingCount}
+                  hint="Itens que ainda pedem acabamento"
+                  tone={pendingCount > 0 ? 'warn' : 'good'}
+                />
+              </div>
             </div>
 
-            <p className="mt-1 text-sm text-white/70">
-              No Marto, produto é ativo de confiança. Prepare com foto, ficha técnica e clareza — e
-              o ciclo vira dado.
-            </p>
-          </div>
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="grid gap-6">
+              {/* NOVO PRODUTO */}
+              <div
+                id="novo-produto"
+                className={classNames(
+                  'relative mb-6 overflow-hidden rounded-[32px] border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur transition',
+                  createSheetOpen ? 'opacity-55 saturate-50' : 'opacity-100',
+                )}
+              >
+                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,rgba(16,185,129,0.12),transparent_32%),radial-gradient(circle_at_bottom_left,rgba(255,255,255,0.05),transparent_28%)]" />
 
-          <Link
-            href="/dash/merchant"
-            className="rounded-2xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white/85 hover:bg-white/10"
-          >
-            Voltar ao dashboard
-          </Link>
-        </div>
+                <div className="relative grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_420px]">
+                  <div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
+                        Launcher Marto
+                      </div>
 
-        {/* ALERT */}
-        {msg ? (
-          <div className="mb-4 rounded-2xl border border-white/15 bg-black/40 px-4 py-3 text-sm text-white/80">
-            {msg}
-          </div>
-        ) : null}
+                      <Chip
+                        text={createLauncherStatus}
+                        tone={!createHasDraft ? 'neutral' : createReadinessCount >= 3 ? 'good' : 'warn'}
+                      />
 
-        {/* TOP BAR */}
-        <div className="mb-6 grid gap-3 lg:grid-cols-3">
-          <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-            <div className="text-xs font-semibold text-white/65">Visão rápida</div>
-            <div className="mt-2 grid grid-cols-2 gap-3">
-              <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
-                <div className="text-xs text-white/60">Total</div>
-                <div className="mt-1 text-lg font-bold text-white/90">{stats.total}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
-                <div className="text-xs text-white/60">Ativos</div>
-                <div className="mt-1 text-lg font-bold text-white/90">{stats.active}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
-                <div className="text-xs text-white/60">Com foto</div>
-                <div className="mt-1 text-lg font-bold text-white/90">{stats.withImg}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
-                <div className="text-xs text-white/60">Com ficha</div>
-                <div className="mt-1 text-lg font-bold text-white/90">{stats.withTech}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
-                <div className="text-xs text-white/60">Com catálogo</div>
-                <div className="mt-1 text-lg font-bold text-white/90">{stats.withCatalog}</div>
-              </div>
-              <div className="rounded-2xl border border-white/10 bg-black/40 p-3">
-                <div className="text-xs text-white/60">Prontos (MVP)</div>
-                <div className="mt-1 text-lg font-bold text-white/90">{stats.ready}</div>
-              </div>
-            </div>
-          </div>
+                      {createSheetOpen ? <Chip text="CRIADOR ABERTO" tone="warn" /> : null}
+                    </div>
 
-          <div className="lg:col-span-2">
-            <WizardCard
-              onCreate={() => {
-                const el = document.getElementById('novo-produto');
-                el?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-              }}
-              onImport={() => {
-                alert('Em breve: importar rápido (CSV/colar lista).');
-              }}
-            />
-          </div>
-        </div>
+                    <div className="mt-3 text-2xl font-semibold tracking-tight text-white/92">
+                      {createHasDraft
+                        ? 'Continue a construção da peça comercial'
+                        : 'Inicie uma nova peça comercial'}
+                    </div>
 
-        {/* NOVO PRODUTO */}
-        <div
+                    <div className="mt-2 max-w-3xl text-sm leading-6 text-white/68">
+                      No Marto, criar produto não é só cadastrar. É estruturar uma peça viva:
+                      vitrine, disponibilidade, serviço, reputação e operação. O criador fica
+                      recolhido para manter a central limpa e abrir só quando você realmente entra
+                      em modo de construção.
+                    </div>
+
+                    <div className="mt-5 flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        onClick={openCreateSheet}
+                        className="rounded-2xl bg-white/10 px-5 py-2.5 text-sm font-semibold text-white hover:bg-white/15"
+                      >
+                        {createHasDraft ? 'Abrir criador' : 'Criar produto'}
+                      </button>
+
+                      {createHasDraft ? (
+                        <button
+                          type="button"
+                          onClick={discardCreateDraft}
+                          disabled={saving || uploading}
+                          className="rounded-2xl border border-white/15 bg-black/35 px-5 py-2.5 text-sm font-semibold text-white/80 hover:bg-black/50 disabled:opacity-60"
+                        >
+                          Descartar rascunho
+                        </button>
+                      ) : null}
+                    </div>
+
+                    <div className="mt-6 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      {createStructureScore.map((item) => (
+                        <div
+                          key={item.label}
+                          className={classNames(
+                            'rounded-2xl border px-4 py-3',
+                            item.done
+                              ? 'border-emerald-400/20 bg-emerald-400/10'
+                              : 'border-white/10 bg-black/30',
+                          )}
+                        >
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                            {item.label}
+                          </div>
+                          <div className="mt-2 text-sm font-semibold text-white/90">
+                            {item.done ? 'OK' : 'Pendente'}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3">
+                    <div className="rounded-3xl border border-white/10 bg-black/35 p-4">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                        Rascunho atual
+                      </div>
+
+                      <div className="mt-2 text-base font-semibold text-white/90">
+                        {title.trim() || 'Ainda não iniciado'}
+                      </div>
+
+                      <div className="mt-2 text-sm leading-6 text-white/62">
+                        {createHasDraft
+                          ? 'Existe uma construção em andamento no criador lateral. Retome do ponto em que parou.'
+                          : 'Sem rascunho ativo. Abra o criador quando quiser iniciar uma nova peça.'}
+                      </div>
+                    </div>
+
+                    <div className="grid gap-3 sm:grid-cols-3 xl:grid-cols-1 2xl:grid-cols-3">
+                      <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                          Fotos
+                        </div>
+                        <div className="mt-2 text-lg font-semibold text-white/90">{files.length}</div>
+                        <div className="mt-1 text-xs text-white/58">Imagens já ligadas ao rascunho</div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                          Escolhas
+                        </div>
+                        <div className="mt-2 text-lg font-semibold text-white/90">{cat.variants.length}</div>
+                        <div className="mt-1 text-xs text-white/58">Combinações catalogadas no rascunho</div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                          Etapa
+                        </div>
+                        <div className="mt-2 text-lg font-semibold text-white/90">
+                          {createHasDraft ? stepLabel(newStep) : 'Pronto para iniciar'}
+                        </div>
+                        <div className="mt-1 text-xs text-white/58">
+                          Fluxo guiado sem esticar a central
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {false ? (
+              <div
           id="novo-produto"
           className="mb-6 rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
         >
@@ -2970,11 +4927,77 @@ useEffect(() => {
                 </div>
               </>
             ) : null}
+            </div>
+              </div>
+              ) : null}
+
+            <aside className="grid h-fit gap-6 xl:sticky xl:top-6">
+              <div className="rounded-[28px] border border-white/15 bg-neutral-950/78 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-white/90">Radar do catálogo</div>
+                    <div className="mt-1 text-xs text-white/60">
+                      Leitura rápida do quanto o catálogo já ganhou densidade Marto.
+                    </div>
+                  </div>
+
+                  <Chip
+                    text={`${readinessPct}% pronto`}
+                    tone={readinessPct >= 70 ? 'good' : readinessPct > 0 ? 'warn' : 'neutral'}
+                  />
+                </div>
+
+                <div className="mt-4 grid gap-3">
+                  <SurfaceRail
+                    label="Com foto"
+                    value={stats.withImg}
+                    total={stats.total}
+                    tone={stats.withImg === stats.total ? 'good' : 'warn'}
+                  />
+
+                  <SurfaceRail
+                    label="Com ficha"
+                    value={stats.withTech}
+                    total={stats.total}
+                    tone={stats.withTech === stats.total ? 'good' : 'neutral'}
+                  />
+
+                  <SurfaceRail
+                    label="Com catálogo"
+                    value={stats.withCatalog}
+                    total={stats.total}
+                    tone={stats.withCatalog === stats.total ? 'good' : 'neutral'}
+                  />
+
+                  <SurfaceRail
+                    label="Prontos (MVP)"
+                    value={stats.ready}
+                    total={stats.total}
+                    tone={stats.ready > 0 ? 'good' : 'neutral'}
+                  />
+                </div>
+              </div>
+
+              <div className="rounded-[28px] border border-white/15 bg-neutral-950/78 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+                <div className="text-sm font-semibold text-white/90">Próximo foco Marto</div>
+                <div className="mt-2 text-sm leading-6 text-white/68">{focusHint}</div>
+
+                <div className="mt-4 rounded-2xl border border-white/10 bg-black/35 p-4">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/50">
+                    Operação sugerida
+                  </div>
+                  <div className="mt-2 text-base font-semibold text-white/90">{focusTitle}</div>
+                </div>
+              </div>
+            </aside>
           </div>
         </div>
 
         {/* LISTA */}
-        <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+        <div
+          id="produtos-cadastrados"
+          className="rounded-[28px] border border-white/15 bg-neutral-950/75 p-6 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
+        >
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
               <div className="text-lg font-semibold text-white/90">
@@ -3048,14 +5071,48 @@ useEffect(() => {
                   return String(p.description ?? '').includes(TECH_MARKER_START);
                 })();
 
+                const metaCat =
+                  (p.meta?.catalog ?? null) as Partial<CatalogSpec> | null;
+                const descCat = extractCatalogBlock(p.description ?? '');
+
+                const visualVariants =
+                  Array.isArray(metaCat?.variants) && metaCat.variants.length
+                    ? metaCat.variants
+                    : Array.isArray(descCat.variants) && descCat.variants.length
+                      ? descCat.variants
+                      : [];
+
+                const visualOptions = (() => {
+                  const metaOptions = Array.isArray(metaCat?.options) ? metaCat.options : [];
+                  const hasMetaOptions = metaOptions.some(
+                    (o) => String(o?.name ?? '').trim() && (o?.values ?? []).length,
+                  );
+
+                  return hasMetaOptions
+                    ? metaOptions
+                    : buildOptionsFromVariants(visualVariants);
+                })();
+
+                const colorOption = visualOptions.find((opt) =>
+                  optionLooksLikeColor(String(opt?.name ?? '')),
+                );
+
+                const colorValues = uniqueStrings(
+                  (colorOption?.values ?? []).map((item) => String(item ?? '').trim()),
+                );
+
                 const hasCatalog = p.meta?.catalog
                   ? true
                   : String(p.description ?? '').includes(CATALOG_MARKER_START);
 
                 const photosCount = currentImages.length;
-                const catSum = catalogSummary(
-                  (p.meta?.catalog ?? null) as Partial<CatalogSpec> | null,
-                );
+                const catSum = catalogSummary(metaCat);
+                const insightOverview = firstNonEmptyOverview(p.imageInsights ?? []);
+                const liveReadingLines = insightOverview
+                  .map((line) => normalizeLiveReadingLine(line))
+                  .filter(Boolean)
+                  .slice(0, 3);
+                const primaryColor = colorValues[0] ?? null;
 
                 return (
                   <div
@@ -3174,6 +5231,37 @@ useEffect(() => {
                               </span>
                             </div>
 
+                            {liveReadingLines.length ? (
+                              <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
+                                <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                                  Leitura viva da peça
+                                </div>
+
+                                <div className="grid gap-2">
+                                  {liveReadingLines.map((line, idx) => (
+                                    <div
+                                      key={`${p.id}-overview-${idx}`}
+                                      className={classNames(
+                                        'rounded-2xl border px-3 py-2.5',
+                                        idx === 0
+                                          ? 'border-white/14 bg-white/[0.06]'
+                                          : 'border-white/10 bg-black/40',
+                                      )}
+                                    >
+                                      <div
+                                        className={classNames(
+                                          'text-xs font-semibold',
+                                          idx === 0 ? 'text-white/92' : 'text-white/82',
+                                        )}
+                                      >
+                                        {line}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+
                             {catSum ? (
                               <div className="mt-3 rounded-2xl border border-white/10 bg-black/30 p-3">
                                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -3184,7 +5272,7 @@ useEffect(() => {
                                     <Chip text={catSum.kindLabel.toUpperCase()} />
                                     <Chip text={`ESTOQUE ${catSum.invLabel.toUpperCase()}`} />
                                     {catSum.variantsCount ? (
-                                      <Chip text={`${catSum.variantsCount} VARIAÇÕES`} />
+                                      <Chip text={variationCountLabel(catSum.variantsCount)} />
                                     ) : null}
                                   </div>
                                 </div>
@@ -3208,6 +5296,44 @@ useEffect(() => {
                                     </div>
                                   </div>
                                 </div>
+
+                                {colorValues.length ? (
+                                  <div
+                                    className="mt-3 rounded-2xl border p-3"
+                                    style={primaryColor ? colorPresenceStyle(primaryColor) : undefined}
+                                  >
+                                    <div className="mb-2 text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                                      Cor em destaque
+                                    </div>
+
+                                    <div className="flex flex-wrap gap-2">
+                                      {colorValues.slice(0, 6).map((color, idx) => (
+                                        <div
+                                          key={`${p.id}-color-${idx}-${color}`}
+                                          className="inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/35 px-3 py-1.5 text-xs text-white/88"
+                                        >
+                                          <span className="relative flex h-5 w-5 items-center justify-center">
+                                            <span
+                                              className="absolute inset-0 rounded-full border"
+                                              style={colorSwatchStyle(color)}
+                                            />
+                                            <span className="absolute inset-[3px] rounded-full bg-white/10" />
+                                          </span>
+
+                                          <span className="font-semibold text-white/92">
+                                            {normalizeLiveReadingLine(color)}
+                                          </span>
+                                        </div>
+                                      ))}
+
+                                      {colorValues.length > 6 ? (
+                                        <div className="inline-flex items-center rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-white/55">
+                                          +{colorValues.length - 6}
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                ) : null}
                               </div>
                             ) : null}
 
@@ -3238,6 +5364,99 @@ useEffect(() => {
           </div>
         </div>
       </div>
+
+      <Sheet
+        open={createSheetOpen}
+        title={title.trim() || 'Novo produto'}
+        subtitle={
+          createHasDraft
+            ? 'Marto OS — continue a construção da peça comercial'
+            : 'Marto OS — inicie a criação guiada sem esticar a central'
+        }
+        onClose={closeCreateSheet}
+      >
+        <div className="grid gap-4">
+          <div className="rounded-3xl border border-white/10 bg-black/40 p-4">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
+                  Marto OS
+                </div>
+
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <div className="text-lg font-semibold tracking-tight text-white/92">
+                    Criação guiada de produto
+                  </div>
+
+                  <Chip text={createDraftState} tone={createDraftTone} />
+                  {uploadProgress ? <Chip text={`UPLOAD ${uploadProgress}`} /> : null}
+                  {saving ? <Chip text="SALVANDO" tone="warn" /> : null}
+                  {uploading ? <Chip text="ENVIANDO" tone="warn" /> : null}
+                </div>
+
+                <div className="mt-2 max-w-2xl text-sm leading-6 text-white/64">
+                  Monte uma peça comercial viva do Marto: clareza de vitrine,
+                  disponibilidade, serviço ligado e menos atrito no pós-compra.
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={discardCreateDraft}
+                  disabled={saving || uploading}
+                  className="rounded-2xl border border-white/12 bg-black/35 px-4 py-2 text-xs font-semibold text-white/70 hover:bg-black/50 disabled:opacity-60"
+                >
+                  Descartar
+                </button>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap gap-2">
+              {stepOrder.map((s) => {
+                const active = s === newStep;
+                return (
+                  <button
+                    key={s}
+                    type="button"
+                    onClick={() => setNewStep(s)}
+                    className={classNames(
+                      'rounded-full border px-3 py-1.5 text-xs font-semibold transition',
+                      active
+                        ? 'border-white/25 bg-white/10 text-white/92'
+                        : 'border-white/10 bg-white/5 text-white/65 hover:bg-white/10',
+                    )}
+                  >
+                    {stepLabel(s)}
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="mt-4 flex items-center justify-end gap-2">
+              <button
+                type="button"
+                onClick={goPrev}
+                disabled={newStep === 'BASIC' || saving || uploading}
+                className="rounded-2xl border border-white/15 bg-black/40 px-4 py-2 text-xs font-semibold text-white/80 hover:bg-black/55 disabled:opacity-60"
+              >
+                Voltar
+              </button>
+
+              <button
+                type="button"
+                onClick={goNext}
+                disabled={newStep === 'REVIEW' || saving || uploading}
+                className="rounded-2xl bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-60"
+              >
+                Avançar
+              </button>
+            </div>
+          </div>
+
+          {createWizardBody}
+        </div>
+      </Sheet>
 
       <Sheet
         open={sheetOpen && !!editingId}
@@ -3614,56 +5833,41 @@ useEffect(() => {
                                 disabled={eSaving || eUploading}
                               />
 
-                              <div className="mt-2">
+                              <div className="mt-2 grid gap-2">
                                 <button
                                   type="button"
-                                  onClick={() =>
-                                    setEOpenInsightIdx(
-                                      eOpenInsightIdx === idx ? null : idx,
-                                    )
-                                  }
+                                  onClick={() => {
+                                    setEPhotoEditorIdx(idx);
+                                    setEPhotoEditorTab('overview');
+                                    setEHotspotSelectedIdx(null);
+                                  }}
                                   className="w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/15"
                                   disabled={eSaving || eUploading}
                                 >
                                   Visão rápida
                                 </button>
 
-                                {eOpenInsightIdx === idx ? (
-                                  <div className="mt-2 rounded-2xl border border-white/15 bg-black/60 p-3 backdrop-blur">
-                                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-wide text-white/70">
-                                      VISÃO RÁPIDA (3 linhas)
-                                    </div>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEPhotoEditorIdx(idx);
+                                    setEPhotoEditorTab('hotspots');
+                                    const hs = normalizeHotspots(
+                                      eKeepInsights[idx]?.hotspots,
+                                    );
+                                    setEHotspotSelectedIdx(hs.length ? 0 : null);
+                                  }}
+                                  className="w-full rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/15"
+                                  disabled={eSaving || eUploading}
+                                >
+                                  Pontos relevantes
+                                </button>
 
-                                    {[0, 1, 2].map((k) => (
-                                      <input
-                                        key={k}
-                                        value={eKeepInsights[idx]?.overview?.[k] ?? ''}
-                                        onChange={(e) => {
-                                          const v = e.target.value;
-
-                                          setEKeepInsights((prev) => {
-                                            const next = [...prev];
-                                            const cur =
-                                              next[idx] ?? ({
-                                                overview: ['', '', ''],
-                                                hotspots: [],
-                                              } as ImageInsight);
-                                            const ov = normalizeOverview3(cur.overview);
-                                            ov[k] = v;
-                                            next[idx] = { ...cur, overview: ov };
-                                            return next;
-                                          });
-                                        }}
-                                        maxLength={60}
-                                        placeholder={
-                                          k === 0 ? 'Linha 1' : k === 1 ? 'Linha 2' : 'Linha 3'
-                                        }
-                                        className="mb-2 w-full rounded-xl border border-white/15 bg-black/80 px-3 py-2 text-xs text-white/85 outline-none placeholder:text-white/50"
-                                        disabled={eSaving || eUploading}
-                                      />
-                                    ))}
-                                  </div>
-                                ) : null}
+                                <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-[10px] font-semibold text-white/60">
+                                  {normalizeHotspots(eKeepInsights[idx]?.hotspots)
+                                    .length}{' '}
+                                  ponto(s) • foto {idx + 1}
+                                </div>
                               </div>
 
                               <button
@@ -3678,8 +5882,17 @@ useEffect(() => {
                                   setEKeepInsights((prev) =>
                                     prev.filter((_, i) => i !== idx),
                                   );
-                                  if (eOpenInsightIdx === idx)
-                                    setEOpenInsightIdx(null);
+
+                                  if (ePhotoEditorIdx === idx) {
+                                    setEPhotoEditorIdx(null);
+                                    setEPhotoEditorTab('overview');
+                                    setEHotspotSelectedIdx(null);
+                                  } else if (
+                                    ePhotoEditorIdx !== null &&
+                                    ePhotoEditorIdx > idx
+                                  ) {
+                                    setEPhotoEditorIdx(ePhotoEditorIdx - 1);
+                                  }
                                 }}
                                 className="mt-2 w-full rounded-xl border border-white/15 bg-black/60 px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/10"
                                 disabled={eSaving || eUploading}
@@ -3696,6 +5909,489 @@ useEffect(() => {
                       Nenhuma foto atual. Você pode adicionar novas abaixo.
                     </div>
                   )}
+
+                  {ePhotoEditorIdx !== null && eKeepImages[ePhotoEditorIdx] ? (
+                    <div className="mt-5 rounded-3xl border border-white/15 bg-black/35 p-4">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-semibold text-white/90">
+                            Editor da foto atual selecionada
+                          </div>
+                          <div className="mt-1 text-xs text-white/65">
+                            A miniatura seleciona a foto. A edição profunda
+                            acontece aqui embaixo.
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEPhotoEditorIdx(null);
+                            setEPhotoEditorTab('overview');
+                            setEHotspotSelectedIdx(null);
+                          }}
+                          className="rounded-2xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/10"
+                        >
+                          Fechar editor
+                        </button>
+                      </div>
+
+                      <div className="mt-4 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setEPhotoEditorTab('overview')}
+                          className={classNames(
+                            'rounded-2xl border px-4 py-2 text-xs font-semibold',
+                            ePhotoEditorTab === 'overview'
+                              ? 'border-white/30 bg-white/10 text-white'
+                              : 'border-white/15 bg-white/5 text-white/80 hover:bg-white/10',
+                          )}
+                        >
+                          Visão rápida
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => setEPhotoEditorTab('hotspots')}
+                          className={classNames(
+                            'rounded-2xl border px-4 py-2 text-xs font-semibold',
+                            ePhotoEditorTab === 'hotspots'
+                              ? 'border-white/30 bg-white/10 text-white'
+                              : 'border-white/15 bg-white/5 text-white/80 hover:bg-white/10',
+                          )}
+                        >
+                          Pontos relevantes
+                        </button>
+                      </div>
+
+                      <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+                        <div>
+                          <div
+                            className="relative overflow-hidden rounded-3xl border border-white/15 bg-black"
+                            onClick={(e) => {
+                              if (ePhotoEditorTab !== 'hotspots') return;
+
+                              const rect = e.currentTarget.getBoundingClientRect();
+                              const x = clampPct(
+                                ((e.clientX - rect.left) / rect.width) * 100,
+                              );
+                              const y = clampPct(
+                                ((e.clientY - rect.top) / rect.height) * 100,
+                              );
+
+                              const nextPoint: HotspotDraft = {
+                                x,
+                                y,
+                                title: '',
+                                description: '',
+                              };
+
+                              const nextIndex = eCurrentEditingHotspots.length;
+
+                              setEKeepInsights((prev) => {
+                                const next = normalizeInsightsForLen(
+                                  eKeepImages.length,
+                                  prev,
+                                );
+                                const cur = next[ePhotoEditorIdx] ?? {
+                                  overview: ['', '', ''],
+                                  hotspots: [],
+                                };
+                                next[ePhotoEditorIdx] = {
+                                  ...cur,
+                                  hotspots: [
+                                    ...normalizeHotspots(cur.hotspots),
+                                    nextPoint,
+                                  ],
+                                };
+                                return next;
+                              });
+
+                              setEHotspotSelectedIdx(nextIndex);
+                            }}
+                          >
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img
+                              src={toPublicImageUrl(eKeepImages[ePhotoEditorIdx])}
+                              alt={`Foto atual ${ePhotoEditorIdx + 1}`}
+                              className="h-auto w-full object-cover"
+                            />
+
+                            <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_top,rgba(0,0,0,0.14),rgba(0,0,0,0.03))]" />
+
+                            {eCurrentEditingHotspots.map((hs, pointIdx) => {
+                              const active = eHotspotSelectedIdx === pointIdx;
+
+                              return (
+                                <span
+                                  key={`${pointIdx}-${hs.x}-${hs.y}`}
+                                  className="absolute -translate-x-1/2 -translate-y-1/2"
+                                  style={{ left: `${hs.x}%`, top: `${hs.y}%` }}
+                                >
+                                  <span
+                                    className={classNames(
+                                      'relative block h-5 w-5 rounded-full border',
+                                      active
+                                        ? 'border-white/80 bg-white/25'
+                                        : 'border-white/55 bg-white/12',
+                                    )}
+                                  >
+                                    <span className="absolute inset-[3px] rounded-full bg-white/95" />
+                                  </span>
+                                </span>
+                              );
+                            })}
+
+                            <div className="absolute left-3 top-3 rounded-full border border-white/15 bg-black/50 px-3 py-1 text-[11px] font-semibold text-white/82 backdrop-blur">
+                              {ePhotoEditorTab === 'hotspots'
+                                ? 'clique para adicionar ponto'
+                                : 'foto atual selecionada'}
+                            </div>
+                          </div>
+
+                          <div className="mt-2 text-xs text-white/60">
+                            {ePhotoEditorTab === 'hotspots'
+                              ? 'Use poucos pontos e só em detalhes realmente relevantes.'
+                              : 'Essas 3 linhas viram a leitura rápida da foto na página pública.'}
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border border-white/15 bg-black/40 p-4">
+                          {ePhotoEditorTab === 'overview' ? (
+                            <>
+                              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-white/56">
+                                visão rápida da foto
+                              </div>
+
+                              <div className="mt-3 grid gap-3">
+                                {[0, 1, 2].map((k) => (
+                                  <label
+                                    key={`keep-overview-${ePhotoEditorIdx}-${k}`}
+                                    className="grid gap-2"
+                                  >
+                                    <span className="text-xs font-semibold text-white/65">
+                                      Linha {k + 1}
+                                    </span>
+                                    <input
+                                      value={
+                                        eKeepInsights[ePhotoEditorIdx]
+                                          ?.overview?.[k] ?? ''
+                                      }
+                                      onChange={(e) => {
+                                        const v = e.target.value;
+
+                                        setEKeepInsights((prev) => {
+                                          const next = normalizeInsightsForLen(
+                                            eKeepImages.length,
+                                            prev,
+                                          );
+                                          const cur = next[ePhotoEditorIdx] ?? {
+                                            overview: ['', '', ''],
+                                            hotspots: [],
+                                          };
+                                          const ov = normalizeOverview3(
+                                            cur.overview,
+                                          );
+                                          ov[k] = v;
+                                          next[ePhotoEditorIdx] = {
+                                            ...cur,
+                                            overview: ov,
+                                          };
+                                          return next;
+                                        });
+                                      }}
+                                      maxLength={60}
+                                      placeholder={
+                                        k === 0
+                                          ? 'Linha 1'
+                                          : k === 1
+                                            ? 'Linha 2'
+                                            : 'Linha 3'
+                                      }
+                                      className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
+                                      disabled={eSaving || eUploading}
+                                    />
+                                  </label>
+                                ))}
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="text-xs font-semibold uppercase tracking-[0.14em] text-white/56">
+                                pontos desta foto
+                              </div>
+
+                              {eCurrentEditingHotspots.length === 0 ? (
+                                <div className="mt-3 text-sm text-white/65">
+                                  Ainda não há pontos nesta foto.
+                                </div>
+                              ) : (
+                                <div className="mt-3 space-y-2">
+                                  {eCurrentEditingHotspots.map((hs, pointIdx) => (
+                                    <button
+                                      key={`keep-list-${pointIdx}-${hs.x}-${hs.y}`}
+                                      type="button"
+                                      onClick={() =>
+                                        setEHotspotSelectedIdx(pointIdx)
+                                      }
+                                      className={classNames(
+                                        'w-full rounded-2xl border px-3 py-3 text-left',
+                                        eHotspotSelectedIdx === pointIdx
+                                          ? 'border-white/35 bg-white/[0.06]'
+                                          : 'border-white/10 bg-white/[0.03] hover:border-white/20',
+                                      )}
+                                    >
+                                      <div className="text-sm font-semibold text-white/88">
+                                        {hs.title || `Ponto ${pointIdx + 1}`}
+                                      </div>
+                                      <div className="mt-1 text-[11px] text-white/56">
+                                        X {Math.round(hs.x)}% • Y{' '}
+                                        {Math.round(hs.y)}%
+                                      </div>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+
+                              {eCurrentSelectedHotspot ? (
+                                <div className="mt-4 border-t border-white/10 pt-4">
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="text-sm font-semibold text-white/88">
+                                      Editar ponto {eHotspotSelectedIdx! + 1}
+                                    </div>
+
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        if (
+                                          ePhotoEditorIdx === null ||
+                                          eHotspotSelectedIdx === null
+                                        )
+                                          return;
+
+                                        setEKeepInsights((prev) => {
+                                          const next = normalizeInsightsForLen(
+                                            eKeepImages.length,
+                                            prev,
+                                          );
+                                          const cur = next[ePhotoEditorIdx] ?? {
+                                            overview: ['', '', ''],
+                                            hotspots: [],
+                                          };
+                                          next[ePhotoEditorIdx] = {
+                                            ...cur,
+                                            hotspots: normalizeHotspots(
+                                              cur.hotspots,
+                                            ).filter(
+                                              (_, i) =>
+                                                i !== eHotspotSelectedIdx,
+                                            ),
+                                          };
+                                          return next;
+                                        });
+
+                                        const nextLen =
+                                          eCurrentEditingHotspots.length - 1;
+                                        setEHotspotSelectedIdx(
+                                          nextLen > 0 ? 0 : null,
+                                        );
+                                      }}
+                                      className="rounded-xl border border-rose-400/20 bg-rose-400/10 px-3 py-2 text-xs font-semibold text-rose-100 hover:bg-rose-400/15"
+                                    >
+                                      Remover ponto
+                                    </button>
+                                  </div>
+
+                                  <div className="mt-3 grid gap-3">
+                                    <label className="grid gap-2">
+                                      <span className="text-xs font-semibold text-white/65">
+                                        Título
+                                      </span>
+                                      <input
+                                        value={eCurrentSelectedHotspot.title}
+                                        onChange={(e) => {
+                                          if (
+                                            ePhotoEditorIdx === null ||
+                                            eHotspotSelectedIdx === null
+                                          )
+                                            return;
+
+                                          setEKeepInsights((prev) => {
+                                            const next =
+                                              normalizeInsightsForLen(
+                                                eKeepImages.length,
+                                                prev,
+                                              );
+                                            const cur =
+                                              next[ePhotoEditorIdx] ?? {
+                                                overview: ['', '', ''],
+                                                hotspots: [],
+                                              };
+                                            const hs = normalizeHotspots(
+                                              cur.hotspots,
+                                            );
+                                            hs[eHotspotSelectedIdx] = {
+                                              ...hs[eHotspotSelectedIdx]!,
+                                              title: e.target.value,
+                                            };
+                                            next[ePhotoEditorIdx] = {
+                                              ...cur,
+                                              hotspots: hs,
+                                            };
+                                            return next;
+                                          });
+                                        }}
+                                        placeholder="Ex.: Braço"
+                                        className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
+                                      />
+                                    </label>
+
+                                    <label className="grid gap-2">
+                                      <span className="text-xs font-semibold text-white/65">
+                                        Descrição
+                                      </span>
+                                      <textarea
+                                        value={
+                                          eCurrentSelectedHotspot.description
+                                        }
+                                        onChange={(e) => {
+                                          if (
+                                            ePhotoEditorIdx === null ||
+                                            eHotspotSelectedIdx === null
+                                          )
+                                            return;
+
+                                          setEKeepInsights((prev) => {
+                                            const next =
+                                              normalizeInsightsForLen(
+                                                eKeepImages.length,
+                                                prev,
+                                              );
+                                            const cur =
+                                              next[ePhotoEditorIdx] ?? {
+                                                overview: ['', '', ''],
+                                                hotspots: [],
+                                              };
+                                            const hs = normalizeHotspots(
+                                              cur.hotspots,
+                                            );
+                                            hs[eHotspotSelectedIdx] = {
+                                              ...hs[eHotspotSelectedIdx]!,
+                                              description: e.target.value,
+                                            };
+                                            next[ePhotoEditorIdx] = {
+                                              ...cur,
+                                              hotspots: hs,
+                                            };
+                                            return next;
+                                          });
+                                        }}
+                                        placeholder="Ex.: MDF laminado, acabamento nogueira."
+                                        rows={4}
+                                        className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
+                                      />
+                                    </label>
+
+                                    <div className="grid grid-cols-2 gap-3">
+                                      <label className="grid gap-2">
+                                        <span className="text-xs font-semibold text-white/65">
+                                          Posição X
+                                        </span>
+                                        <input
+                                          value={eCurrentSelectedHotspot.x}
+                                          onChange={(e) => {
+                                            if (
+                                              ePhotoEditorIdx === null ||
+                                              eHotspotSelectedIdx === null
+                                            )
+                                              return;
+
+                                            setEKeepInsights((prev) => {
+                                              const next =
+                                                normalizeInsightsForLen(
+                                                  eKeepImages.length,
+                                                  prev,
+                                                );
+                                              const cur =
+                                                next[ePhotoEditorIdx] ?? {
+                                                  overview: ['', '', ''],
+                                                  hotspots: [],
+                                                };
+                                              const hs = normalizeHotspots(
+                                                cur.hotspots,
+                                              );
+                                              hs[eHotspotSelectedIdx] = {
+                                                ...hs[eHotspotSelectedIdx]!,
+                                                x: clampPct(
+                                                  Number(e.target.value),
+                                                ),
+                                              };
+                                              next[ePhotoEditorIdx] = {
+                                                ...cur,
+                                                hotspots: hs,
+                                              };
+                                              return next;
+                                            });
+                                          }}
+                                          inputMode="decimal"
+                                          className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
+                                        />
+                                      </label>
+
+                                      <label className="grid gap-2">
+                                        <span className="text-xs font-semibold text-white/65">
+                                          Posição Y
+                                        </span>
+                                        <input
+                                          value={eCurrentSelectedHotspot.y}
+                                          onChange={(e) => {
+                                            if (
+                                              ePhotoEditorIdx === null ||
+                                              eHotspotSelectedIdx === null
+                                            )
+                                              return;
+
+                                            setEKeepInsights((prev) => {
+                                              const next =
+                                                normalizeInsightsForLen(
+                                                  eKeepImages.length,
+                                                  prev,
+                                                );
+                                              const cur =
+                                                next[ePhotoEditorIdx] ?? {
+                                                  overview: ['', '', ''],
+                                                  hotspots: [],
+                                                };
+                                              const hs = normalizeHotspots(
+                                                cur.hotspots,
+                                              );
+                                              hs[eHotspotSelectedIdx] = {
+                                                ...hs[eHotspotSelectedIdx]!,
+                                                y: clampPct(
+                                                  Number(e.target.value),
+                                                ),
+                                              };
+                                              next[ePhotoEditorIdx] = {
+                                                ...cur,
+                                                hotspots: hs,
+                                              };
+                                              return next;
+                                            });
+                                          }}
+                                          inputMode="decimal"
+                                          className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
+                                        />
+                                      </label>
+                                    </div>
+                                  </div>
+                                </div>
+                              ) : null}
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
 
                 <FilesDropzone
@@ -4052,6 +6748,7 @@ useEffect(() => {
           </div>
         </div>
       ) : null}
+      </div>
     </main>
   );
 }

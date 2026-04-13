@@ -219,6 +219,18 @@ function extractIdentity(desc: string) {
   };
 }
 
+type PublicCatalogOptionGroup = {
+  name: string;
+  values: string[];
+};
+
+type PublicCatalogVariant = {
+  key: string;
+  sku: string;
+  stock: string;
+  attributes: Array<{ name: string; value: string }>;
+};
+
 function extractCatalog(desc: string) {
   const s = String(desc ?? '');
 
@@ -227,23 +239,154 @@ function extractCatalog(desc: string) {
 
   const start = s.indexOf(startMarker);
   if (start === -1) {
-    return { tipo: '', inventario: '', preparoDias: '', estoque: '' };
+    return {
+      tipo: '',
+      inventario: '',
+      preparoDias: '',
+      estoque: '',
+      optionGroups: [] as PublicCatalogOptionGroup[],
+      variants: [] as PublicCatalogVariant[],
+    };
   }
 
   const end = s.indexOf(endMarker, start);
   if (end === -1) {
-    return { tipo: '', inventario: '', preparoDias: '', estoque: '' };
+    return {
+      tipo: '',
+      inventario: '',
+      preparoDias: '',
+      estoque: '',
+      optionGroups: [] as PublicCatalogOptionGroup[],
+      variants: [] as PublicCatalogVariant[],
+    };
   }
 
   const inside = s.slice(start, end);
+  const lines = inside
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
 
   const tipo = inside.match(/Tipo:\s*(.+)/i)?.[1]?.trim() ?? '';
-  const inv = inside.match(/Inventário:\s*(.+)/i)?.[1]?.trim() ?? '';
-  const prep =
+  const inventario = inside.match(/Inventário:\s*(.+)/i)?.[1]?.trim() ?? '';
+  const preparoDias =
     inside.match(/Prazo de preparação:\s*([0-9]+)/i)?.[1]?.trim() ?? '';
-  const est = inside.match(/Estoque:\s*([0-9]+)/i)?.[1]?.trim() ?? '';
+  const estoque = inside.match(/Estoque:\s*([0-9]+)/i)?.[1]?.trim() ?? '';
 
-  return { tipo, inventario: inv, preparoDias: prep, estoque: est };
+  const variants: PublicCatalogVariant[] = [];
+  let inVariants = false;
+
+  for (const line of lines) {
+    const low = line.toLowerCase();
+
+    if (low.startsWith('variações:')) {
+      inVariants = true;
+      continue;
+    }
+
+    if (!inVariants || !line.startsWith('- ')) continue;
+
+    const raw = line.slice(2).trim();
+    const parts = raw.split('|').map((p) => p.trim()).filter(Boolean);
+
+    const attributes: Array<{ name: string; value: string }> = [];
+    let sku = '';
+    let stockValue = '';
+
+    for (const part of parts) {
+      const [rawName, ...rest] = part.split('=');
+      const name = String(rawName ?? '').trim();
+      const value = rest.join('=').trim();
+
+      if (!name) continue;
+
+      const lowName = name.toLowerCase();
+      if (lowName === 'sku') {
+        sku = value;
+        continue;
+      }
+      if (lowName === 'estoque') {
+        stockValue = value;
+        continue;
+      }
+
+      attributes.push({ name, value });
+    }
+
+    const key = attributes.map((a) => `${a.name}=${a.value}`).join(' | ').trim();
+
+    if (key) {
+      variants.push({
+        key,
+        sku,
+        stock: stockValue,
+        attributes,
+      });
+    }
+  }
+
+  const map = new Map<string, Set<string>>();
+
+  for (const variant of variants) {
+    for (const attr of variant.attributes) {
+      const name = String(attr.name ?? '').trim();
+      const value = String(attr.value ?? '').trim();
+      if (!name || !value) continue;
+
+      if (!map.has(name)) map.set(name, new Set<string>());
+      map.get(name)?.add(value);
+    }
+  }
+
+  const optionGroups: PublicCatalogOptionGroup[] = Array.from(map.entries()).map(
+    ([name, values]) => ({
+      name,
+      values: Array.from(values),
+    }),
+  );
+
+  return {
+    tipo,
+    inventario,
+    preparoDias,
+    estoque,
+    optionGroups,
+    variants,
+  };
+}
+
+function findVariantFromSelected(
+  variants: PublicCatalogVariant[],
+  selected: Record<string, string>,
+) {
+  if (!Array.isArray(variants) || variants.length === 0) return null;
+
+  return (
+    variants.find((variant) => {
+      if (!Array.isArray(variant.attributes) || variant.attributes.length === 0) {
+        return false;
+      }
+
+      return variant.attributes.every(
+        (attr) => selected[attr.name] === attr.value,
+      );
+    }) ?? null
+  );
+}
+
+function formatVariantSummary(variant: PublicCatalogVariant | null) {
+  if (!variant) return '';
+  return variant.attributes.map((a) => `${a.name}: ${a.value}`).join(' • ');
+}
+
+function quickViewLabel(index: number, overview?: string[] | null) {
+  const first = Array.isArray(overview) ? String(overview[0] ?? '').trim() : '';
+  if (first) return first;
+  if (index === 0) return 'Vista principal';
+  if (index === 1) return 'Detalhe da peça';
+  if (index === 2) return 'Textura e material';
+  if (index === 3) return 'Leitura lateral';
+  return `Vista ${index + 1}`;
 }
 
 function stripMartoBlocks(desc: string) {
@@ -528,9 +671,54 @@ export default function ShopProductPage({
   const [err, setErr] = useState<string | null>(null);
   const [p, setP] = useState<Product | null>(null);
 
+  const publicCatalog = useMemo(
+    () => extractCatalog(p?.description ?? ''),
+    [p?.description],
+  );
+
+  const [selectedOptions, setSelectedOptions] = useState<Record<string, string>>(
+    {},
+  );
+
+  const hasRealChoices =
+    (publicCatalog.optionGroups?.length ?? 0) > 0 &&
+    (publicCatalog.variants?.length ?? 0) > 0;
+
+  useEffect(() => {
+    if (!hasRealChoices) {
+      setSelectedOptions({});
+      return;
+    }
+
+    setSelectedOptions((prev) => {
+      const next: Record<string, string> = {};
+
+      for (const group of publicCatalog.optionGroups) {
+        const values = Array.isArray(group.values) ? group.values : [];
+        if (!values.length) continue;
+
+        const current = prev[group.name];
+        next[group.name] =
+          current && values.includes(current) ? current : values[0]!;
+      }
+
+      return next;
+    });
+  }, [p?.description, hasRealChoices, publicCatalog.optionGroups]);
+
+  const selectedVariant = useMemo(
+    () => findVariantFromSelected(publicCatalog.variants ?? [], selectedOptions),
+    [publicCatalog.variants, selectedOptions],
+  );
+
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [hoverHotspot, setHoverHotspot] = useState<ImageHotspot | null>(null);
+  const [pinnedHotspot, setPinnedHotspot] = useState<ImageHotspot | null>(null);
+  const [pinnedHotspotPos, setPinnedHotspotPos] = useState<{
+    x: number;
+    y: number;
+  } | null>(null);
   const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(
     null,
   );
@@ -891,14 +1079,14 @@ export default function ShopProductPage({
       </div>
 
       <div className="relative mx-auto max-w-6xl p-6">
-        <header className="mb-6 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+        <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-white/60">
               <Link href="/catalog" className="hover:text-white/80">
-                Catálogo
+                Catálogo Marto
               </Link>
               <span className="text-white/35">/</span>
-              <span className="text-white/70">Produto</span>
+              <span className="text-white/70">Peça ativa</span>
               {p?.name ? (
                 <>
                   <span className="text-white/35">/</span>
@@ -907,12 +1095,13 @@ export default function ShopProductPage({
               ) : null}
             </div>
 
-            <h1 className="mt-2 text-2xl font-semibold text-white/90">
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white/95">
               {p?.name ?? 'Produto'}
             </h1>
 
-            <p className="mt-1 text-sm text-white/70">
-              Ciclo completo: compra → serviço → avaliação → social → dados.
+            <p className="mt-2 max-w-2xl text-sm leading-6 text-white/72">
+              Peça ativa no ecossistema Marto. Origem, compra, continuidade e
+              reputação conectadas no mesmo fluxo.
             </p>
           </div>
 
@@ -935,62 +1124,118 @@ export default function ShopProductPage({
             {/* ===========================
                HERO (galeria + controle)
                =========================== */}
-            <section className="overflow-hidden rounded-2xl border border-white/15 bg-neutral-950/75 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-              <div className="grid gap-0 md:grid-cols-2">
-                {/* LEFT: Galeria com navegação e miniaturas */}
-                <div className="border-b border-white/10 md:border-b-0 md:border-r">
-                  <div className="relative">
-                    {(() => {
-                      const urls = (p.images ?? [])
-                        .map((x) => toAbsoluteUrl(String(x ?? '').trim()))
-                        .filter(Boolean) as string[];
+            <section className="overflow-hidden rounded-[32px] border border-white/15 bg-neutral-950/80 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
+              {(() => {
+                const ident = extractIdentity(p.description ?? '');
+                const cat = publicCatalog;
+                const activeVariantSummary = formatVariantSummary(selectedVariant);
+                const activeVariantStock = String(selectedVariant?.stock ?? '').trim();
+                const handle = ident.handle ? `@${ident.handle}` : '';
+                const merchantLabel =
+                  String(p.merchantTradeName ?? '').trim() || 'Central Marto';
 
-                      function pickOverview3(v: unknown): string[] | null {
-                        if (!Array.isArray(v)) return null;
-                        const out = v
-                          .map((x) => String(x ?? '').trim())
-                          .filter(Boolean)
-                          .slice(0, 3);
-                        return out.length ? out : null;
-                      }
+                const cents =
+                  typeof p.priceCents === 'number'
+                    ? p.priceCents
+                    : typeof p.price === 'number'
+                      ? p.price
+                      : 0;
 
-                      const imagesWithOverview = urls.map((url, i) => ({
-                        url,
-                        overview: pickOverview3(p.imageInsights?.[i]?.overview),
-                      }));
-                      if (!imagesWithOverview.length) {
-                        return (
-                          <div className="grid h-72 w-full place-items-center bg-white/5 text-sm font-semibold text-white/60 sm:h-80">
-                            Sem foto
+                const priceBRL = (Number(cents ?? 0) / 100).toLocaleString('pt-BR', {
+                  style: 'currency',
+                  currency: 'BRL',
+                });
+
+                function pickOverview3(v: unknown): string[] | null {
+                  if (!Array.isArray(v)) return null;
+                  const out = v
+                    .map((x) => String(x ?? '').trim())
+                    .filter(Boolean)
+                    .slice(0, 3);
+                  return out.length ? out : null;
+                }
+
+                const urls = (p.images ?? [])
+                  .map((x) => toAbsoluteUrl(String(x ?? '').trim()))
+                  .filter(Boolean) as string[];
+
+                const imagesWithOverview = urls.map((url, i) => ({
+                  url,
+                  overview: pickOverview3(p.imageInsights?.[i]?.overview),
+                }));
+
+                const safeIndex = Math.min(
+                  galleryIndex,
+                  Math.max(imagesWithOverview.length - 1, 0),
+                );
+
+                const current =
+                  imagesWithOverview[safeIndex] ?? imagesWithOverview[0] ?? null;
+
+                const hotspots: ImageHotspot[] =
+                  (p?.imageInsights?.[safeIndex]?.hotspots as
+                    | ImageHotspot[]
+                    | undefined) ?? [];
+
+                return (
+                  <>
+                    <div className="grid gap-4 p-4 xl:grid-cols-[92px_minmax(0,1fr)_420px] xl:p-5">
+                      {/* miniaturas */}
+                      <div className="order-2 xl:order-1">
+                        {imagesWithOverview.length > 1 ? (
+                          <div className="flex gap-2 overflow-x-auto xl:flex-col xl:overflow-visible">
+                            {imagesWithOverview.map((img, idx) => (
+                              <button
+                                key={`${img.url}-${idx}`}
+                                type="button"
+                                onClick={() => {
+                                  setPinnedHotspot(null);
+                                  setPinnedHotspotPos(null);
+                                  setGalleryIndex(idx);
+                                }}
+                                className={[
+                                  'h-[72px] w-[72px] shrink-0 overflow-hidden rounded-2xl border bg-black/40 transition',
+                                  idx === safeIndex
+                                    ? 'border-white/55'
+                                    : 'border-white/15 hover:border-white/35',
+                                ].join(' ')}
+                                aria-label={`Miniatura ${idx + 1}`}
+                              >
+                                <img
+                                  src={img.url}
+                                  alt=""
+                                  className="h-full w-full object-cover"
+                                />
+                              </button>
+                            ))}
                           </div>
-                        );
-                      }
+                        ) : null}
+                      </div>
 
-                      const safeIndex = Math.min(
-                        galleryIndex,
-                        imagesWithOverview.length - 1,
-                      );
-                      const current =
-                        imagesWithOverview[safeIndex] ??
-                        imagesWithOverview[0];
-                      const hotspots: ImageHotspot[] =
-                        (p?.imageInsights?.[safeIndex]?.hotspots as
-                          | ImageHotspot[]
-                          | undefined) ?? [];
-
-                      return (
-                        <>
-                          {/* imagem principal com overlay Marto */}
-                          <div className="relative group overflow-hidden rounded-3xl border border-white/10 bg-black">
+                      {/* palco da peça */}
+                      <div className="order-1 flex flex-col gap-4 xl:order-2">
+                        <div className="relative overflow-hidden rounded-[28px] border border-white/12 bg-black/50">
+                          {!current ? (
+                            <div className="grid min-h-[560px] place-items-center bg-white/5 text-sm font-semibold text-white/60 xl:min-h-[640px]">
+                              Sem foto
+                            </div>
+                          ) : (
                             <div
                               className="relative"
+                              onClick={() => {
+                                setPinnedHotspot(null);
+                                setPinnedHotspotPos(null);
+                              }}
                               onMouseLeave={() => {
                                 if (hoverTimer.current)
                                   window.clearTimeout(hoverTimer.current);
                                 if (hideTimer.current)
                                   window.clearTimeout(hideTimer.current);
-                                setHoverHotspot(null);
-                                setHoverPos(null);
+
+                                if (!pinnedHotspot) {
+                                  setHoverHotspot(null);
+                                  setHoverPos(null);
+                                }
                               }}
                             >
                               <ImageWithCaption
@@ -999,10 +1244,15 @@ export default function ShopProductPage({
                                 lines={current.overview}
                               />
 
-                              {/* Hotspots */}
+                              <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_top,rgba(0,0,0,0.20)_0%,rgba(0,0,0,0.02)_30%,rgba(0,0,0,0.04)_100%)]" />
+
                               {hotspots.map((hs, i) => {
                                 const left = `${clamp(hs.x, 0, 100)}%`;
                                 const top = `${clamp(hs.y, 0, 100)}%`;
+                                const isPinned =
+                                  pinnedHotspot?.x === hs.x &&
+                                  pinnedHotspot?.y === hs.y &&
+                                  pinnedHotspot?.title === hs.title;
 
                                 return (
                                   <button
@@ -1013,301 +1263,560 @@ export default function ShopProductPage({
                                     aria-label={hs.title}
                                     onMouseEnter={() => {
                                       if (hoverTimer.current)
-                                        window.clearTimeout(
-                                          hoverTimer.current,
-                                        );
+                                        window.clearTimeout(hoverTimer.current);
                                       if (hideTimer.current)
-                                        window.clearTimeout(
-                                          hideTimer.current,
-                                        );
+                                        window.clearTimeout(hideTimer.current);
 
-                                      hoverTimer.current = window.setTimeout(
-                                        () => {
-                                          setHoverHotspot(hs);
+                                      hoverTimer.current = window.setTimeout(() => {
+                                        setHoverHotspot(hs);
+                                        setHoverPos({
+                                          x: clamp(hs.x, 10, 90),
+                                          y: clamp(hs.y, 12, 88),
+                                        });
 
-                                          setHoverPos({
-                                            x: clamp(hs.x, 8, 92),
-                                            y: clamp(hs.y, 8, 92),
-                                          });
-
-                                          hideTimer.current =
-                                            window.setTimeout(() => {
-                                              setHoverHotspot(null);
-                                              setHoverPos(null);
-                                            }, 2600);
-                                        },
-                                        450,
-                                      );
+                                        hideTimer.current = window.setTimeout(() => {
+                                          if (!pinnedHotspot) {
+                                            setHoverHotspot(null);
+                                            setHoverPos(null);
+                                          }
+                                        }, 2800);
+                                      }, 180);
+                                    }}
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setPinnedHotspot(hs);
+                                      setPinnedHotspotPos({
+                                        x: clamp(hs.x, 10, 90),
+                                        y: clamp(hs.y, 12, 88),
+                                      });
+                                      setHoverHotspot(hs);
+                                      setHoverPos({
+                                        x: clamp(hs.x, 10, 90),
+                                        y: clamp(hs.y, 12, 88),
+                                      });
                                     }}
                                   >
-                                    {/* ponto */}
-                                    <span className="relative block h-3 w-3">
-                                      <span className="absolute inset-0 rounded-full bg-white/25 blur-[2px] opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
-                                      <span className="absolute inset-0 rounded-full bg-white/35" />
-                                      <span className="absolute left-1/2 top-1/2 h-1.5 w-1.5 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white/85" />
+                                    <span className="relative block h-5 w-5">
+                                      <span
+                                        className={[
+                                          'absolute inset-0 rounded-full border transition',
+                                          isPinned
+                                            ? 'border-white/80 bg-white/25'
+                                            : 'border-white/55 bg-white/12 group-hover:bg-white/20',
+                                        ].join(' ')}
+                                      />
+                                      <span className="absolute inset-[3px] rounded-full bg-white/92" />
+                                      <span className="absolute inset-[-7px] rounded-full border border-white/18 opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
                                     </span>
                                   </button>
                                 );
                               })}
 
-                              {/* Tooltip (delay + auto-hide) */}
-                              {hoverHotspot && hoverPos ? (
-                                <div
-                                  className="pointer-events-none absolute z-20 w-[260px] -translate-x-1/2 rounded-2xl border border-white/15 bg-neutral-950/70 p-3 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur"
-                                  style={{
-                                    left: `${hoverPos.x}%`,
-                                    top: `${hoverPos.y}%`,
-                                  }}
-                                >
-                                  <div className="text-[10px] font-semibold uppercase tracking-wide text-white/70">
-                                    detalhe
-                                  </div>
-                                  <div className="mt-1 text-sm font-semibold text-white/90">
-                                    {hoverHotspot.title}
-                                  </div>
-                                  {hoverHotspot.description ? (
-                                    <div className="mt-1 text-xs text-white/75">
-                                      {hoverHotspot.description}
+                              {(() => {
+                                const activeHotspot = pinnedHotspot ?? hoverHotspot;
+                                const activePos = pinnedHotspotPos ?? hoverPos;
+
+                                if (!activeHotspot || !activePos) return null;
+
+                                return (
+                                  <div
+                                    className="absolute z-20 w-[min(320px,78vw)] -translate-x-1/2 rounded-[24px] border border-white/15 bg-neutral-950/86 p-4 shadow-[0_20px_80px_rgba(0,0,0,0.38)] backdrop-blur-xl"
+                                    style={{
+                                      left: `${activePos.x}%`,
+                                      top: `${activePos.y}%`,
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div>
+                                        <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/52">
+                                          leitura marto
+                                        </div>
+                                        <div className="mt-2 text-lg font-semibold leading-tight text-white/94">
+                                          {activeHotspot.title}
+                                        </div>
+                                      </div>
+
+                                      {pinnedHotspot ? (
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setPinnedHotspot(null);
+                                            setPinnedHotspotPos(null);
+                                            setHoverHotspot(null);
+                                            setHoverPos(null);
+                                          }}
+                                          className="rounded-full border border-white/15 bg-white/8 px-2 py-1 text-[11px] font-semibold text-white/78 hover:bg-white/12"
+                                        >
+                                          fechar
+                                        </button>
+                                      ) : null}
                                     </div>
-                                  ) : null}
-                                </div>
+
+                                    {activeHotspot.description ? (
+                                      <div className="mt-3 text-sm leading-6 text-white/74">
+                                        {activeHotspot.description}
+                                      </div>
+                                    ) : (
+                                      <div className="mt-3 text-sm leading-6 text-white/58">
+                                        Este ponto destaca uma leitura relevante
+                                        da peça.
+                                      </div>
+                                    )}
+
+                                    <div className="mt-4 flex flex-wrap gap-2">
+                                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold text-white/62">
+                                        ponto relevante da peça
+                                      </span>
+                                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold text-white/62">
+                                        toque ou passe o mouse
+                                      </span>
+                                    </div>
+                                  </div>
+                                );
+                              })()}
+
+                              <div className="absolute left-4 top-4 z-10 flex flex-wrap gap-2">
+                                <span className="rounded-full border border-white/15 bg-black/50 px-3 py-1 text-[11px] font-semibold text-white/82 backdrop-blur">
+                                  verificado pelo rastro
+                                </span>
+                                <span className="rounded-full border border-white/15 bg-black/40 px-3 py-1 text-[11px] font-semibold text-white/72 backdrop-blur">
+                                  peça ativa
+                                </span>
+                              </div>
+
+                              <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
+                                {imagesWithOverview.length > 1 ? (
+                                  <div className="rounded-full border border-white/15 bg-black/45 px-3 py-1 text-[11px] font-semibold text-white/82 backdrop-blur">
+                                    {safeIndex + 1}/{imagesWithOverview.length}
+                                  </div>
+                                ) : null}
+
+                                <button
+                                  type="button"
+                                  onClick={() => setGalleryOpen(true)}
+                                  className="rounded-full border border-white/15 bg-black/45 px-3 py-2 text-[11px] font-semibold text-white/84 backdrop-blur hover:bg-black/60"
+                                >
+                                  {imagesWithOverview.length > 1
+                                    ? 'Tela cheia'
+                                    : 'Ampliar'}
+                                </button>
+                              </div>
+
+                              {imagesWithOverview.length > 1 ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      {
+                                        setPinnedHotspot(null);
+                                        setPinnedHotspotPos(null);
+                                        setGalleryIndex(
+                                          (prev) =>
+                                            (prev - 1 + imagesWithOverview.length) %
+                                            imagesWithOverview.length,
+                                        );
+                                      }
+                                    }
+                                    className="absolute left-4 top-1/2 z-10 -translate-y-1/2 rounded-full border border-white/15 bg-black/45 p-2 text-white/84 backdrop-blur hover:bg-black/60"
+                                    aria-label="Foto anterior"
+                                  >
+                                    ‹
+                                  </button>
+
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      {
+                                        setPinnedHotspot(null);
+                                        setPinnedHotspotPos(null);
+                                        setGalleryIndex(
+                                          (prev) =>
+                                            (prev + 1) % imagesWithOverview.length,
+                                        );
+                                      }
+                                    }
+                                    className="absolute right-4 top-1/2 z-10 -translate-y-1/2 rounded-full border border-white/15 bg-black/45 p-2 text-white/84 backdrop-blur hover:bg-black/60"
+                                    aria-label="Próxima foto"
+                                  >
+                                    ›
+                                  </button>
+                                </>
                               ) : null}
                             </div>
+                          )}
+                        </div>
 
-                            {/* botão anterior */}
-                            {imagesWithOverview.length > 1 ? (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setGalleryIndex(
-                                    (prev) =>
-                                      (prev - 1 + imagesWithOverview.length) %
-                                      imagesWithOverview.length,
-                                  )
-                                }
-                                className="absolute left-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 hover:bg-black/60"
-                                aria-label="Foto anterior"
-                              >
-                                ‹
-                              </button>
-                            ) : null}
+                        <section className="rounded-[28px] border border-white/15 bg-black/24 p-4 xl:p-5">
+                          <div className="grid gap-4 lg:grid-cols-[1.05fr_1fr]">
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                              {hasRealChoices ? (
+                                <>
+                                  <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
+                                    escolhas desta peça
+                                  </div>
 
-                            {/* botão próximo */}
-                            {imagesWithOverview.length > 1 ? (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setGalleryIndex(
-                                    (prev) =>
-                                      (prev + 1) % imagesWithOverview.length,
-                                  )
-                                }
-                                className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full bg-black/40 p-2 hover:bg-black/60"
-                                aria-label="Próxima foto"
-                              >
-                                ›
-                              </button>
-                            ) : null}
+                                  <div className="mt-2 text-sm leading-6 text-white/70">
+                                    Escolha a combinação real publicada no
+                                    catálogo desta peça.
+                                  </div>
 
-                            {/* indicador de posição */}
-                            {imagesWithOverview.length > 1 ? (
-                              <div className="absolute bottom-2 right-2 rounded-full bg-black/50 px-2 py-1 text-xs text-white">
-                                {safeIndex + 1} / {imagesWithOverview.length}
+                                  <div className="mt-4 grid gap-3">
+                                    {cat.optionGroups.map((group) => (
+                                      <div
+                                        key={group.name}
+                                        className="rounded-2xl border border-white/10 bg-black/35 p-4"
+                                      >
+                                        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/52">
+                                          {group.name}
+                                        </div>
+
+                                        <div className="mt-3 flex flex-wrap gap-2">
+                                          {group.values.map((value) => {
+                                            const active =
+                                              selectedOptions[group.name] ===
+                                              value;
+
+                                            return (
+                                              <button
+                                              key={`${group.name}-${value}`}
+                                              type="button"
+                                              onClick={() =>
+                                                setSelectedOptions((prev) => ({
+                                                  ...prev,
+                                                  [group.name]: value,
+                                                }))
+                                              }
+                                              className={[
+                                                'rounded-full border px-3 py-1 text-[11px] font-semibold transition',
+                                                active
+                                                  ? 'border-white/35 bg-white/12 text-white'
+                                                  : 'border-white/15 bg-white/5 text-white/75 hover:bg-white/10',
+                                              ].join(' ')}
+                                            >
+                                              {value}
+                                            </button>
+                                            );
+                                          })}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+
+                                  <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
+                                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/52">
+                                      combinação selecionada
+                                    </div>
+                                    <div className="mt-2 text-sm font-semibold text-white/88">
+                                      {activeVariantSummary ||
+                                        'Escolha uma combinação publicada.'}
+                                    </div>
+
+                                    <div className="mt-2 flex flex-wrap gap-2">
+                                      {selectedVariant?.sku ? (
+                                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold text-white/66">
+                                          SKU {selectedVariant.sku}
+                                        </span>
+                                      ) : null}
+
+                                      {activeVariantStock ? (
+                                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold text-white/66">
+                                          estoque {activeVariantStock}
+                                        </span>
+                                      ) : null}
+                                    </div>
+                                  </div>
+                                </>
+                              ) : (
+                                <>
+                                  <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
+                                    detalhes desta peça
+                                  </div>
+
+                                  <div className="mt-2 text-sm leading-6 text-white/70">
+                                    Esta peça ainda não tem escolhas publicadas
+                                    no catálogo. Então o Marto destaca
+                                    operação, preparo e leitura visual da peça.
+                                  </div>
+
+                                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                                    <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                                      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/52">
+                                        disponibilidade
+                                      </div>
+                                      <div className="mt-3 flex flex-wrap gap-2">
+                                        {cat.tipo ? (
+                                          <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/82">
+                                            {cat.tipo}
+                                          </span>
+                                        ) : null}
+                                        {cat.inventario ? (
+                                          <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/82">
+                                            {cat.inventario}
+                                          </span>
+                                        ) : null}
+                                        {cat.estoque ? (
+                                          <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/82">
+                                            lote {cat.estoque}
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                    </div>
+
+                                    <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                                      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/52">
+                                        preparo
+                                      </div>
+                                      <div className="mt-3 text-sm font-semibold text-white/88">
+                                        {cat.preparoDias
+                                          ? `${cat.preparoDias} dias de preparo`
+                                          : 'preparo não publicado'}
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
+                                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/52">
+                                      o que importa
+                                    </div>
+                                    <div className="mt-2 text-sm leading-6 text-white/72">
+                                      O Marto ajuda a decidir melhor quando a
+                                      peça mostra, com clareza, como ela se
+                                      apresenta, como opera e em quanto tempo
+                                      fica pronta.
+                                    </div>
+                                  </div>
+                                </>
+                              )}
+                            </div>
+
+                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                              <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
+                                ângulos da peça
                               </div>
-                            ) : null}
 
-                            {/* selo de verificação */}
-                            <div className="absolute left-4 top-4 rounded-full border border-white/15 bg-black/60 px-3 py-1 text-xs font-semibold text-white/80">
-                              Verificado pelo rastro
+                              {imagesWithOverview.length === 0 ? (
+                                <div className="mt-4 text-sm text-white/65">
+                                  Sem leituras adicionais desta peça.
+                                </div>
+                              ) : (
+                                <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                                  {imagesWithOverview.slice(0, 4).map((img, idx) => {
+                                    const realIndex = idx;
+                                    const active = realIndex === safeIndex;
+                                    const hotspotsCount =
+                                      p?.imageInsights?.[realIndex]?.hotspots
+                                        ?.length ?? 0;
+
+                                    return (
+                                      <button
+                                        key={`${img.url}-quick-${idx}`}
+                                        type="button"
+                                        onClick={() => {
+                                          setPinnedHotspot(null);
+                                          setPinnedHotspotPos(null);
+                                          setGalleryIndex(realIndex);
+                                        }}
+                                        className={[
+                                          'group overflow-hidden rounded-2xl border text-left transition',
+                                          active
+                                            ? 'border-white/45 bg-white/[0.04]'
+                                            : 'border-white/10 bg-black/30 hover:border-white/28',
+                                        ].join(' ')}
+                                      >
+                                        <div className="aspect-[4/3] w-full bg-white/5">
+                                          <img
+                                            src={img.url}
+                                            alt=""
+                                            className="h-full w-full object-cover"
+                                          />
+                                        </div>
+
+                                        <div className="p-3">
+                                          <div className="text-sm font-semibold text-white/86">
+                                            {quickViewLabel(
+                                              realIndex,
+                                              img.overview,
+                                            )}
+                                          </div>
+
+                                          <div className="mt-1 text-[11px] leading-5 text-white/60">
+                                            {Array.isArray(img.overview) &&
+                                            img.overview[0]
+                                              ? img.overview[0]
+                                              : 'abrir esta leitura'}
+                                          </div>
+
+                                          <div className="mt-2 flex flex-wrap gap-2">
+                                            {hotspotsCount > 0 ? (
+                                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-semibold text-white/58">
+                                                {hotspotsCount} ponto(s)
+                                              </span>
+                                            ) : null}
+
+                                            {active ? (
+                                              <span className="rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-1 text-[10px] font-semibold text-white/70">
+                                                ângulo ativo
+                                              </span>
+                                            ) : null}
+                                          </div>
+                                        </div>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </section>
+                      </div>
+
+                      {/* lateral enxuta */}
+                      <aside className="order-3 rounded-[28px] border border-white/15 bg-black/24 p-5 xl:p-6">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
+                              central da peça
+                            </div>
+                            <div className="mt-2 text-2xl font-semibold leading-tight text-white/94">
+                              {merchantLabel}
                             </div>
                           </div>
 
-                          {/* miniaturas */}
-                          {imagesWithOverview.length > 1 ? (
-                            <div className="mt-3 flex gap-2 overflow-x-auto">
-                              {imagesWithOverview.map((img, idx) => (
-                                <button
-                                  key={`${img.url}-${idx}`}
-                                  type="button"
-                                  onClick={() => setGalleryIndex(idx)}
-                                  className={[
-                                    'h-14 w-14 rounded-md border',
-                                    idx === safeIndex
-                                      ? 'border-white/50'
-                                      : 'border-white/20 hover:border-white/40',
-                                  ].join(' ')}
-                                  aria-label={`Miniatura ${idx + 1}`}
-                                >
-                                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                                  <img
-                                    src={img.url}
-                                    alt=""
-                                    className="h-full w-full object-cover"
-                                  />
-                                </button>
-                              ))}
-                            </div>
-                          ) : null}
-
-                          {/* botão de tela cheia / zoom */}
-                          <button
-                            type="button"
-                            onClick={() => setGalleryOpen(true)}
-                            className="mt-3 rounded-xl border border-white/15 bg-black/40 px-3 py-2 text-xs font-semibold text-white/80 hover:bg-black/55"
-                          >
-                          {imagesWithOverview.length > 1
-                            ? 'Tela cheia'
-                            : 'Ampliar'}
-                          </button>
-                        </>
-                      );
-                    })()}
-                  </div>
-                </div>
-
-                {/* RIGHT: Identidade + ações */}
-                <div className="p-5">
-                  {(() => {
-                    const ident = extractIdentity(p.description ?? '');
-                    const cat = extractCatalog(p.description ?? '');
-                    const handle = ident.handle ? `@${ident.handle}` : '';
-
-                    const cents =
-                      typeof p.priceCents === 'number'
-                        ? p.priceCents
-                        : typeof p.price === 'number'
-                          ? p.price
-                          : 0;
-
-                    const priceBRL = (Number(cents ?? 0) / 100).toLocaleString(
-                      'pt-BR',
-                      { style: 'currency', currency: 'BRL' },
-                    );
-
-                    return (
-                      <div className="flex flex-col gap-4">
-                        {/* status line */}
-                        <div className="flex flex-wrap items-center gap-2">
-                          <span className="rounded-full border border-white/15 bg-black/50 px-3 py-1 text-[11px] font-semibold text-white/80">
-                            Produto ativo no Marto
+                          <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/76">
+                            rastro verificado
                           </span>
-                          <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/70">
-                            Verificado pelo rastro
-                          </span>
-                          {cat.inventario ? (
-                            <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/70">
-                              Inventário: {cat.inventario}
+                        </div>
+
+                        <p className="mt-3 text-sm leading-6 text-white/70">
+                          Origem ativa desta peça no Marto. A central sustenta a
+                          continuidade, a leitura pública e a reputação ao longo do fluxo.
+                        </p>
+
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {p.merchantHandle ? (
+                            <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
+                              @{p.merchantHandle}
                             </span>
                           ) : null}
-                        </div>
 
-                        {/* name + price */}
-                        <div className="flex flex-col gap-1">
-                          <div className="text-xl font-semibold text-white/90">
-                            {p.name}
-                          </div>
-
-                          <div className="flex flex-wrap items-baseline gap-3">
-                            <div className="text-lg font-semibold text-white/90">
-                              {priceBRL}
-                            </div>
-
-                            {cat.preparoDias ? (
-                              <div className="text-xs text-white/65">
-                                preparo ~{' '}
-                                <span className="font-semibold text-white/80">
-                                  {cat.preparoDias} dias
-                                </span>
-                              </div>
-                            ) : null}
-
-                            {cat.estoque ? (
-                              <div className="text-xs text-white/65">
-                                estoque:{' '}
-                                <span className="font-semibold text-white/80">
-                                  {cat.estoque}
-                                </span>
-                              </div>
-                            ) : null}
-                          </div>
-                        </div>
-
-                        {/* identity chips */}
-                        <div className="flex flex-wrap items-center gap-2">
-                          {handle ? (
-                            <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/80">
-                              {handle}
+                          {cat.inventario ? (
+                            <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
+                              operação {cat.inventario}
                             </span>
                           ) : null}
 
                           {cat.tipo ? (
-                            <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/70">
-                              Tipo: {cat.tipo}
-                            </span>
-                          ) : null}
-
-                          {p.merchantTradeName ? (
-                            <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/70">
-                              Loja: {p.merchantTradeName}
+                            <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
+                              {cat.tipo}
                             </span>
                           ) : null}
                         </div>
 
-                        {/* public link (se tiver handle) */}
-                        {p.merchantHandle && p.productHandle ? (
-                          <div className="rounded-2xl border border-white/15 bg-black/40 p-4">
-                            <div className="text-xs font-semibold text-white/70">
-                              Link público
-                            </div>
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                              <code className="rounded-md bg-black/60 px-2 py-1 text-xs text-white/85">
-                                /shop/@{p.merchantHandle}/p/@{p.productHandle}
-                              </code>
+                        {p.merchantHandle ? (
+                          <div className="mt-4">
+                            <Link
+                              href={`/loja/${encodeURIComponent(p.merchantHandle)}`}
+                              className="inline-flex rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/15"
+                            >
+                              Entrar na central →
+                            </Link>
+                          </div>
+                        ) : null}
 
+                        <div className="mt-6 border-t border-white/10 pt-6">
+                          <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
+                            peça em destaque
+                          </div>
+
+                          <div className="mt-2 text-3xl font-semibold leading-tight text-white/96">
+                            {p.name}
+                          </div>
+
+                          <p className="mt-3 text-sm leading-6 text-white/72">
+                            Uma peça publicada dentro de uma central viva, pronta para
+                            entrar no seu fluxo de compra e continuar gerando rastro no
+                            Marto.
+                          </p>
+
+                          {hasRealChoices ? (
+                            <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/52">
+                                opção ativa
+                              </div>
+
+                              <div className="mt-2 text-sm font-semibold text-white/88">
+                                {activeVariantSummary ||
+                                  'Escolha uma combinação publicada.'}
+                              </div>
+
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {selectedVariant?.sku ? (
+                                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold text-white/66">
+                                    SKU {selectedVariant.sku}
+                                  </span>
+                                ) : null}
+
+                                {activeVariantStock ? (
+                                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold text-white/66">
+                                    estoque {activeVariantStock}
+                                  </span>
+                                ) : null}
+                              </div>
+                            </div>
+                          ) : null}
+
+                          <div className="mt-5 flex flex-wrap items-center gap-3">
+                            <div className="text-3xl font-semibold text-white/95">
+                              {priceBRL}
+                            </div>
+
+                            {activeVariantStock ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
+                                estoque desta opção {activeVariantStock}
+                              </span>
+                            ) : cat.estoque ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
+                                lote ativo {cat.estoque}
+                              </span>
+                            ) : null}
+
+                            {cat.preparoDias ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
+                                preparo em {cat.preparoDias} dias
+                              </span>
+                            ) : null}
+                          </div>
+
+                          <div className="mt-5 flex flex-wrap gap-3">
+                            <button
+                              onClick={buyNow}
+                              disabled={buying}
+                              className="rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-black hover:bg-white/90 disabled:opacity-60"
+                            >
+                              {buying ? 'Iniciando…' : 'Iniciar compra'}
+                            </button>
+
+                            {p.merchantHandle && p.productHandle ? (
                               <button
                                 type="button"
                                 onClick={() => {
                                   const url = `${window.location.origin}/shop/@${p.merchantHandle}/p/@${p.productHandle}`;
                                   navigator.clipboard.writeText(url);
                                 }}
-                                className="rounded-xl bg-white/10 px-3 py-1 text-xs font-semibold text-white hover:bg-white/15"
+                                className="rounded-2xl border border-white/15 bg-white/8 px-4 py-3 text-sm font-semibold text-white/84 hover:bg-white/12"
                               >
-                                Copiar
+                                Copiar link da peça
                               </button>
-                            </div>
-                          </div>
-                        ) : null}
-
-                        {/* CTA block */}
-                        <div className="rounded-2xl border border-white/15 bg-black/40 p-4">
-                          <div className="flex flex-wrap items-center justify-between gap-3">
-                            <div>
-                              <div className="text-sm font-semibold text-white/85">
-                                Iniciar compra pelo Marto
-                              </div>
-                              <div className="mt-1 text-xs text-white/65">
-                                Fluxo completo: compra → serviço → avaliação →
-                                social → dados.
-                              </div>
-                            </div>
-
-                            <button
-                              onClick={buyNow}
-                              disabled={buying}
-                              className="rounded-xl bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15 disabled:opacity-60"
-                            >
-                              {buying ? 'Iniciando…' : 'Iniciar ciclo Marto'}
-                            </button>
+                            ) : null}
                           </div>
 
                           {createdOrderId ? (
-                            <div className="mt-3 rounded-xl border border-white/10 bg-black/40 p-3">
+                            <div className="mt-4 rounded-2xl border border-white/10 bg-black/40 p-3">
                               <div className="flex flex-wrap items-center justify-between gap-3">
-                                <div className="text-sm text-white/80">
+                                <div className="text-sm text-white/82">
                                   ✅ Pedido criado:{' '}
-                                  <span className="font-semibold">
-                                    {createdOrderId}
-                                  </span>
+                                  <span className="font-semibold">{createdOrderId}</span>
                                 </div>
 
                                 {!paidOrderId ? (
@@ -1337,107 +1846,153 @@ export default function ShopProductPage({
                               </div>
                             </div>
                           ) : null}
-                        </div>
 
-                        {/* ✅ Mais deste perfil (continuidade Marto) */}
-                        <section className="mt-6 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-                          <div className="flex items-baseline justify-between gap-3">
-                            <div>
-                              <div className="text-sm font-semibold text-white/85">
-                                Mais deste perfil
-                              </div>
-                              <div className="mt-1 text-sm text-white/70">
-                                Continuidade da loja no Marto (sem recomendação
-                                genérica).
-                              </div>
+                          <div className="mt-6 border-t border-white/10 pt-6">
+                            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
+                              fluxo marto desta peça
                             </div>
 
-                            {p.merchantHandle ? (
-                              <Link
-                                href={`/loja/${encodeURIComponent(
-                                  p.merchantHandle,
-                                )}`}
-                                className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15"
-                              >
-                                Ver loja →
-                              </Link>
-                            ) : null}
+                            <div className="mt-3 grid gap-3">
+                              {[
+                                [
+                                  'Comprar',
+                                  'A peça entra no seu fluxo com origem e intenção registradas.',
+                                ],
+                                [
+                                  'Receber',
+                                  'Entrega e continuidade operacional passam a fazer parte da jornada.',
+                                ],
+                                [
+                                  'Registrar',
+                                  'Uso real, contexto e experiência começam a virar prova.',
+                                ],
+                                [
+                                  'Reputação',
+                                  'O rastro amadurece e fortalece a central no ecossistema.',
+                                ],
+                              ].map(([title, desc]) => (
+                                <div
+                                  key={title}
+                                  className="rounded-2xl border border-white/10 bg-white/[0.03] p-4"
+                                >
+                                  <div className="text-sm font-semibold text-white/90">
+                                    {title}
+                                  </div>
+                                  <div className="mt-1 text-xs leading-5 text-white/64">
+                                    {desc}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
                           </div>
 
-                          {moreLoading ? (
-                            <div className="mt-4 text-sm text-white/70">
-                              Carregando…
+                          <div className="mt-6 border-t border-white/10 pt-6">
+                            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
+                              leitura pública
                             </div>
-                          ) : moreErr ? (
-                            <div className="mt-4 text-sm text-white/75">
-                              {moreErr}
-                            </div>
-                          ) : more.length === 0 ? (
-                            <div className="mt-4 text-sm text-white/70">
-                              Sem mais produtos desta loja por enquanto.
-                            </div>
-                          ) : (
-                            <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                              {more.map((it) => {
-                                const img = toAbsoluteUrl(
-                                  coverFromImages(it.images ?? []),
-                                );
-                                const cents =
-                                  typeof it.priceCents === 'number'
-                                    ? it.priceCents
-                                    : typeof it.price === 'number'
-                                      ? it.price
-                                      : 0;
 
-                                const priceBRL = (
-                                  Number(cents ?? 0) / 100
-                                ).toLocaleString('pt-BR', {
-                                  style: 'currency',
-                                  currency: 'BRL',
-                                });
+                            <div className="mt-3 flex flex-wrap gap-2">
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                                Central: {merchantLabel}
+                              </span>
 
-                                return (
-                                  <Link
-                                    key={it.id}
-                                    href={`/shop/p/${encodeURIComponent(
-                                      it.id,
-                                    )}`}
-                                    className="group overflow-hidden rounded-2xl border border-white/15 bg-black/40 hover:bg-black/55"
-                                  >
-                                    <div className="h-28 w-full bg-white/5">
-                                      {img ? (
-                                        // eslint-disable-next-line @next/next/no-img-element
-                                        <img
-                                          src={img}
-                                          alt={it.name}
-                                          className="h-28 w-full object-cover"
-                                          loading="lazy"
-                                        />
-                                      ) : null}
-                                    </div>
+                              {handle ? (
+                                <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                                  Rastro público: {handle}
+                                </span>
+                              ) : null}
 
-                                    <div className="p-3">
-                                      <div className="line-clamp-2 text-sm font-semibold text-white/85">
-                                        {it.name}
-                                      </div>
-                                      <div className="mt-1 text-xs text-white/65">
-                                        {priceBRL}
-                                      </div>
-                                      <div className="mt-2 text-[11px] text-white/55">
-                                        rastro ativo • marto
-                                      </div>
-                                    </div>
-                                  </Link>
-                                );
-                              })}
+                              {cat.tipo ? (
+                                <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/74">
+                                  Operação: {cat.tipo}
+                                </span>
+                              ) : null}
                             </div>
-                          )}
-                        </section>
-                      </div>
-                    );
-                  })()}
+                          </div>
+                        </div>
+                      </aside>
+                    </div>
+                  </>
+                );
+              })()}
+            </section>
+
+            <section className="mt-6 rounded-[28px] border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur xl:p-5">
+              <div className="flex items-baseline justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-white/88">
+                    Continuidade da central
+                  </div>
+                  <div className="mt-1 text-sm text-white/70">
+                    Outras peças publicadas dentro da mesma origem viva no Marto.
+                  </div>
                 </div>
+
+                {p.merchantHandle ? (
+                  <Link
+                    href={`/loja/${encodeURIComponent(p.merchantHandle)}`}
+                    className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/15"
+                  >
+                    Ver central →
+                  </Link>
+                ) : null}
               </div>
+
+              {moreLoading ? (
+                <div className="mt-4 text-sm text-white/70">Carregando…</div>
+              ) : moreErr ? (
+                <div className="mt-4 text-sm text-white/75">{moreErr}</div>
+              ) : more.length === 0 ? (
+                <div className="mt-4 text-sm text-white/70">
+                  Esta central ainda não publicou outras peças por enquanto.
+                </div>
+              ) : (
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {more.map((it) => {
+                    const img = toAbsoluteUrl(coverFromImages(it.images ?? []));
+                    const cents =
+                      typeof it.priceCents === 'number'
+                        ? it.priceCents
+                        : typeof it.price === 'number'
+                          ? it.price
+                          : 0;
+
+                    const priceBRL = (Number(cents ?? 0) / 100).toLocaleString('pt-BR', {
+                      style: 'currency',
+                      currency: 'BRL',
+                    });
+
+                    return (
+                      <Link
+                        key={it.id}
+                        href={`/shop/p/${encodeURIComponent(it.id)}`}
+                        className="group overflow-hidden rounded-2xl border border-white/15 bg-black/35 hover:bg-black/50"
+                      >
+                        <div className="aspect-[4/3] w-full bg-white/5">
+                          {img ? (
+                            <img
+                              src={img}
+                              alt={it.name}
+                              className="h-full w-full object-cover"
+                              loading="lazy"
+                            />
+                          ) : null}
+                        </div>
+
+                        <div className="p-3">
+                          <div className="line-clamp-2 text-sm font-semibold text-white/86">
+                            {it.name}
+                          </div>
+                          <div className="mt-1 text-xs text-white/65">{priceBRL}</div>
+                          <div className="mt-2 text-[11px] text-white/52">
+                            continuidade ativa • central
+                          </div>
+                        </div>
+                      </Link>
+                    );
+                  })}
+                </div>
+              )}
             </section>
 
             {/* ✅ Entrega (MVP) — seção própria (não infla o Hero) */}
@@ -1445,21 +2000,160 @@ export default function ShopProductPage({
               <ShippingEstimator description={p.description ?? null} />
             </section>
 
-            {/* ✅ Descrição — seção própria (controle) */}
+            {/* ✅ Leitura da peça — seção própria (controle) */}
             <section className="mt-6 rounded-2xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-              <div className="text-sm font-semibold text-white/85">
-                Descrição
-              </div>
               {(() => {
                 const clean = stripMartoBlocks(p.description ?? '');
-                return clean ? (
-                  <div className="mt-3 whitespace-pre-wrap text-sm text-white/75">
-                    {clean}
-                  </div>
-                ) : (
-                  <div className="mt-3 text-sm text-white/65">
-                    Sem descrição.
-                  </div>
+                const ident = extractIdentity(p.description ?? '');
+                const cat = extractCatalog(p.description ?? '');
+                const tech = extractTech(p.description ?? '');
+
+                const merchantLabel =
+                  String(p.merchantTradeName ?? '').trim() || 'Central Marto';
+                const publicHandle = ident.handle
+                  ? `@${String(ident.handle).trim()}`
+                  : '';
+
+                const hasDimensions =
+                  String(tech.l).trim() &&
+                  String(tech.w).trim() &&
+                  String(tech.h).trim();
+
+                const dims = hasDimensions
+                  ? `${String(tech.l).trim()} × ${String(tech.w).trim()} × ${String(tech.h).trim()} cm`
+                  : '';
+
+                return (
+                  <>
+                    <div className="flex flex-wrap items-baseline justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-white/85">
+                          Leitura da peça
+                        </div>
+                        <div className="mt-1 text-sm text-white/70">
+                          Origem, operação e rastro técnico apresentados de forma
+                          mais viva dentro do Marto.
+                        </div>
+                      </div>
+
+                      <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/70">
+                        peça conectada ao ecossistema
+                      </span>
+                    </div>
+
+                    <div className="mt-4 grid gap-3 lg:grid-cols-3">
+                      <div className="rounded-2xl border border-white/10 bg-black/40 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                          Origem desta peça
+                        </div>
+
+                        <div className="mt-3 text-sm font-semibold text-white/88">
+                          {merchantLabel}
+                        </div>
+
+                        <div className="mt-2 space-y-1 text-sm text-white/72">
+                          <div>
+                            Central ativa no Marto com jornada pública da peça.
+                          </div>
+                          {publicHandle ? (
+                            <div>
+                              Rastro público:{' '}
+                              <span className="font-semibold text-white/82">
+                                {publicHandle}
+                              </span>
+                            </div>
+                          ) : null}
+                          {p.merchantHandle ? (
+                            <div>
+                              Central pública:{' '}
+                              <span className="font-semibold text-white/82">
+                                @{p.merchantHandle}
+                              </span>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-black/40 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                          Leitura operacional
+                        </div>
+
+                        <div className="mt-3 space-y-2 text-sm text-white/72">
+                          <div>
+                            Operação:{' '}
+                            <span className="font-semibold text-white/82">
+                              {cat.tipo || 'não informada'}
+                            </span>
+                          </div>
+                          <div>
+                            Inventário:{' '}
+                            <span className="font-semibold text-white/82">
+                              {cat.inventario || 'em definição'}
+                            </span>
+                          </div>
+                          <div>
+                            Preparo:{' '}
+                            <span className="font-semibold text-white/82">
+                              {cat.preparoDias
+                                ? `${cat.preparoDias} dias`
+                                : 'sem prazo publicado'}
+                            </span>
+                          </div>
+                          <div>
+                            Lote ativo:{' '}
+                            <span className="font-semibold text-white/82">
+                              {cat.estoque || 'não informado'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-black/40 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                          Rastro técnico
+                        </div>
+
+                        <div className="mt-3 space-y-2 text-sm text-white/72">
+                          <div>
+                            Peso:{' '}
+                            <span className="font-semibold text-white/82">
+                              {String(tech.weightKg).trim()
+                                ? `${String(tech.weightKg).trim()} kg`
+                                : 'não publicado'}
+                            </span>
+                          </div>
+                          <div>
+                            Dimensões:{' '}
+                            <span className="font-semibold text-white/82">
+                              {dims || 'não publicadas'}
+                            </span>
+                          </div>
+                          <div className="pt-1 text-xs leading-5 text-white/58">
+                            Esses sinais estruturam a continuidade da peça no
+                            frete, na experiência e na reputação do ecossistema.
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-5 rounded-2xl border border-white/10 bg-black/30 p-4">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                        Essência publicada
+                      </div>
+
+                      {clean ? (
+                        <div className="mt-3 whitespace-pre-wrap text-sm leading-6 text-white/76">
+                          {clean}
+                        </div>
+                      ) : (
+                        <div className="mt-3 text-sm text-white/65">
+                          Esta peça ainda não recebeu uma leitura pública mais
+                          completa.
+                        </div>
+                      )}
+                    </div>
+                  </>
                 );
               })()}
             </section>
