@@ -80,15 +80,33 @@ type UpdateProductResponse =
   | { ok: true; updated: ProductItem }
   | { ok: false; message: string };
 
+type PhotoRole =
+  | 'cover'
+  | 'detail'
+  | 'material'
+  | 'context'
+  | 'structure'
+  | 'finish';
+
+type HotspotKind =
+  | 'material'
+  | 'finish'
+  | 'structure'
+  | 'comfort'
+  | 'measure'
+  | 'difference';
+
 type HotspotDraft = {
   x: number;
   y: number;
   title: string;
   description: string;
+  kind?: HotspotKind;
 };
 
 type ImageInsight = {
-  overview?: string[]; // 3 linhas
+  role?: PhotoRole;
+  overview?: string[]; // 3 linhas de leitura viva
   hotspots?: HotspotDraft[];
 };
 
@@ -147,6 +165,93 @@ function normalizeOverview3(lines: unknown): [string, string, string] {
   return [a, b, c];
 }
 
+function normalizePhotoRole(role: unknown, index = 0): PhotoRole {
+  const raw = String(role ?? '').trim();
+
+  if (
+    raw === 'cover' ||
+    raw === 'detail' ||
+    raw === 'material' ||
+    raw === 'context' ||
+    raw === 'structure' ||
+    raw === 'finish'
+  ) {
+    return raw;
+  }
+
+  return index === 0 ? 'cover' : 'detail';
+}
+
+function photoRoleMeta(role: PhotoRole) {
+  switch (role) {
+    case 'cover':
+      return {
+        label: 'Capa',
+        hint: 'É a foto principal. Ela abre a compreensão da peça.',
+      };
+    case 'detail':
+      return {
+        label: 'Detalhe',
+        hint: 'Mostra um ponto específico que aprofunda o entendimento.',
+      };
+    case 'material':
+      return {
+        label: 'Material',
+        hint: 'Ajuda a provar textura, matéria-prima e densidade visual.',
+      };
+    case 'context':
+      return {
+        label: 'Contexto',
+        hint: 'Mostra a peça em uso, ambiente ou proporção real.',
+      };
+    case 'structure':
+      return {
+        label: 'Estrutura',
+        hint: 'Explica sustentação, construção e parte técnica visível.',
+      };
+    case 'finish':
+      return {
+        label: 'Acabamento',
+        hint: 'Valoriza borda, costura, toque, pintura ou lapidação final.',
+      };
+  }
+}
+
+function normalizeHotspotKind(kind: unknown): HotspotKind {
+  const raw = String(kind ?? '').trim();
+
+  if (
+    raw === 'material' ||
+    raw === 'finish' ||
+    raw === 'structure' ||
+    raw === 'comfort' ||
+    raw === 'measure' ||
+    raw === 'difference'
+  ) {
+    return raw;
+  }
+
+  return 'difference';
+}
+
+function hotspotKindMeta(kind: HotspotKind) {
+  switch (kind) {
+    case 'material':
+      return { label: 'Material' };
+    case 'finish':
+      return { label: 'Acabamento' };
+    case 'structure':
+      return { label: 'Estrutura' };
+    case 'comfort':
+      return { label: 'Conforto' };
+    case 'measure':
+      return { label: 'Proporção' };
+    case 'difference':
+    default:
+      return { label: 'Diferencial' };
+  }
+}
+
 function asRecord(v: unknown): Record<string, unknown> | null {
   return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
 }
@@ -166,6 +271,7 @@ function normalizeHotspots(hs: unknown): HotspotDraft[] {
         y: clampPct(Number(r?.y ?? 50)),
         title: String(r?.title ?? '').trim(),
         description: String(r?.description ?? '').trim(),
+        kind: normalizeHotspotKind(r?.kind),
       };
     })
     .filter((item) => Number.isFinite(item.x) && Number.isFinite(item.y));
@@ -176,9 +282,10 @@ function normalizeInsightsForLen(
   existing: unknown,
 ): ImageInsight[] {
   const base: ImageInsight[] = Array.isArray(existing)
-    ? existing.map((it) => {
+    ? existing.map((it, index) => {
         const r = asRecord(it);
         return {
+          role: normalizePhotoRole(r?.role, index),
           overview: normalizeOverview3(r?.overview),
           hotspots: normalizeHotspots(r?.hotspots),
         };
@@ -186,12 +293,19 @@ function normalizeInsightsForLen(
     : [];
 
   const next = [...base];
-  while (next.length < len) next.push({ overview: ['', '', ''], hotspots: [] });
+  while (next.length < len) {
+    next.push({
+      role: normalizePhotoRole(undefined, next.length),
+      overview: ['', '', ''],
+      hotspots: [],
+    });
+  }
   if (next.length > len) next.length = len;
 
   for (let i = 0; i < next.length; i++) {
     next[i] = {
       ...next[i],
+      role: normalizePhotoRole(next[i]?.role, i),
       overview: normalizeOverview3(next[i]?.overview),
       hotspots: normalizeHotspots(next[i]?.hotspots),
     };
@@ -1059,6 +1173,7 @@ function FilesDropzone({
   const [dragOver, setDragOver] = useState<number | null>(null);
   const [dragZoneOver, setDragZoneOver] = useState(false);
   const [photoEditorIdx, setPhotoEditorIdx] = useState<number | null>(null);
+  const [selectedPreviewIdx, setSelectedPreviewIdx] = useState(0);
   const [photoEditorTab, setPhotoEditorTab] = useState<
     'overview' | 'hotspots'
   >('overview');
@@ -1066,12 +1181,40 @@ function FilesDropzone({
     null,
   );
 
+  useEffect(() => {
+    if (!files.length) {
+      setSelectedPreviewIdx(0);
+      setPhotoEditorIdx(null);
+      setHotspotSelectedIdx(null);
+      return;
+    }
+
+    if (selectedPreviewIdx > files.length - 1) {
+      setSelectedPreviewIdx(files.length - 1);
+    }
+  }, [files.length, selectedPreviewIdx, setPhotoEditorIdx]);
+
   const previews = useMemo(() => {
     const out = files.map((f) => ({ file: f, url: URL.createObjectURL(f) }));
     return out;
   }, [files]);
 
   const ins = insights ?? [];
+  const normalizedInsights = normalizeInsightsForLen(files.length, ins);
+  const selectedPreview = previews[selectedPreviewIdx] ?? null;
+  const selectedInsight =
+    selectedPreviewIdx >= 0 ? normalizedInsights[selectedPreviewIdx] ?? null : null;
+
+  const selectedRole = selectedInsight
+    ? normalizePhotoRole(selectedInsight.role, selectedPreviewIdx)
+    : 'cover';
+
+  const selectedRoleMeta = photoRoleMeta(selectedRole);
+
+  const selectedPreviewHotspots =
+    selectedPreviewIdx >= 0
+      ? normalizeHotspots(normalizedInsights[selectedPreviewIdx]?.hotspots)
+      : [];
 
   function updateInsightAt(
     index: number,
@@ -1172,115 +1315,223 @@ function FilesDropzone({
         </div>
 
         {files.length ? (
-          <div className="mt-4 grid grid-cols-3 gap-2 sm:grid-cols-4 lg:grid-cols-6">
-            {previews.map((p, idx) => (
-              <div
-                key={`${p.file.name}-${idx}`}
-                draggable={!disabled}
-                onDragStart={() => setDragFrom(idx)}
-                onDragEnter={() => setDragOver(idx)}
-                onDragOver={(e) => e.preventDefault()}
-                onDragEnd={() => {
-                  setDragFrom(null);
-                  setDragOver(null);
-                }}
-                onDrop={() => {
-                  if (disabled) return;
-                  if (dragFrom === null) return;
-                  if (dragOver === null) return;
-                  if (dragFrom === dragOver) return;
+          <div className="mt-4 grid gap-4">
+            <div className="overflow-x-auto pb-1">
+              <div className="flex min-w-max gap-3">
+                {previews.map((p, idx) => {
+                  const role = normalizePhotoRole(normalizedInsights[idx]?.role, idx);
+                  const roleMeta = photoRoleMeta(role);
+                  const hotspotsCount = normalizeHotspots(
+                    normalizedInsights[idx]?.hotspots,
+                  ).length;
 
-                  const nextFiles = moveItem(files, dragFrom, dragOver);
-                  setFiles(nextFiles);
+                  const isActive = idx === selectedPreviewIdx;
 
-                  if (setInsights) {
-                    const nextIns = moveItem(ins, dragFrom, dragOver);
-                    setInsights(nextIns);
-                  }
-
-                  setDragFrom(null);
-                  setDragOver(null);
-                }}
-                className={[
-                  'group relative overflow-hidden rounded-2xl border bg-black',
-                  dragOver === idx ? 'border-white/40' : 'border-white/10',
-                ].join(' ')}
-                style={{ cursor: disabled ? 'default' : 'grab' }}
-              >
-                <div className="absolute left-2 top-2 z-10 rounded-full border border-white/15 bg-black/45 px-2 py-1 text-[10px] font-semibold text-white/80 backdrop-blur">
-                  Arraste
-                </div>
-                <div className="overflow-hidden rounded-2xl">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={p.url}
-                    alt={p.file.name}
-                    className="h-24 w-full object-cover"
-                  />
-                </div>
-
-                <div className="p-2">
-                  <div className="grid gap-2">
+                  return (
                     <button
+                      key={`${p.file.name}-${idx}`}
                       type="button"
                       onClick={() => {
+                        setSelectedPreviewIdx(idx);
                         setPhotoEditorIdx(idx);
                         setPhotoEditorTab('overview');
                         setHotspotSelectedIdx(null);
                       }}
-                      className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/10"
-                      disabled={disabled}
+                      className={classNames(
+                        'group w-[96px] shrink-0 rounded-2xl border p-2 text-left transition',
+                        isActive
+                          ? 'border-white/30 bg-white/[0.06]'
+                          : 'border-white/10 bg-black/35 hover:border-white/20',
+                      )}
                     >
-                      Visão rápida
-                    </button>
+                      <div className="relative overflow-hidden rounded-xl border border-white/10 bg-black">
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={p.url}
+                          alt={p.file.name}
+                          className="h-20 w-full object-cover"
+                        />
 
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPhotoEditorIdx(idx);
-                        setPhotoEditorTab('hotspots');
-                        const hs = normalizeHotspots(ins[idx]?.hotspots);
-                        setHotspotSelectedIdx(hs.length ? 0 : null);
-                      }}
-                      className="rounded-xl border border-white/15 bg-white/5 px-3 py-2 text-xs font-semibold text-white/85 hover:bg-white/10"
-                      disabled={disabled}
-                    >
-                      Pontos relevantes
-                    </button>
+                        <div className="absolute left-2 top-2 rounded-full border border-white/15 bg-black/50 px-2 py-0.5 text-[10px] font-semibold text-white/82 backdrop-blur">
+                          {roleMeta.label}
+                        </div>
+                      </div>
 
-                    <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2 text-[10px] font-semibold text-white/60">
-                      {normalizeHotspots(ins[idx]?.hotspots).length} ponto(s) •
-                      foto {idx + 1}
+                      <div className="mt-2 text-[11px] font-semibold text-white/75">
+                        Foto {idx + 1}
+                      </div>
+                      <div className="mt-1 text-[10px] text-white/50">
+                        {hotspotsCount} ponto(s)
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {selectedPreview ? (
+              <div className="rounded-[28px] border border-white/12 bg-black/30 p-4">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-white/90">
+                      Foto em foco
+                    </div>
+                    <div className="mt-1 text-xs text-white/60">
+                      Trabalhe a leitura viva e os pontos de leitura em uma imagem maior.
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap gap-2">
+                    <Chip text={selectedRoleMeta.label.toUpperCase()} />
+                    <Chip text={`${selectedPreviewHotspots.length} PONTO(S)`} />
+                  </div>
+                </div>
+
+                <div className="mt-4 overflow-hidden rounded-[24px] border border-white/12 bg-black">
+                  <div
+                    className="relative"
+                    onClick={(e) => {
+                      if (photoEditorTab !== 'hotspots') return;
+                      if (photoEditorIdx !== selectedPreviewIdx) {
+                        setPhotoEditorIdx(selectedPreviewIdx);
+                      }
+
+                      const rect = e.currentTarget.getBoundingClientRect();
+                      const x = clampPct(((e.clientX - rect.left) / rect.width) * 100);
+                      const y = clampPct(((e.clientY - rect.top) / rect.height) * 100);
+
+                      const nextPoint: HotspotDraft = {
+                        x,
+                        y,
+                        title: '',
+                        description: '',
+                        kind: 'difference',
+                      };
+
+                      const nextIndex = selectedPreviewHotspots.length;
+
+                      updateInsightAt(selectedPreviewIdx, (prev) => ({
+                        ...prev,
+                        hotspots: [...normalizeHotspots(prev.hotspots), nextPoint],
+                      }));
+
+                      setPhotoEditorIdx(selectedPreviewIdx);
+                      setHotspotSelectedIdx(nextIndex);
+                      setPhotoEditorTab('hotspots');
+                    }}
+                  >
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={selectedPreview.url}
+                      alt={selectedPreview.file.name}
+                      className="max-h-[52vh] w-full object-contain"
+                    />
+
+                    <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_top,rgba(0,0,0,0.16),rgba(0,0,0,0.04))]" />
+
+                    {selectedPreviewHotspots.map((hs, pointIdx) => {
+                      const active = hotspotSelectedIdx === pointIdx;
+
+                      return (
+                        <span
+                          key={`${pointIdx}-${hs.x}-${hs.y}`}
+                          className="absolute -translate-x-1/2 -translate-y-1/2"
+                          style={{ left: `${hs.x}%`, top: `${hs.y}%` }}
+                        >
+                          <span
+                            className={classNames(
+                              'relative block h-6 w-6 rounded-full border shadow-[0_0_0_1px_rgba(255,255,255,0.05)]',
+                              active
+                                ? 'border-white/80 bg-white/25'
+                                : 'border-white/55 bg-white/12',
+                            )}
+                          >
+                            <span className="absolute inset-[4px] rounded-full bg-white/95" />
+                          </span>
+                        </span>
+                      );
+                    })}
+
+                    <div className="absolute left-3 top-3 rounded-full border border-white/15 bg-black/55 px-3 py-1 text-[11px] font-semibold text-white/84 backdrop-blur">
+                      {photoEditorTab === 'hotspots'
+                        ? 'clique na imagem para criar um ponto de leitura'
+                        : selectedRoleMeta.label}
                     </div>
                   </div>
                 </div>
 
-                <div className="absolute inset-x-0 bottom-0 flex items-center justify-end gap-2 bg-black/60 px-2 py-1">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFiles(removeAt(files, idx));
-                        if (setInsights) {
-                          setInsights(removeAt(normalizeInsightsForLen(files.length, ins), idx));
-                        }
-
-                        if (photoEditorIdx === idx) {
-                          setPhotoEditorIdx(null);
-                          setPhotoEditorTab('overview');
-                          setHotspotSelectedIdx(null);
-                        } else if (photoEditorIdx !== null && photoEditorIdx > idx) {
-                          setPhotoEditorIdx(photoEditorIdx - 1);
-                        }
-                      }}
-                    className="rounded-lg bg-white/10 px-2 py-1 text-[10px] font-semibold text-white hover:bg-white/15"
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPhotoEditorIdx(selectedPreviewIdx);
+                      setPhotoEditorTab('overview');
+                      setHotspotSelectedIdx(null);
+                    }}
+                    className={classNames(
+                      'rounded-2xl border px-4 py-2 text-xs font-semibold',
+                      photoEditorIdx === selectedPreviewIdx && photoEditorTab === 'overview'
+                        ? 'border-white/30 bg-white/10 text-white'
+                        : 'border-white/15 bg-white/5 text-white/80 hover:bg-white/10',
+                    )}
                     disabled={disabled}
-                    title="Remover"
                   >
-                    Remover
+                    Leitura viva
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPhotoEditorIdx(selectedPreviewIdx);
+                      setPhotoEditorTab('hotspots');
+                      setHotspotSelectedIdx(
+                        selectedPreviewHotspots.length ? 0 : null,
+                      );
+                    }}
+                    className={classNames(
+                      'rounded-2xl border px-4 py-2 text-xs font-semibold',
+                      photoEditorIdx === selectedPreviewIdx && photoEditorTab === 'hotspots'
+                        ? 'border-white/30 bg-white/10 text-white'
+                        : 'border-white/15 bg-white/5 text-white/80 hover:bg-white/10',
+                    )}
+                    disabled={disabled}
+                  >
+                    Pontos de leitura
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFiles(removeAt(files, selectedPreviewIdx));
+                      if (setInsights) {
+                        setInsights(
+                          removeAt(normalizeInsightsForLen(files.length, ins), selectedPreviewIdx),
+                        );
+                      }
+
+                      setSelectedPreviewIdx((prev) =>
+                        Math.max(0, Math.min(prev, files.length - 2)),
+                      );
+
+                      if (photoEditorIdx === selectedPreviewIdx) {
+                        setPhotoEditorIdx(null);
+                        setPhotoEditorTab('overview');
+                        setHotspotSelectedIdx(null);
+                      } else if (
+                        photoEditorIdx !== null &&
+                        photoEditorIdx > selectedPreviewIdx
+                      ) {
+                        setPhotoEditorIdx(photoEditorIdx - 1);
+                      }
+                    }}
+                    className="rounded-2xl border border-white/15 bg-black/35 px-4 py-2 text-xs font-semibold text-white/80 hover:bg-black/50"
+                    disabled={disabled}
+                  >
+                    Remover foto
                   </button>
                 </div>
               </div>
-            ))}
+            ) : null}
           </div>
         ) : null}
 
@@ -1289,11 +1540,10 @@ function FilesDropzone({
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="text-sm font-semibold text-white/90">
-                  Editor da foto selecionada
+                  Direção visual da foto
                 </div>
                 <div className="mt-1 text-xs text-white/65">
-                  A miniatura seleciona a foto. A edição profunda acontece aqui
-                  embaixo.
+                  Defina o papel da imagem, a leitura viva da peça e os pontos que reduzem dúvida.
                 </div>
               </div>
 
@@ -1310,6 +1560,42 @@ function FilesDropzone({
               </button>
             </div>
 
+            {photoEditorIdx !== null ? (
+              <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <div className="grid gap-3 lg:grid-cols-[220px_minmax(0,1fr)]">
+                  <label className="grid gap-2">
+                    <span className="text-xs font-semibold text-white/65">Função da foto</span>
+                    <select
+                      value={normalizePhotoRole(ins[photoEditorIdx]?.role, photoEditorIdx)}
+                      onChange={(e) => {
+                        const nextRole = e.target.value as PhotoRole;
+                        updateInsightAt(photoEditorIdx, (prev) => ({
+                          ...prev,
+                          role: nextRole,
+                        }));
+                      }}
+                      className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm font-semibold text-white/88 outline-none focus:border-white/30"
+                    >
+                      <option value="cover">Capa</option>
+                      <option value="detail">Detalhe</option>
+                      <option value="material">Material</option>
+                      <option value="context">Contexto</option>
+                      <option value="structure">Estrutura</option>
+                      <option value="finish">Acabamento</option>
+                    </select>
+                  </label>
+
+                  <div className="rounded-2xl border border-white/10 bg-black/35 px-4 py-3 text-sm text-white/72">
+                    {
+                      photoRoleMeta(
+                        normalizePhotoRole(ins[photoEditorIdx]?.role, photoEditorIdx),
+                      ).hint
+                    }
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
             <div className="mt-4 flex flex-wrap gap-2">
               <button
                 type="button"
@@ -1321,7 +1607,7 @@ function FilesDropzone({
                     : 'border-white/15 bg-white/5 text-white/80 hover:bg-white/10',
                 )}
               >
-                Visão rápida
+                Leitura viva
               </button>
 
               <button
@@ -1334,91 +1620,16 @@ function FilesDropzone({
                     : 'border-white/15 bg-white/5 text-white/80 hover:bg-white/10',
                 )}
               >
-                Pontos relevantes
+                Pontos de leitura
               </button>
             </div>
 
-            <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
-              <div>
-                <div className="overflow-hidden rounded-3xl border border-white/15 bg-black">
-                  <div
-                    className="relative"
-                    onClick={(e) => {
-                      if (photoEditorTab !== 'hotspots') return;
-
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      const x = clampPct(((e.clientX - rect.left) / rect.width) * 100);
-                      const y = clampPct(((e.clientY - rect.top) / rect.height) * 100);
-
-                      const nextPoint: HotspotDraft = {
-                        x,
-                        y,
-                        title: '',
-                        description: '',
-                      };
-
-                      const nextIndex = editingHotspots.length;
-
-                      updateInsightAt(photoEditorIdx, (prev) => ({
-                        ...prev,
-                        hotspots: [...normalizeHotspots(prev.hotspots), nextPoint],
-                      }));
-
-                      setHotspotSelectedIdx(nextIndex);
-                    }}
-                  >
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img
-                      src={previews[photoEditorIdx].url}
-                      alt={previews[photoEditorIdx].file.name}
-                      className="h-auto w-full object-cover"
-                    />
-
-                    <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_top,rgba(0,0,0,0.14),rgba(0,0,0,0.03))]" />
-
-                    {editingHotspots.map((hs, pointIdx) => {
-                      const active = hotspotSelectedIdx === pointIdx;
-
-                      return (
-                        <span
-                          key={`${pointIdx}-${hs.x}-${hs.y}`}
-                          className="absolute -translate-x-1/2 -translate-y-1/2"
-                          style={{ left: `${hs.x}%`, top: `${hs.y}%` }}
-                        >
-                          <span
-                            className={classNames(
-                              'relative block h-5 w-5 rounded-full border',
-                              active
-                                ? 'border-white/80 bg-white/25'
-                                : 'border-white/55 bg-white/12',
-                            )}
-                          >
-                            <span className="absolute inset-[3px] rounded-full bg-white/95" />
-                          </span>
-                        </span>
-                      );
-                    })}
-
-                    <div className="absolute left-3 top-3 rounded-full border border-white/15 bg-black/50 px-3 py-1 text-[11px] font-semibold text-white/82 backdrop-blur">
-                      {photoEditorTab === 'hotspots'
-                        ? 'clique para adicionar ponto'
-                        : 'foto selecionada'}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="mt-2 text-xs text-white/60">
-                  {photoEditorTab === 'hotspots'
-                    ? 'Use poucos pontos e apenas em detalhes realmente relevantes.'
-                    : 'Essas 3 linhas viram a leitura rápida da foto na página pública.'}
-                </div>
-              </div>
-
+            <div className="mt-4 grid gap-4">
               <div className="rounded-2xl border border-white/15 bg-black/40 p-4">
                 {photoEditorTab === 'overview' ? (
                   <>
                     <div className="text-xs font-semibold uppercase tracking-[0.14em] text-white/56">
-                      visão rápida da foto
+                      leitura viva da peça
                     </div>
 
                     <div className="mt-3 grid gap-3">
@@ -1429,7 +1640,11 @@ function FilesDropzone({
                         return (
                           <label key={`overview-editor-${photoEditorIdx}-${lineIdx}`} className="grid gap-2">
                             <span className="text-xs font-semibold text-white/65">
-                              Linha {lineIdx + 1}
+                              {lineIdx === 0
+                                ? 'O que esta foto prova'
+                                : lineIdx === 1
+                                  ? 'O que esta foto transmite'
+                                  : 'O que esta foto reduz de dúvida'}
                             </span>
                             <input
                               value={val}
@@ -1444,10 +1659,10 @@ function FilesDropzone({
                               maxLength={42}
                               placeholder={
                                 lineIdx === 0
-                                  ? 'Ex.: MDF de alta densidade'
+                                  ? 'Ex.: Estrutura firme e bem resolvida'
                                   : lineIdx === 1
-                                    ? 'Ex.: Acabamento nogueira'
-                                    : 'Ex.: Resistente a riscos'
+                                    ? 'Ex.: Toque premium e presença elegante'
+                                    : 'Ex.: Ajuda a entender material e acabamento'
                               }
                               className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
                               disabled={disabled}
@@ -1460,7 +1675,7 @@ function FilesDropzone({
                 ) : (
                   <>
                     <div className="text-xs font-semibold uppercase tracking-[0.14em] text-white/56">
-                      pontos desta foto
+                      pontos de leitura desta foto
                     </div>
 
                     {editingHotspots.length === 0 ? (
@@ -1481,8 +1696,13 @@ function FilesDropzone({
                                 : 'border-white/10 bg-white/[0.03] hover:border-white/20',
                             )}
                           >
-                            <div className="text-sm font-semibold text-white/88">
-                              {hs.title || `Ponto ${pointIdx + 1}`}
+                            <div className="flex items-center justify-between gap-3">
+                              <div className="text-sm font-semibold text-white/88">
+                                {hs.title || `Ponto ${pointIdx + 1}`}
+                              </div>
+                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-semibold text-white/60">
+                                {hotspotKindMeta(normalizeHotspotKind(hs.kind)).label}
+                              </span>
                             </div>
                             <div className="mt-1 text-[11px] text-white/56">
                               X {Math.round(hs.x)}% • Y {Math.round(hs.y)}%
@@ -1521,6 +1741,33 @@ function FilesDropzone({
                         </div>
 
                         <div className="mt-3 grid gap-3">
+                          <label className="grid gap-2">
+                            <span className="text-xs font-semibold text-white/65">Tipo do ponto</span>
+                            <select
+                              value={normalizeHotspotKind(selectedHotspot.kind)}
+                              onChange={(e) => {
+                                if (photoEditorIdx === null || hotspotSelectedIdx === null) return;
+
+                                updateInsightAt(photoEditorIdx, (prev) => {
+                                  const nextHotspots = normalizeHotspots(prev.hotspots);
+                                  nextHotspots[hotspotSelectedIdx] = {
+                                    ...nextHotspots[hotspotSelectedIdx]!,
+                                    kind: normalizeHotspotKind(e.target.value),
+                                  };
+                                  return { ...prev, hotspots: nextHotspots };
+                                });
+                              }}
+                              className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
+                            >
+                              <option value="material">Material</option>
+                              <option value="finish">Acabamento</option>
+                              <option value="structure">Estrutura</option>
+                              <option value="comfort">Conforto</option>
+                              <option value="measure">Proporção</option>
+                              <option value="difference">Diferencial</option>
+                            </select>
+                          </label>
+
                           <label className="grid gap-2">
                             <span className="text-xs font-semibold text-white/65">Título</span>
                             <input
@@ -1700,7 +1947,7 @@ function CatalogEditor({
           {catalogModeText}
         </div>
 
-        <div className="mt-4 grid gap-4 xl:grid-cols-3">
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
           <label className="grid gap-2">
             <span className="text-xs font-semibold text-white/65">Tipo</span>
             <select
@@ -1912,7 +2159,7 @@ function CatalogEditor({
                   >
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
-                        <div className="grid gap-3 xl:grid-cols-[200px_minmax(0,1fr)]">
+                        <div className="grid gap-3">
                           <label className="grid gap-2">
                             <span className="text-xs font-semibold text-white/65">
                               Propriedade
@@ -2048,14 +2295,7 @@ function CatalogEditor({
                           )}
                         </div>
 
-                        <div
-                          className={classNames(
-                            'mt-4 grid gap-3',
-                            cat.inventoryMode === 'LIMITED' && cat.kind === 'PHYSICAL'
-                              ? 'xl:grid-cols-[minmax(0,1fr)_180px]'
-                              : 'xl:grid-cols-[minmax(0,1fr)]',
-                          )}
-                        >
+                        <div className="mt-4 grid gap-3">
                           <label className="grid gap-2">
                             <span className="text-xs font-semibold text-white/65">
                               SKU da combinação
@@ -2687,6 +2927,29 @@ export default function MerchantProductsPage() {
         ? 'good'
         : 'warn';
 
+  const createStepStatus = {
+    BASIC: !!title.trim() && !!price.trim(),
+    PHOTOS: files.length > 0,
+    CATALOG:
+      !!cat.prepDays.trim() ||
+      !!cat.stockTotal.trim() ||
+      cat.options.length > 0 ||
+      cat.variants.length > 0,
+    TECH: hasAnyTech(spec),
+    REVIEW: false,
+  };
+
+  const createStepProgressCount = stepOrder.filter((step) => {
+    if (step === 'REVIEW') return false;
+    return createStepStatus[step as keyof typeof createStepStatus];
+  }).length;
+
+  const createStepProgressTotal = Math.max(stepOrder.length - 1, 1);
+
+  const createStepProgressPct = Math.round(
+    (createStepProgressCount / createStepProgressTotal) * 100,
+  );
+
   function resetCreateDraft() {
     setNewStep('BASIC');
     setTitle('');
@@ -2813,6 +3076,52 @@ export default function MerchantProductsPage() {
   const [editStep, setEditStep] = useState<EditStep>('BASIC');
 
   const editOrder: EditStep[] = ['BASIC', 'PHOTOS', 'CATALOG', 'TECH', 'REVIEW'];
+
+  const editHasDraft =
+    !!eTitle.trim() ||
+    !!eDesc.trim() ||
+    !!ePrice.trim() ||
+    eKeepImages.length > 0 ||
+    eFiles.length > 0 ||
+    eProductServices.length > 0 ||
+    hasAnyTech(eSpec) ||
+    !!eIdn.handle.trim() ||
+    !!eDna.skuRoot.trim() ||
+    !!eDna.collection.trim() ||
+    !!eDna.version.trim() ||
+    eCat.options.length > 0 ||
+    eCat.variants.length > 0 ||
+    !!eCat.prepDays.trim() ||
+    !!eCat.stockTotal.trim();
+
+  const editDraftState = !editHasDraft
+    ? 'RASCUNHO VAZIO'
+    : `EM EDIÇÃO • ${editLabel(editStep).toUpperCase()}`;
+
+  const editDraftTone: 'neutral' | 'good' | 'warn' = !editHasDraft ? 'neutral' : 'warn';
+
+  const editStepStatus = {
+    BASIC: !!eTitle.trim() && !!ePrice.trim(),
+    PHOTOS: eKeepImages.length + eFiles.length > 0,
+    CATALOG:
+      !!eCat.prepDays.trim() ||
+      !!eCat.stockTotal.trim() ||
+      eCat.options.length > 0 ||
+      eCat.variants.length > 0,
+    TECH: hasAnyTech(eSpec),
+    REVIEW: false,
+  };
+
+  const editStepProgressCount = editOrder.filter((step) => {
+    if (step === 'REVIEW') return false;
+    return editStepStatus[step as keyof typeof editStepStatus];
+  }).length;
+
+  const editStepProgressTotal = Math.max(editOrder.length - 1, 1);
+
+  const editStepProgressPct = Math.round(
+    (editStepProgressCount / editStepProgressTotal) * 100,
+  );
 
   function editLabel(s: EditStep) {
     if (s === 'BASIC') return 'Básico';
@@ -3287,7 +3596,7 @@ useEffect(() => {
       normalizeInsightsForLen((p.images ?? []).length, p.imageInsights ?? []),
     );
     setEInsights(normalizeInsightsForLen(0, []));
-    setEPhotoEditorIdx(null);
+    setEPhotoEditorIdx((p.images ?? []).length ? 0 : null);
     setEPhotoEditorTab('overview');
     setEHotspotSelectedIdx(null);
     setEProductServices(
@@ -3548,7 +3857,7 @@ useEffect(() => {
     <div className="mt-4 grid gap-4">
       {newStep === 'BASIC' ? (
         <div className="grid gap-5">
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 sm:grid-cols-2">
             <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
               <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
                 Nome
@@ -3615,7 +3924,7 @@ useEffect(() => {
                 />
               </label>
 
-              <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+              <div className="grid gap-4">
                 <label className="grid gap-2">
                   <span className="text-sm font-semibold text-white/84">Preço (R$)</span>
                   <input
@@ -3694,7 +4003,7 @@ useEffect(() => {
             title="Handle e rastreio da peça"
             description="Curto, estável e legível. Essa identidade ajuda a peça a ganhar memória dentro do ecossistema."
           >
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_260px]">
+            <div className="grid gap-4">
               <label className="grid gap-2">
                 <span className="text-sm font-semibold text-white/84">Handle público</span>
                 <input
@@ -3770,7 +4079,7 @@ useEffect(() => {
             title="Fotos e leitura visual"
             description="A capa vende confiança. As demais fotos aprofundam material, textura, detalhe e contexto de uso."
           >
-            <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_300px]">
+            <div className="grid gap-4">
               <FilesDropzone
                 label="Fotos do produto"
                 hint="Recomendado: 1024px+. Formatos: WEBP/PNG/JPEG/GIF. A 1ª vira capa."
@@ -3847,7 +4156,7 @@ useEffect(() => {
                   Estrutura física
                 </div>
 
-                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="grid gap-4 sm:grid-cols-2">
                   <label className="grid gap-2">
                     <span className="text-xs font-semibold text-white/65">Peso (kg)</span>
                     <input
@@ -4171,19 +4480,10 @@ useEffect(() => {
                       no painel.
                     </div>
 
-                    <button
-                      onClick={createProduct}
-                      disabled={saving || uploading}
-                      className="w-full rounded-2xl bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15 disabled:opacity-60"
-                    >
-                      {uploading
-                        ? uploadProgress
-                          ? `Enviando (${uploadProgress})…`
-                          : 'Enviando…'
-                        : saving
-                          ? 'Salvando…'
-                          : 'Criar produto'}
-                    </button>
+                    <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-sm leading-6 text-white/62">
+                      A ação final de criação fica fixa no rodapé do painel para
+                      você revisar tudo sem perder o comando de vista.
+                    </div>
                   </div>
                 </FormSection>
               </div>
@@ -5375,8 +5675,8 @@ useEffect(() => {
         }
         onClose={closeCreateSheet}
       >
-        <div className="grid gap-4">
-          <div className="rounded-3xl border border-white/10 bg-black/40 p-4">
+        <div className="grid gap-5 pb-24">
+          <div className="sticky top-0 z-20 rounded-[28px] border border-white/10 bg-neutral-950/90 p-4 shadow-[0_10px_30px_rgba(0,0,0,0.35)] backdrop-blur">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div className="min-w-0">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
@@ -5395,26 +5695,44 @@ useEffect(() => {
                 </div>
 
                 <div className="mt-2 max-w-2xl text-sm leading-6 text-white/64">
-                  Monte uma peça comercial viva do Marto: clareza de vitrine,
-                  disponibilidade, serviço ligado e menos atrito no pós-compra.
+                  Monte uma peça comercial viva do Marto: clareza de vitrine, disponibilidade,
+                  serviço ligado e menos atrito no pós-compra.
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={discardCreateDraft}
-                  disabled={saving || uploading}
-                  className="rounded-2xl border border-white/12 bg-black/35 px-4 py-2 text-xs font-semibold text-white/70 hover:bg-black/50 disabled:opacity-60"
-                >
-                  Descartar
-                </button>
+              <button
+                type="button"
+                onClick={discardCreateDraft}
+                disabled={saving || uploading}
+                className="rounded-2xl border border-white/12 bg-black/35 px-4 py-2 text-xs font-semibold text-white/70 hover:bg-black/50 disabled:opacity-60"
+              >
+                Descartar
+              </button>
+            </div>
+
+            <div className="mt-4">
+              <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
+                <div
+                  className="h-full rounded-full bg-white/70"
+                  style={{ width: `${createStepProgressPct}%` }}
+                />
+              </div>
+
+              <div className="mt-2 flex items-center justify-between gap-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-white/48">
+                <span>
+                  {createStepProgressCount}/{createStepProgressTotal} bases preenchidas
+                </span>
+                <span>{createStepProgressPct}%</span>
               </div>
             </div>
 
             <div className="mt-4 flex flex-wrap gap-2">
               {stepOrder.map((s) => {
                 const active = s === newStep;
+                const done =
+                  s !== 'REVIEW' &&
+                  createStepStatus[s as keyof typeof createStepStatus];
+
                 return (
                   <button
                     key={s}
@@ -5424,7 +5742,9 @@ useEffect(() => {
                       'rounded-full border px-3 py-1.5 text-xs font-semibold transition',
                       active
                         ? 'border-white/25 bg-white/10 text-white/92'
-                        : 'border-white/10 bg-white/5 text-white/65 hover:bg-white/10',
+                        : done
+                          ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-100'
+                          : 'border-white/10 bg-white/5 text-white/65 hover:bg-white/10',
                     )}
                   >
                     {stepLabel(s)}
@@ -5432,29 +5752,55 @@ useEffect(() => {
                 );
               })}
             </div>
-
-            <div className="mt-4 flex items-center justify-end gap-2">
-              <button
-                type="button"
-                onClick={goPrev}
-                disabled={newStep === 'BASIC' || saving || uploading}
-                className="rounded-2xl border border-white/15 bg-black/40 px-4 py-2 text-xs font-semibold text-white/80 hover:bg-black/55 disabled:opacity-60"
-              >
-                Voltar
-              </button>
-
-              <button
-                type="button"
-                onClick={goNext}
-                disabled={newStep === 'REVIEW' || saving || uploading}
-                className="rounded-2xl bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-60"
-              >
-                Avançar
-              </button>
-            </div>
           </div>
 
           {createWizardBody}
+
+          <div className="sticky bottom-0 z-20 rounded-[28px] border border-white/10 bg-neutral-950/90 p-4 shadow-[0_-10px_30px_rgba(0,0,0,0.35)] backdrop-blur">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-xs text-white/58">
+                Etapa atual:{' '}
+                <span className="font-semibold text-white/86">{stepLabel(newStep)}</span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2">
+                <button
+                  type="button"
+                  onClick={goPrev}
+                  disabled={newStep === 'BASIC' || saving || uploading}
+                  className="rounded-2xl border border-white/15 bg-black/40 px-4 py-2 text-xs font-semibold text-white/80 hover:bg-black/55 disabled:opacity-60"
+                >
+                  Voltar
+                </button>
+
+                {newStep === 'REVIEW' ? (
+                  <button
+                    type="button"
+                    onClick={createProduct}
+                    disabled={saving || uploading}
+                    className="rounded-2xl bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-60"
+                  >
+                    {uploading
+                      ? uploadProgress
+                        ? `Enviando (${uploadProgress})…`
+                        : 'Enviando…'
+                      : saving
+                        ? 'Salvando…'
+                        : 'Criar produto'}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={goNext}
+                    disabled={saving || uploading}
+                    className="rounded-2xl bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-60"
+                  >
+                    Avançar
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
         </div>
       </Sheet>
 
@@ -5466,59 +5812,86 @@ useEffect(() => {
       >
         {editingId ? (
           <div className="grid gap-4">
-            <div className="rounded-2xl border border-white/10 bg-black/40 px-4 py-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  {editOrder.map((s) => {
-                    const active = s === editStep;
-                    return (
-                      <button
-                        key={s}
-                        type="button"
-                        onClick={() => setEditStep(s)}
-                        className={classNames(
-                          'rounded-full border px-3 py-1 text-xs font-semibold transition',
-                          active
-                            ? 'border-white/25 bg-white/10 text-white/90'
+            <div className="sticky top-0 z-20 rounded-[28px] border border-white/10 bg-neutral-950/90 p-4 shadow-[0_10px_30px_rgba(0,0,0,0.35)] backdrop-blur">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/50">
+                    Marto OS
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <div className="text-lg font-semibold tracking-tight text-white/92">
+                      Edição guiada de produto
+                    </div>
+
+                    <Chip text={editDraftState} tone={editDraftTone} />
+                    {eUploadProgress ? <Chip text={`UPLOAD ${eUploadProgress}`} /> : null}
+                    {eSaving ? <Chip text="SALVANDO" tone="warn" /> : null}
+                    {eUploading ? <Chip text="ENVIANDO" tone="warn" /> : null}
+                  </div>
+
+                  <div className="mt-2 max-w-2xl text-sm leading-6 text-white/64">
+                    Atualize a peça comercial sem perder a coerência do catálogo Marto.
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={cancelEdit}
+                  disabled={eSaving || eUploading}
+                  className="rounded-2xl border border-white/12 bg-black/35 px-4 py-2 text-xs font-semibold text-white/70 hover:bg-black/50 disabled:opacity-60"
+                >
+                  Fechar edição
+                </button>
+              </div>
+
+              <div className="mt-4">
+                <div className="h-2 w-full overflow-hidden rounded-full bg-white/10">
+                  <div
+                    className="h-full rounded-full bg-white/70"
+                    style={{ width: `${editStepProgressPct}%` }}
+                  />
+                </div>
+
+                <div className="mt-2 flex items-center justify-between gap-3 text-[11px] font-semibold uppercase tracking-[0.12em] text-white/48">
+                  <span>
+                    {editStepProgressCount}/{editStepProgressTotal} bases preenchidas
+                  </span>
+                  <span>{editStepProgressPct}%</span>
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-wrap gap-2">
+                {editOrder.map((s) => {
+                  const active = s === editStep;
+                  const done =
+                    s !== 'REVIEW' &&
+                    editStepStatus[s as keyof typeof editStepStatus];
+
+                  return (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setEditStep(s)}
+                      className={classNames(
+                        'rounded-full border px-3 py-1.5 text-xs font-semibold transition',
+                        active
+                          ? 'border-white/25 bg-white/10 text-white/92'
+                          : done
+                            ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-100'
                             : 'border-white/10 bg-white/5 text-white/65 hover:bg-white/10',
-                        )}
-                      >
-                        {editLabel(s)}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={editPrev}
-                    disabled={editStep === 'BASIC' || eSaving || eUploading}
-                    className="rounded-2xl border border-white/15 bg-black/40 px-4 py-2 text-xs font-semibold text-white/80 hover:bg-black/55 disabled:opacity-60"
-                  >
-                    Voltar
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={editNext}
-                    disabled={editStep === 'REVIEW' || eSaving || eUploading}
-                    className="rounded-2xl bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-60"
-                  >
-                    Avançar
-                  </button>
-                </div>
+                      )}
+                    >
+                      {editLabel(s)}
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
-            {/* CHECKLIST (EDIÇÃO) */}
             {editStep === 'REVIEW' ? (
               <>
                 {(() => {
-                  void checkTick; // força rerender do bloco
-
-                  const saved = loadChecklistDone(editingId);
-
                   const hasVariants = catalogHasVariants(eCat);
                   const items = checklistForDraft({
                     kind: eCat.kind,
@@ -5535,100 +5908,87 @@ useEffect(() => {
                     stockTotal: eCat.stockTotal,
                   });
 
-                  const toggleable = new Set(['desc', 'prep']);
-
-                  const withManual = items.map((it) => ({
-                    ...it,
-                    done: toggleable.has(it.id) ? !!saved[it.id] || it.done : it.done,
-                  }));
-
-                  const s = scoreFromChecklist(withManual);
+                  const s = scoreFromChecklist(items);
+                  const completedCount = items.filter((it) => it.done).length;
 
                   return (
-                    <div className="rounded-3xl border border-white/15 bg-black/35 p-5">
-                      <div className="flex items-start justify-between gap-2">
-                        <div>
-                          <div className="text-sm font-semibold text-white/90">
-                            Preparar para vender + montar
-                          </div>
-                          <div className="mt-1 text-xs text-white/65">
-                            Checklist adaptativo. Só aparece o que é relevante pro tipo/inventário.
-                          </div>
-                        </div>
-
-                        <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/85">
-                          {s.score}/100
-                        </span>
-                      </div>
-
-                      <div className="mt-3 h-2 w-full overflow-hidden rounded-full bg-white/10">
-                        <div
-                          className="h-full bg-white/40"
-                          style={{ width: `${s.score}%` }}
-                        />
-                      </div>
-
-                      <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                        {withManual.map((it) => {
-                          const canToggle = toggleable.has(it.id);
-
-                          return (
-                            <div
-                              key={it.id}
-                              className="rounded-2xl border border-white/10 bg-black/40 px-3 py-2"
-                            >
-                              <div className="flex items-start justify-between gap-3">
-                                <div className="min-w-0">
-                                  <div className="text-xs font-semibold text-white/85">
-                                    {it.label}
-                                  </div>
-                                  {it.hint ? (
-                                    <div className="mt-1 text-[11px] text-white/55">
-                                      {it.hint}
-                                    </div>
-                                  ) : null}
+                    <div className="grid gap-5">
+                      <FormSection
+                        eyebrow="Revisão final"
+                        title="Conferir a peça antes de salvar"
+                        description="Aqui o Marto fecha a leitura operacional antes de gravar a edição."
+                      >
+                        <div className="grid gap-4">
+                          <div className="rounded-[28px] border border-white/10 bg-black/30 p-5">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div>
+                                <div className="text-sm font-semibold text-white/90">
+                                  Maturidade da peça
                                 </div>
-
-                                {canToggle ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      const next = { ...saved, [it.id]: !saved[it.id] };
-                                      saveChecklistDone(editingId, next);
-                                      setCheckTick((t) => t + 1);
-                                    }}
-                                    className="rounded-xl border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/85 hover:bg-white/10"
-                                  >
-                                    {saved[it.id] ? 'Feito ✅' : 'Marcar'}
-                                  </button>
-                                ) : (
-                                  <span className="text-xs font-semibold text-white/70">
-                                    {it.done ? '✅' : '—'}
-                                  </span>
-                                )}
+                                <div className="mt-1 text-xs text-white/60">
+                                  Quanto mais completo, menos atrito e mais clareza.
+                                </div>
                               </div>
-                            </div>
-                          );
-                        })}
-                      </div>
 
-                      {s.recs.length ? (
-                        <div className="mt-4 rounded-2xl border border-white/10 bg-black/40 p-3">
-                          <div className="text-xs font-semibold text-white/80">
-                            Recomendações
+                              <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-xs font-semibold text-white/85">
+                                {s.score}/100
+                              </span>
+                            </div>
+
+                            <div className="mt-4 h-2 w-full overflow-hidden rounded-full bg-white/10">
+                              <div
+                                className="h-full rounded-full bg-white/70"
+                                style={{ width: `${s.score}%` }}
+                              />
+                            </div>
+
+                            <div className="mt-4 text-sm text-white/68">
+                              {completedCount}/{items.length} critérios cumpridos.
+                            </div>
                           </div>
-                          <ul className="mt-2 grid gap-1 text-xs text-white/65">
-                            {s.recs.map((r, idx) => (
-                              <li key={idx}>
-                                • <span className="font-semibold text-white/80">{r.label}</span>
-                                {r.hint ? (
-                                  <span className="text-white/55"> — {r.hint}</span>
-                                ) : null}
-                              </li>
+
+                          <div className="grid gap-3">
+                            {items.map((it) => (
+                              <div
+                                key={it.id}
+                                className="rounded-2xl border border-white/10 bg-black/35 p-4"
+                              >
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="min-w-0">
+                                    <div className="text-sm font-semibold text-white/88">
+                                      {it.label}
+                                    </div>
+                                    {it.hint ? (
+                                      <div className="mt-1 text-xs leading-6 text-white/58">
+                                        {it.hint}
+                                      </div>
+                                    ) : null}
+                                  </div>
+
+                                  <Chip
+                                    text={it.done ? 'OK' : 'PENDENTE'}
+                                    tone={it.done ? 'good' : 'warn'}
+                                  />
+                                </div>
+                              </div>
                             ))}
-                          </ul>
+                          </div>
+
+                          <button
+                            onClick={() => void saveEdit()}
+                            disabled={eSaving || eUploading}
+                            className="w-full rounded-2xl bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15 disabled:opacity-60"
+                          >
+                            {eUploading
+                              ? eUploadProgress
+                                ? `Enviando (${eUploadProgress})…`
+                                : 'Enviando…'
+                              : eSaving
+                                ? 'Salvando…'
+                                : 'Salvar alterações'}
+                          </button>
                         </div>
-                      ) : null}
+                      </FormSection>
                     </div>
                   );
                 })()}
@@ -5637,122 +5997,629 @@ useEffect(() => {
 
             {/* CAMPOS BÁSICOS */}
             {editStep === 'BASIC' ? (
-              <div className="grid gap-3">
-                <label className="grid gap-2">
-                  <span className="text-xs font-semibold text-white/65">Título</span>
-                  <input
-                    value={eTitle}
-                    onChange={(e) => setETitle(e.target.value)}
-                    className="rounded-2xl border border-white/15 bg-black/80 px-4 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    disabled={eSaving || eUploading}
-                  />
-                </label>
-
-                <label className="grid gap-2">
-                  <span className="text-xs font-semibold text-white/65">Descrição</span>
-                  <textarea
-                    value={eDesc}
-                    onChange={(e) => setEDesc(e.target.value)}
-                    className="rounded-2xl border border-white/15 bg-black/80 px-4 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    rows={3}
-                    disabled={eSaving || eUploading}
-                  />
-                </label>
-
-                <label className="grid gap-2">
-                  <span className="text-xs font-semibold text-white/65">Preço (R$)</span>
-                  <input
-                    value={ePrice}
-                    onChange={(e) => setEPrice(e.target.value)}
-                    className="rounded-2xl border border-white/15 bg-black/80 px-4 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    disabled={eSaving || eUploading}
-                    inputMode="decimal"
-                  />
-                </label>
-
-                <div className="mt-6">
-                  <div className="text-sm font-semibold text-white">
-                    Serviços associados ao produto
+              <div className="grid gap-5">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                      Nome
+                    </div>
+                    <div className="mt-2 text-sm font-semibold text-white/90">
+                      {eTitle.trim() || 'Ainda não definido'}
+                    </div>
                   </div>
 
-                  <p className="mt-1 text-xs text-white/60">
-                    Ajuste os serviços que podem ser necessários após a compra.
-                  </p>
+                  <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                      Preço
+                    </div>
+                    <div className="mt-2 text-sm font-semibold text-white/90">
+                      {ePrice.trim() ? `R$ ${ePrice.trim()}` : 'Ainda não definido'}
+                    </div>
+                  </div>
+                </div>
 
-                  <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                    {PRODUCT_SERVICE_OPTIONS.map((opt) => {
-                      const selected = eProductServices.includes(opt.key);
+                <FormSection
+                  eyebrow="Essência da peça"
+                  title="Base comercial do produto"
+                  description="Ajuste nome, descrição e preço sem quebrar a identidade comercial da peça."
+                >
+                  <div className="grid gap-4">
+                    <label className="grid gap-2">
+                      <span className="text-sm font-semibold text-white/84">Nome do produto</span>
+                      <input
+                        value={eTitle}
+                        onChange={(e) => setETitle(e.target.value)}
+                        className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                        disabled={eSaving || eUploading}
+                      />
+                    </label>
+
+                    <label className="grid gap-2">
+                      <span className="text-sm font-semibold text-white/84">Descrição</span>
+                      <textarea
+                        value={eDesc}
+                        onChange={(e) => setEDesc(e.target.value)}
+                        rows={4}
+                        className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                        disabled={eSaving || eUploading}
+                      />
+                    </label>
+
+                    <label className="grid gap-2">
+                      <span className="text-sm font-semibold text-white/84">Preço (R$)</span>
+                      <input
+                        value={ePrice}
+                        onChange={(e) => setEPrice(e.target.value)}
+                        className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                        disabled={eSaving || eUploading}
+                        inputMode="decimal"
+                      />
+                    </label>
+                  </div>
+                </FormSection>
+
+                <FormSection
+                  eyebrow="Ecossistema ligado"
+                  title="Serviços associados ao produto"
+                  description="Ajuste os serviços que entram no ciclo real da peça."
+                >
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    {PRODUCT_SERVICE_OPTIONS.map((option) => {
+                      const selected = eProductServices.includes(option.key);
 
                       return (
                         <button
-                          key={opt.key}
+                          key={option.key}
                           type="button"
-                          onClick={() => toggleEditProductService(opt.key)}
-                          className={[
-                            'rounded-2xl border px-4 py-3 text-left text-sm transition',
+                          onClick={() => toggleEditProductService(option.key)}
+                          className={classNames(
+                            'rounded-2xl border px-4 py-4 text-left transition',
                             selected
-                              ? 'border-white bg-white text-black'
-                              : 'border-white/10 bg-white/5 text-white hover:bg-white/10',
-                          ].join(' ')}
+                              ? 'border-emerald-400/20 bg-emerald-400/10'
+                              : 'border-white/12 bg-black/35 hover:bg-black/50',
+                          )}
+                          disabled={eSaving || eUploading}
                         >
-                          {opt.label}
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="text-sm font-semibold text-white/88">
+                              {option.label}
+                            </div>
+                            <Chip
+                              text={selected ? 'Ligado' : 'Opcional'}
+                              tone={selected ? 'good' : 'neutral'}
+                            />
+                          </div>
                         </button>
                       );
                     })}
                   </div>
-                </div>
+                </FormSection>
 
-                <label className="grid gap-2">
-                  <span className="text-xs font-semibold text-white/65">Handle (slug)</span>
-                  <input
-                    value={eIdn.handle}
-                    onChange={(e) => setEIdn({ handle: e.target.value })}
-                    className="rounded-2xl border border-white/15 bg-black/80 px-4 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    placeholder="Ex.: mesa-lua-160"
-                    disabled={eSaving || eUploading}
-                  />
-                  <div className="text-[11px] text-white/55">
-                    @{slugifyMarto(eIdn.handle || eTitle)}
+                <FormSection
+                  eyebrow="Identidade pública"
+                  title="Handle e rastreio da peça"
+                  description="Mantenha a identidade pública estável e legível."
+                >
+                  <div className="grid gap-4">
+                    <label className="grid gap-2">
+                      <span className="text-sm font-semibold text-white/84">Handle público</span>
+                      <input
+                        value={eIdn.handle}
+                        onChange={(e) => setEIdn({ handle: e.target.value })}
+                        className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                        disabled={eSaving || eUploading}
+                      />
+                    </label>
+
+                    <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                        Prévia
+                      </div>
+                      <div className="mt-2 text-sm font-semibold text-white/90">
+                        /p/{slugifyMarto(eIdn.handle || eTitle) || 'sua-peca'}
+                      </div>
+                    </div>
                   </div>
-                </label>
+                </FormSection>
 
-                <label className="grid gap-2">
-                  <span className="text-xs font-semibold text-white/65">SKU raiz</span>
-                  <input
-                    value={eDna.skuRoot}
-                    onChange={(e) => setEDna((p) => ({ ...p, skuRoot: e.target.value }))}
-                    placeholder="Ex.: MESA-LUA"
-                    className="rounded-2xl border border-white/15 bg-black/80 px-4 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    disabled={eSaving || eUploading}
-                  />
-                </label>
+                <FormSection
+                  eyebrow="DNA operacional"
+                  title="Rastreio interno da peça"
+                  description="Ajuste SKU raiz, coleção e versão operacional."
+                >
+                  <div className="grid gap-4 sm:grid-cols-3">
+                    <label className="grid gap-2">
+                      <span className="text-sm font-semibold text-white/84">SKU raiz</span>
+                      <input
+                        value={eDna.skuRoot}
+                        onChange={(e) => setEDna((p) => ({ ...p, skuRoot: e.target.value }))}
+                        className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                        disabled={eSaving || eUploading}
+                      />
+                    </label>
 
-                <label className="grid gap-2">
-                  <span className="text-xs font-semibold text-white/65">Coleção / linha</span>
-                  <input
-                    value={eDna.collection}
-                    onChange={(e) => setEDna((p) => ({ ...p, collection: e.target.value }))}
-                    placeholder="Ex.: Linha Lua"
-                    className="rounded-2xl border border-white/15 bg-black/80 px-4 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    disabled={eSaving || eUploading}
-                  />
-                </label>
+                    <label className="grid gap-2">
+                      <span className="text-sm font-semibold text-white/84">Coleção / linha</span>
+                      <input
+                        value={eDna.collection}
+                        onChange={(e) =>
+                          setEDna((p) => ({ ...p, collection: e.target.value }))
+                        }
+                        className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                        disabled={eSaving || eUploading}
+                      />
+                    </label>
 
-                <label className="grid gap-2">
-                  <span className="text-xs font-semibold text-white/65">Versão</span>
-                  <input
-                    value={eDna.version}
-                    onChange={(e) => setEDna((p) => ({ ...p, version: e.target.value }))}
-                    placeholder="Ex.: v1 / 2025-A"
-                    className="rounded-2xl border border-white/15 bg-black/80 px-4 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    disabled={eSaving || eUploading}
-                  />
-                </label>
+                    <label className="grid gap-2">
+                      <span className="text-sm font-semibold text-white/84">Versão</span>
+                      <input
+                        value={eDna.version}
+                        onChange={(e) => setEDna((p) => ({ ...p, version: e.target.value }))}
+                        className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/92 outline-none focus:border-white/30"
+                        disabled={eSaving || eUploading}
+                      />
+                    </label>
+                  </div>
+                </FormSection>
               </div>
             ) : null}
 
-            {/* FOTOS ATUAIS */}
             {editStep === 'PHOTOS' ? (
+              (() => {
+                const eFocusedKeepIdx =
+                  ePhotoEditorIdx !== null && eKeepImages[ePhotoEditorIdx]
+                    ? ePhotoEditorIdx
+                    : 0;
+                const eFocusedKeepSrc = eKeepImages[eFocusedKeepIdx] ?? null;
+                const eFocusedKeepRole = normalizePhotoRole(
+                  eKeepInsights[eFocusedKeepIdx]?.role,
+                  eFocusedKeepIdx,
+                );
+                const eFocusedKeepRoleMeta = photoRoleMeta(eFocusedKeepRole);
+                const eFocusedKeepHotspots = normalizeHotspots(
+                  eKeepInsights[eFocusedKeepIdx]?.hotspots,
+                );
+                const eFocusedSelectedHotspot =
+                  eHotspotSelectedIdx !== null
+                    ? eFocusedKeepHotspots[eHotspotSelectedIdx] ?? null
+                    : null;
+
+                return (
+                  <div className="grid gap-5">
+                    <FormSection
+                      eyebrow="Imagem viva"
+                      title="Fotos atuais e leitura visual"
+                      description="Trabalhe a peça em foto grande: função da imagem, leitura viva e pontos de leitura."
+                    >
+                      {eKeepImages.length ? (
+                        <div className="grid gap-4">
+                          <div className="overflow-x-auto pb-1">
+                            <div className="flex min-w-max gap-3">
+                              {eKeepImages.map((src, idx) => {
+                                const role = normalizePhotoRole(eKeepInsights[idx]?.role, idx);
+                                const roleMeta = photoRoleMeta(role);
+                                const hotspotsCount = normalizeHotspots(
+                                  eKeepInsights[idx]?.hotspots,
+                                ).length;
+                                const active = idx === eFocusedKeepIdx;
+
+                                return (
+                                  <div
+                                    key={`${src}-${idx}`}
+                                    draggable={!eSaving && !eUploading}
+                                    onDragStart={() => setDragFromIdx(idx)}
+                                    onDragEnter={() => setDragOverIdx(idx)}
+                                    onDragOver={(e) => e.preventDefault()}
+                                    onDragEnd={() => {
+                                      setDragFromIdx(null);
+                                      setDragOverIdx(null);
+                                    }}
+                                    onDrop={() => {
+                                      if (eSaving || eUploading) return;
+                                      if (dragFromIdx === null || dragOverIdx === null) return;
+                                      if (dragFromIdx === dragOverIdx) return;
+
+                                      setEKeepImages((prev) =>
+                                        moveItem(prev, dragFromIdx, dragOverIdx),
+                                      );
+                                      setEKeepCaptions((prev) =>
+                                        moveItem(prev, dragFromIdx, dragOverIdx),
+                                      );
+                                      setEKeepInsights((prev) =>
+                                        moveItem(prev, dragFromIdx, dragOverIdx),
+                                      );
+                                      setEPhotoEditorIdx(dragOverIdx);
+                                      setDragFromIdx(null);
+                                      setDragOverIdx(null);
+                                    }}
+                                    className={classNames(
+                                      'w-[96px] shrink-0 rounded-2xl border p-2 transition',
+                                      active
+                                        ? 'border-white/30 bg-white/[0.06]'
+                                        : 'border-white/10 bg-black/35',
+                                    )}
+                                    style={{
+                                      cursor: eSaving || eUploading ? 'default' : 'grab',
+                                    }}
+                                  >
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEPhotoEditorIdx(idx);
+                                        setEPhotoEditorTab('overview');
+                                        setEHotspotSelectedIdx(null);
+                                      }}
+                                      className="block w-full text-left"
+                                    >
+                                      <div className="relative overflow-hidden rounded-xl border border-white/10 bg-black">
+                                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                                        <img
+                                          src={toPublicImageUrl(src)}
+                                          alt={`Foto ${idx + 1}`}
+                                          className="h-20 w-full object-cover"
+                                        />
+                                        <div className="absolute left-2 top-2 rounded-full border border-white/15 bg-black/50 px-2 py-0.5 text-[10px] font-semibold text-white/82 backdrop-blur">
+                                          {roleMeta.label}
+                                        </div>
+                                      </div>
+                                      <div className="mt-2 text-[11px] font-semibold text-white/75">
+                                        Foto {idx + 1}
+                                      </div>
+                                      <div className="mt-1 text-[10px] text-white/50">
+                                        {hotspotsCount} ponto(s)
+                                      </div>
+                                    </button>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          {eFocusedKeepSrc ? (
+                            <>
+                              <div className="rounded-[28px] border border-white/12 bg-black/30 p-4">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                  <div>
+                                    <div className="text-sm font-semibold text-white/90">Foto em foco</div>
+                                    <div className="mt-1 text-xs text-white/60">
+                                      Trabalhe a leitura viva e os pontos direto em uma imagem maior.
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2">
+                                    <Chip text={eFocusedKeepRoleMeta.label.toUpperCase()} />
+                                    <Chip text={`${eFocusedKeepHotspots.length} PONTO(S)`} />
+                                  </div>
+                                </div>
+
+                                <div className="mt-4 overflow-hidden rounded-[24px] border border-white/12 bg-black">
+                                  <div
+                                    className="relative"
+                                    onClick={(e) => {
+                                      if (ePhotoEditorTab !== 'hotspots') return;
+                                      const rect = e.currentTarget.getBoundingClientRect();
+                                      const x = clampPct(((e.clientX - rect.left) / rect.width) * 100);
+                                      const y = clampPct(((e.clientY - rect.top) / rect.height) * 100);
+                                      const nextPoint: HotspotDraft = {
+                                        x,
+                                        y,
+                                        title: '',
+                                        description: '',
+                                        kind: 'difference',
+                                      };
+
+                                      const nextIndex = eFocusedKeepHotspots.length;
+                                      setEKeepInsights((prev) => {
+                                        const next = normalizeInsightsForLen(eKeepImages.length, prev);
+                                        const cur = next[eFocusedKeepIdx] ?? {
+                                          role: normalizePhotoRole(undefined, eFocusedKeepIdx),
+                                          overview: ['', '', ''],
+                                          hotspots: [],
+                                        };
+                                        next[eFocusedKeepIdx] = {
+                                          ...cur,
+                                          hotspots: [...normalizeHotspots(cur.hotspots), nextPoint],
+                                        };
+                                        return next;
+                                      });
+                                      setEPhotoEditorIdx(eFocusedKeepIdx);
+                                      setEHotspotSelectedIdx(nextIndex);
+                                    }}
+                                  >
+                                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                                    <img
+                                      src={toPublicImageUrl(eFocusedKeepSrc)}
+                                      alt={`Foto ${eFocusedKeepIdx + 1}`}
+                                      className="max-h-[52vh] w-full object-contain"
+                                    />
+                                    {eFocusedKeepHotspots.map((hs, pointIdx) => {
+                                      const active = eHotspotSelectedIdx === pointIdx;
+                                      return (
+                                        <span
+                                          key={`${pointIdx}-${hs.x}-${hs.y}`}
+                                          className="absolute -translate-x-1/2 -translate-y-1/2"
+                                          style={{ left: `${hs.x}%`, top: `${hs.y}%` }}
+                                        >
+                                          <span
+                                            className={classNames(
+                                              'relative block h-6 w-6 rounded-full border',
+                                              active
+                                                ? 'border-white/80 bg-white/25'
+                                                : 'border-white/55 bg-white/12',
+                                            )}
+                                          >
+                                            <span className="absolute inset-[4px] rounded-full bg-white/95" />
+                                          </span>
+                                        </span>
+                                      );
+                                    })}
+                                    <div className="absolute left-3 top-3 rounded-full border border-white/15 bg-black/55 px-3 py-1 text-[11px] font-semibold text-white/84 backdrop-blur">
+                                      {ePhotoEditorTab === 'hotspots'
+                                        ? 'clique na imagem para criar um ponto de leitura'
+                                        : eFocusedKeepRoleMeta.label}
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+
+                              <div className="grid gap-4 lg:grid-cols-2">
+                                <div className="rounded-2xl border border-white/12 bg-black/30 p-4">
+                                  <div className="text-sm font-semibold text-white/90">
+                                    Direção visual da foto
+                                  </div>
+                                  <div className="mt-1 text-xs text-white/60">
+                                    Defina o papel da imagem e a leitura viva da peça.
+                                  </div>
+
+                                  <div className="mt-4 grid gap-3">
+                                    <label className="grid gap-2">
+                                      <span className="text-xs font-semibold text-white/65">Função da foto</span>
+                                      <select
+                                        value={eFocusedKeepRole}
+                                        onChange={(e) => {
+                                          const nextRole = e.target.value as PhotoRole;
+                                          setEKeepInsights((prev) => {
+                                            const next = normalizeInsightsForLen(eKeepImages.length, prev);
+                                            const cur = next[eFocusedKeepIdx] ?? {
+                                              role: normalizePhotoRole(undefined, eFocusedKeepIdx),
+                                              overview: ['', '', ''],
+                                              hotspots: [],
+                                            };
+                                            next[eFocusedKeepIdx] = { ...cur, role: nextRole };
+                                            return next;
+                                          });
+                                        }}
+                                        className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm font-semibold text-white/88 outline-none focus:border-white/30"
+                                      >
+                                        <option value="cover">Capa</option>
+                                        <option value="detail">Detalhe</option>
+                                        <option value="material">Material</option>
+                                        <option value="context">Contexto</option>
+                                        <option value="structure">Estrutura</option>
+                                        <option value="finish">Acabamento</option>
+                                      </select>
+                                    </label>
+
+                                    <label className="grid gap-2">
+                                      <span className="text-xs font-semibold text-white/65">Legenda curta</span>
+                                      <input
+                                        value={eKeepCaptions[eFocusedKeepIdx] ?? ''}
+                                        onChange={(e) => {
+                                          const v = e.target.value;
+                                          setEKeepCaptions((prev) => {
+                                            const next = [...prev];
+                                            next[eFocusedKeepIdx] = v;
+                                            return next;
+                                          });
+                                        }}
+                                        className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
+                                        disabled={eSaving || eUploading}
+                                      />
+                                    </label>
+
+                                    <div className="flex flex-wrap gap-2">
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEPhotoEditorTab('overview');
+                                          setEHotspotSelectedIdx(null);
+                                        }}
+                                        className={classNames(
+                                          'rounded-2xl border px-4 py-2 text-xs font-semibold',
+                                          ePhotoEditorTab === 'overview'
+                                            ? 'border-white/30 bg-white/10 text-white'
+                                            : 'border-white/15 bg-white/5 text-white/80',
+                                        )}
+                                      >
+                                        Leitura viva
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEPhotoEditorTab('hotspots');
+                                          setEHotspotSelectedIdx(eFocusedKeepHotspots.length ? 0 : null);
+                                        }}
+                                        className={classNames(
+                                          'rounded-2xl border px-4 py-2 text-xs font-semibold',
+                                          ePhotoEditorTab === 'hotspots'
+                                            ? 'border-white/30 bg-white/10 text-white'
+                                            : 'border-white/15 bg-white/5 text-white/80',
+                                        )}
+                                      >
+                                        Pontos de leitura
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          setEKeepImages((prev) => prev.filter((_, i) => i !== eFocusedKeepIdx));
+                                          setEKeepCaptions((prev) => prev.filter((_, i) => i !== eFocusedKeepIdx));
+                                          setEKeepInsights((prev) => prev.filter((_, i) => i !== eFocusedKeepIdx));
+                                          setEPhotoEditorIdx(
+                                            eKeepImages.length - 1 > 0 ? Math.max(0, eFocusedKeepIdx - 1) : null,
+                                          );
+                                          setEHotspotSelectedIdx(null);
+                                        }}
+                                        className="rounded-2xl border border-white/15 bg-black/35 px-4 py-2 text-xs font-semibold text-white/80"
+                                        disabled={eSaving || eUploading}
+                                      >
+                                        Remover foto
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="rounded-2xl border border-white/12 bg-black/30 p-4">
+                                  {ePhotoEditorTab === 'overview' ? (
+                                    <div className="grid gap-3">
+                                      {[0, 1, 2].map((k) => (
+                                        <label key={`keep-overview-${eFocusedKeepIdx}-${k}`} className="grid gap-2">
+                                          <span className="text-xs font-semibold text-white/65">
+                                            {k === 0
+                                              ? 'O que esta foto prova'
+                                              : k === 1
+                                                ? 'O que esta foto transmite'
+                                                : 'O que esta foto reduz de dúvida'}
+                                          </span>
+                                          <input
+                                            value={eKeepInsights[eFocusedKeepIdx]?.overview?.[k] ?? ''}
+                                            onChange={(e) => {
+                                              const v = e.target.value;
+                                              setEKeepInsights((prev) => {
+                                                const next = normalizeInsightsForLen(eKeepImages.length, prev);
+                                                const cur = next[eFocusedKeepIdx] ?? {
+                                                  role: normalizePhotoRole(undefined, eFocusedKeepIdx),
+                                                  overview: ['', '', ''],
+                                                  hotspots: [],
+                                                };
+                                                const ov = normalizeOverview3(cur.overview);
+                                                ov[k] = v;
+                                                next[eFocusedKeepIdx] = { ...cur, overview: ov };
+                                                return next;
+                                              });
+                                            }}
+                                            className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
+                                          />
+                                        </label>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="grid gap-3">
+                                      {eFocusedKeepHotspots.map((hs, pointIdx) => (
+                                        <button
+                                          key={`keep-list-${pointIdx}-${hs.x}-${hs.y}`}
+                                          type="button"
+                                          onClick={() => setEHotspotSelectedIdx(pointIdx)}
+                                          className={classNames(
+                                            'w-full rounded-2xl border px-3 py-3 text-left',
+                                            eHotspotSelectedIdx === pointIdx
+                                              ? 'border-white/35 bg-white/[0.06]'
+                                              : 'border-white/10 bg-white/[0.03]',
+                                          )}
+                                        >
+                                          <div className="flex items-center justify-between gap-3">
+                                            <div className="text-sm font-semibold text-white/88">
+                                              {hs.title || `Ponto ${pointIdx + 1}`}
+                                            </div>
+                                            <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-semibold text-white/60">
+                                              {hotspotKindMeta(normalizeHotspotKind(hs.kind)).label}
+                                            </span>
+                                          </div>
+                                        </button>
+                                      ))}
+                                      {eFocusedSelectedHotspot ? (
+                                        <div className="grid gap-2 rounded-2xl border border-white/10 bg-black/35 p-3">
+                                          <select
+                                            value={normalizeHotspotKind(eFocusedSelectedHotspot.kind)}
+                                            onChange={(e) => {
+                                              if (eHotspotSelectedIdx === null) return;
+                                              setEKeepInsights((prev) => {
+                                                const next = normalizeInsightsForLen(eKeepImages.length, prev);
+                                                const cur = next[eFocusedKeepIdx] ?? {
+                                                  role: normalizePhotoRole(undefined, eFocusedKeepIdx),
+                                                  overview: ['', '', ''],
+                                                  hotspots: [],
+                                                };
+                                                const hs = normalizeHotspots(cur.hotspots);
+                                                hs[eHotspotSelectedIdx] = {
+                                                  ...hs[eHotspotSelectedIdx]!,
+                                                  kind: normalizeHotspotKind(e.target.value),
+                                                };
+                                                next[eFocusedKeepIdx] = { ...cur, hotspots: hs };
+                                                return next;
+                                              });
+                                            }}
+                                            className="rounded-xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90"
+                                          >
+                                            <option value="material">Material</option>
+                                            <option value="finish">Acabamento</option>
+                                            <option value="structure">Estrutura</option>
+                                            <option value="comfort">Conforto</option>
+                                            <option value="measure">Proporção</option>
+                                            <option value="difference">Diferencial</option>
+                                          </select>
+                                          <input
+                                            value={eFocusedSelectedHotspot.title}
+                                            onChange={(e) => {
+                                              if (eHotspotSelectedIdx === null) return;
+                                              setEKeepInsights((prev) => {
+                                                const next = normalizeInsightsForLen(eKeepImages.length, prev);
+                                                const cur = next[eFocusedKeepIdx] ?? {
+                                                  role: normalizePhotoRole(undefined, eFocusedKeepIdx),
+                                                  overview: ['', '', ''],
+                                                  hotspots: [],
+                                                };
+                                                const hs = normalizeHotspots(cur.hotspots);
+                                                hs[eHotspotSelectedIdx] = {
+                                                  ...hs[eHotspotSelectedIdx]!,
+                                                  title: e.target.value,
+                                                };
+                                                next[eFocusedKeepIdx] = { ...cur, hotspots: hs };
+                                                return next;
+                                              });
+                                            }}
+                                            className="rounded-xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90"
+                                          />
+                                        </div>
+                                      ) : null}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="rounded-2xl border border-dashed border-white/15 bg-white/[0.02] p-5 text-sm text-white/64">
+                          Nenhuma foto atual. Adicione novas imagens abaixo para construir a peça.
+                        </div>
+                      )}
+                    </FormSection>
+
+                    <FormSection
+                      eyebrow="Novas imagens"
+                      title="Adicionar fotos ao produto"
+                      description="As novas fotos entram junto das atuais e também podem receber leitura viva."
+                    >
+                      <FilesDropzone
+                        label="Adicionar fotos (opcional)"
+                        hint="Se selecionar novas fotos, elas serão adicionadas às atuais."
+                        files={eFiles}
+                        setFiles={(next) => {
+                          setEFiles(next);
+                          setEInsights(normalizeInsightsForLen(next.length, eInsights));
+                        }}
+                        insights={eInsights}
+                        setInsights={setEInsights}
+                        disabled={eSaving || eUploading}
+                        maxFiles={10}
+                      />
+                    </FormSection>
+                  </div>
+                );
+              })()
+            ) : null}
+
+            {/* FOTOS ATUAIS */}
+            {false ? (
               <>
                 <div className="rounded-3xl border border-white/15 bg-black/35 p-5">
                   <div className="flex flex-wrap items-start justify-between gap-2">
@@ -5910,7 +6777,7 @@ useEffect(() => {
                     </div>
                   )}
 
-                  {ePhotoEditorIdx !== null && eKeepImages[ePhotoEditorIdx] ? (
+                  {ePhotoEditorIdx !== null && eKeepImages[ePhotoEditorIdx!] ? (
                     <div className="mt-5 rounded-3xl border border-white/15 bg-black/35 p-4">
                       <div className="flex flex-wrap items-start justify-between gap-3">
                         <div>
@@ -5993,11 +6860,11 @@ useEffect(() => {
                                   eKeepImages.length,
                                   prev,
                                 );
-                                const cur = next[ePhotoEditorIdx] ?? {
+                                const cur = next[ePhotoEditorIdx!] ?? {
                                   overview: ['', '', ''],
                                   hotspots: [],
                                 };
-                                next[ePhotoEditorIdx] = {
+                                next[ePhotoEditorIdx!] = {
                                   ...cur,
                                   hotspots: [
                                     ...normalizeHotspots(cur.hotspots),
@@ -6012,8 +6879,8 @@ useEffect(() => {
                           >
                             {/* eslint-disable-next-line @next/next/no-img-element */}
                             <img
-                              src={toPublicImageUrl(eKeepImages[ePhotoEditorIdx])}
-                              alt={`Foto atual ${ePhotoEditorIdx + 1}`}
+                              src={toPublicImageUrl(eKeepImages[ePhotoEditorIdx!])}
+                              alt={`Foto atual ${ePhotoEditorIdx! + 1}`}
                               className="h-auto w-full object-cover"
                             />
 
@@ -6074,7 +6941,7 @@ useEffect(() => {
                                     </span>
                                     <input
                                       value={
-                                        eKeepInsights[ePhotoEditorIdx]
+                                        eKeepInsights[ePhotoEditorIdx!]
                                           ?.overview?.[k] ?? ''
                                       }
                                       onChange={(e) => {
@@ -6085,7 +6952,7 @@ useEffect(() => {
                                             eKeepImages.length,
                                             prev,
                                           );
-                                          const cur = next[ePhotoEditorIdx] ?? {
+                                          const cur = next[ePhotoEditorIdx!] ?? {
                                             overview: ['', '', ''],
                                             hotspots: [],
                                           };
@@ -6093,7 +6960,7 @@ useEffect(() => {
                                             cur.overview,
                                           );
                                           ov[k] = v;
-                                          next[ePhotoEditorIdx] = {
+                                          next[ePhotoEditorIdx!] = {
                                             ...cur,
                                             overview: ov,
                                           };
@@ -6208,7 +7075,7 @@ useEffect(() => {
                                         Título
                                       </span>
                                       <input
-                                        value={eCurrentSelectedHotspot.title}
+                                        value={eCurrentSelectedHotspot!.title}
                                         onChange={(e) => {
                                           if (
                                             ePhotoEditorIdx === null ||
@@ -6252,7 +7119,7 @@ useEffect(() => {
                                       </span>
                                       <textarea
                                         value={
-                                          eCurrentSelectedHotspot.description
+                                          eCurrentSelectedHotspot!.description
                                         }
                                         onChange={(e) => {
                                           if (
@@ -6298,7 +7165,7 @@ useEffect(() => {
                                           Posição X
                                         </span>
                                         <input
-                                          value={eCurrentSelectedHotspot.x}
+                                          value={eCurrentSelectedHotspot!.x}
                                           onChange={(e) => {
                                             if (
                                               ePhotoEditorIdx === null ||
@@ -6343,7 +7210,7 @@ useEffect(() => {
                                           Posição Y
                                         </span>
                                         <input
-                                          value={eCurrentSelectedHotspot.y}
+                                          value={eCurrentSelectedHotspot!.y}
                                           onChange={(e) => {
                                             if (
                                               ePhotoEditorIdx === null ||
@@ -6412,227 +7279,223 @@ useEffect(() => {
 
             {/* CATÁLOGO (EDIÇÃO) */}
             {editStep === 'CATALOG' ? (
-              <CatalogEditor
-                cat={eCat}
-                setCat={(updater) => setECat((prev) => updater(prev))}
-                disabled={eSaving || eUploading}
-              />
+              <div className="grid gap-5">
+                <FormSection
+                  eyebrow="Operação comercial"
+                  title="Catálogo ativo e disponibilidade"
+                  description="Ajuste o modelo comercial da peça e as escolhas reais do cliente."
+                >
+                  <CatalogEditor
+                    cat={eCat}
+                    setCat={(updater) => setECat((prev) => updater(prev))}
+                    disabled={eSaving || eUploading}
+                  />
+                </FormSection>
+              </div>
             ) : null}
 
             {/* FICHA TÉCNICA (EDIÇÃO) */}
             {editStep === 'TECH' ? (
-              <div className="grid gap-4">
-                <div className="rounded-3xl border border-white/15 bg-black/35 p-5">
-                  <div className="flex flex-wrap items-start justify-between gap-2">
-                    <div>
-                      <div className="text-sm font-semibold text-white/90">
-                        Ficha técnica (Marto)
+              <div className="grid gap-5">
+                <FormSection
+                  eyebrow="Dado limpo"
+                  title="Ficha técnica e base logística"
+                  description="Mantenha a peça confiável para frete, operação e entendimento comercial."
+                >
+                  <div className="grid gap-5">
+                    <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                      <div className="mb-4 text-sm font-semibold text-white/88">
+                        Estrutura física
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <label className="grid gap-2">
+                          <span className="text-xs font-semibold text-white/65">Peso (kg)</span>
+                          <input
+                            value={eSpec.weightKg}
+                            onChange={(e) =>
+                              setESpec((x) => ({ ...x, weightKg: e.target.value }))
+                            }
+                            className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none focus:border-white/30"
+                          />
+                        </label>
+
+                        <label className="grid gap-2">
+                          <span className="text-xs font-semibold text-white/65">
+                            Comprimento (cm)
+                          </span>
+                          <input
+                            value={eSpec.lengthCm}
+                            onChange={(e) =>
+                              setESpec((x) => ({ ...x, lengthCm: e.target.value }))
+                            }
+                            className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none focus:border-white/30"
+                          />
+                        </label>
+
+                        <label className="grid gap-2">
+                          <span className="text-xs font-semibold text-white/65">Largura (cm)</span>
+                          <input
+                            value={eSpec.widthCm}
+                            onChange={(e) =>
+                              setESpec((x) => ({ ...x, widthCm: e.target.value }))
+                            }
+                            className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none focus:border-white/30"
+                          />
+                        </label>
+
+                        <label className="grid gap-2">
+                          <span className="text-xs font-semibold text-white/65">Altura (cm)</span>
+                          <input
+                            value={eSpec.heightCm}
+                            onChange={(e) =>
+                              setESpec((x) => ({ ...x, heightCm: e.target.value }))
+                            }
+                            className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none focus:border-white/30"
+                          />
+                        </label>
+                      </div>
                     </div>
-                    <div className="mt-1 text-xs text-white/65">
-                      Mesmo padrão do produto novo.
+
+                    <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                      <div className="mb-4 text-sm font-semibold text-white/88">
+                        Rastreio comercial
+                      </div>
+
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <label className="grid gap-2">
+                          <span className="text-xs font-semibold text-white/65">SKU (interno)</span>
+                          <input
+                            value={eSpec.sku}
+                            onChange={(e) => setESpec((x) => ({ ...x, sku: e.target.value }))}
+                            className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none focus:border-white/30"
+                          />
+                        </label>
+
+                        <label className="grid gap-2">
+                          <span className="text-xs font-semibold text-white/65">
+                            Código de barras
+                          </span>
+                          <input
+                            value={eSpec.barcode}
+                            onChange={(e) =>
+                              setESpec((x) => ({ ...x, barcode: e.target.value }))
+                            }
+                            className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none focus:border-white/30"
+                          />
+                        </label>
+
+                        <label className="grid gap-2">
+                          <span className="text-xs font-semibold text-white/65">Marca</span>
+                          <input
+                            value={eSpec.brand}
+                            onChange={(e) =>
+                              setESpec((x) => ({ ...x, brand: e.target.value }))
+                            }
+                            className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none focus:border-white/30"
+                          />
+                        </label>
+
+                        <label className="grid gap-2">
+                          <span className="text-xs font-semibold text-white/65">Tags</span>
+                          <input
+                            value={eSpec.tags}
+                            onChange={(e) => setESpec((x) => ({ ...x, tags: e.target.value }))}
+                            className="rounded-2xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none focus:border-white/30"
+                          />
+                        </label>
+                      </div>
                     </div>
                   </div>
-                  {hasAnyTech(eSpec) ? (
-                    <Chip text="FICHA OK" tone="good" />
-                  ) : (
-                    <Chip text="OPCIONAL" />
-                  )}
-                </div>
+                </FormSection>
 
-                <div className="mt-4 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                  <label className="grid gap-2">
-                    <span className="text-xs font-semibold text-white/65">Peso (kg)</span>
-                    <input
-                      value={eSpec.weightKg}
-                      onChange={(e) => setESpec((x) => ({ ...x, weightKg: e.target.value }))}
-                      className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    />
-                  </label>
-
-                  <label className="grid gap-2">
-                    <span className="text-xs font-semibold text-white/65">Comprimento (cm)</span>
-                    <input
-                      value={eSpec.lengthCm}
-                      onChange={(e) => setESpec((x) => ({ ...x, lengthCm: e.target.value }))}
-                      className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    />
-                  </label>
-
-                  <label className="grid gap-2">
-                    <span className="text-xs font-semibold text-white/65">Largura (cm)</span>
-                    <input
-                      value={eSpec.widthCm}
-                      onChange={(e) => setESpec((x) => ({ ...x, widthCm: e.target.value }))}
-                      className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    />
-                  </label>
-
-                  <label className="grid gap-2">
-                    <span className="text-xs font-semibold text-white/65">Altura (cm)</span>
-                    <input
-                      value={eSpec.heightCm}
-                      onChange={(e) => setESpec((x) => ({ ...x, heightCm: e.target.value }))}
-                      className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    />
-                  </label>
-
-                  <label className="grid gap-2 sm:col-span-2">
-                    <span className="text-xs font-semibold text-white/65">SKU (interno)</span>
-                    <input
-                      value={eSpec.sku}
-                      onChange={(e) => setESpec((x) => ({ ...x, sku: e.target.value }))}
-                      className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    />
-                  </label>
-
-                  <label className="grid gap-2 sm:col-span-2">
-                    <span className="text-xs font-semibold text-white/65">
-                      Código de barras
-                    </span>
-                    <input
-                      value={eSpec.barcode}
-                      onChange={(e) => setESpec((x) => ({ ...x, barcode: e.target.value }))}
-                      className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    />
-                  </label>
-
-                  <label className="grid gap-2 sm:col-span-2">
-                    <span className="text-xs font-semibold text-white/65">Marca</span>
-                    <input
-                      value={eSpec.brand}
-                      onChange={(e) => setESpec((x) => ({ ...x, brand: e.target.value }))}
-                      className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    />
-                  </label>
-
-                  <label className="grid gap-2 sm:col-span-2">
-                    <span className="text-xs font-semibold text-white/65">Tags</span>
-                    <input
-                      value={eSpec.tags}
-                      onChange={(e) => setESpec((x) => ({ ...x, tags: e.target.value }))}
-                      className="rounded-2xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white/90 outline-none focus:border-white/30"
-                    />
-                  </label>
-                </div>
-                </div>
-
-                <div className="rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-                  <div className="flex items-center justify-between gap-3">
-                    <div>
-                      <p className="text-sm font-semibold text-white">Leitura logística Marto</p>
-                      <p className="text-xs text-white/70">
-                        Diagnóstico real do produto com base no backend.
-                      </p>
-                    </div>
-                  </div>
-
+                <FormSection
+                  eyebrow="Leitura logística"
+                  title="Diagnóstico real do produto"
+                  description="Use essa leitura para entender o que o backend já enxerga da peça."
+                >
                   {editShippingLoading ? (
-                    <p className="mt-3 text-sm text-white/70">Analisando logística...</p>
+                    <p className="text-sm text-white/70">Analisando logística...</p>
                   ) : editShippingError ? (
-                    <p className="mt-3 text-sm text-rose-300">{editShippingError}</p>
+                    <p className="text-sm text-rose-300">{editShippingError}</p>
                   ) : editShippingOptions ? (
-                    <div className="mt-4 space-y-4">
-                      <div className="grid gap-3 md:grid-cols-2">
-                        <div className="rounded-xl border border-white/10 bg-black/40 p-3">
-                          <p className="text-xs uppercase tracking-[0.18em] text-white/55">Porte</p>
-                          <p className="mt-1 text-sm font-medium text-white">
+                    <div className="grid gap-3">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                            Porte
+                          </div>
+                          <div className="mt-2 text-sm font-semibold text-white/90">
                             {editShippingOptions.analysis.shippingSize}
-                          </p>
+                          </div>
                         </div>
 
-                        <div className="rounded-xl border border-white/10 bg-black/40 p-3">
-                          <p className="text-xs uppercase tracking-[0.18em] text-white/55">
-                            Modo principal sugerido
-                          </p>
-                          <p className="mt-1 text-sm font-medium text-white">
+                        <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/55">
+                            Modo principal
+                          </div>
+                          <div className="mt-2 text-sm font-semibold text-white/90">
                             {editShippingOptions.suggestedPrimaryShippingMode ?? '—'}
-                          </p>
+                          </div>
                         </div>
                       </div>
 
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.18em] text-white/55">
-                          Modos disponíveis
-                        </p>
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {editShippingOptions.availableShippingModes.length ? (
-                            editShippingOptions.availableShippingModes.map((mode) => (
-                              <span
-                                key={mode}
-                                className="rounded-full border border-emerald-400/25 bg-emerald-400/10 px-3 py-1 text-xs text-emerald-200"
-                              >
-                                {mode}
-                              </span>
-                            ))
-                          ) : (
-                            <span className="text-sm text-white/65">Nenhum modo disponível.</span>
-                          )}
-                        </div>
-                      </div>
-
-                      <div>
-                        <p className="text-xs uppercase tracking-[0.18em] text-white/55">
-                          Bloqueios
-                        </p>
-                        <div className="mt-2 space-y-2">
-                          {editShippingOptions.blockedModes.length ? (
-                            editShippingOptions.blockedModes.map((item) => (
-                              <div
-                                key={item.mode}
-                                className="rounded-xl border border-white/10 bg-black/40 p-3"
-                              >
-                                <p className="text-sm font-medium text-white">{item.mode}</p>
-                                <p className="mt-1 text-xs text-white/70">{item.reason}</p>
-                              </div>
-                            ))
-                          ) : (
-                            <p className="text-sm text-white/65">Sem bloqueios.</p>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="rounded-xl border border-white/10 bg-black/40 p-3">
-                        <p className="text-xs uppercase tracking-[0.18em] text-white/55">
-                          Motivo da análise
-                        </p>
-                        <p className="mt-1 text-sm text-white/80">
-                          {editShippingOptions.analysis.reason}
-                        </p>
-                      </div>
+                      <SoftHint title="Motivo da análise">
+                        {editShippingOptions.analysis.reason}
+                      </SoftHint>
                     </div>
                   ) : (
-                    <p className="mt-3 text-sm text-white/65">Sem leitura logística carregada.</p>
+                    <p className="text-sm text-white/65">Sem leitura logística carregada.</p>
+                  )}
+                </FormSection>
+              </div>
+            ) : null}
+
+            <div className="sticky bottom-0 z-20 rounded-[28px] border border-white/10 bg-neutral-950/90 p-4 shadow-[0_-10px_30px_rgba(0,0,0,0.35)] backdrop-blur">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="text-xs text-white/58">
+                  Etapa atual:{' '}
+                  <span className="font-semibold text-white/86">{editLabel(editStep)}</span>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={editPrev}
+                    disabled={editStep === 'BASIC' || eSaving || eUploading}
+                    className="rounded-2xl border border-white/15 bg-black/40 px-4 py-2 text-xs font-semibold text-white/80 hover:bg-black/55 disabled:opacity-60"
+                  >
+                    Voltar
+                  </button>
+
+                  {editStep === 'REVIEW' ? (
+                    <button
+                      type="button"
+                      onClick={() => void saveEdit()}
+                      disabled={eSaving || eUploading}
+                      className="rounded-2xl bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-60"
+                    >
+                      {eUploading
+                        ? eUploadProgress
+                          ? `Enviando (${eUploadProgress})…`
+                          : 'Enviando…'
+                        : eSaving
+                          ? 'Salvando…'
+                          : 'Salvar alterações'}
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={editNext}
+                      disabled={eSaving || eUploading}
+                      className="rounded-2xl bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-60"
+                    >
+                      Avançar
+                    </button>
                   )}
                 </div>
               </div>
-            ) : null}
-
-            {/* AÇÕES */}
-            {editStep === 'REVIEW' ? (
-              <div className="flex flex-wrap gap-2">
-                <button
-                  onClick={() => void saveEdit()}
-                  disabled={eSaving || eUploading}
-                  className="rounded-2xl bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/15 disabled:opacity-60"
-                >
-                  {eUploading
-                    ? eUploadProgress
-                      ? `Enviando (${eUploadProgress})…`
-                      : 'Enviando…'
-                    : eSaving
-                      ? 'Salvando…'
-                      : 'Salvar'}
-                </button>
-
-                <button
-                  onClick={cancelEdit}
-                  disabled={eSaving || eUploading}
-                  className="rounded-2xl border border-white/15 bg-black/40 px-4 py-2 text-xs font-semibold text-white/80 hover:bg-black/55 disabled:opacity-60"
-                >
-                  Cancelar
-                </button>
-              </div>
-            ) : null}
+            </div>
           </div>
         ) : (
           <div className="text-sm text-white/70">Nenhum produto selecionado.</div>

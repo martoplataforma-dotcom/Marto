@@ -27,7 +27,24 @@ type Product = {
   merchantTradeName?: string | null;
 };
 
+type PublicPhotoRole =
+  | 'cover'
+  | 'detail'
+  | 'material'
+  | 'context'
+  | 'structure'
+  | 'finish';
+
+type PublicHotspotKind =
+  | 'material'
+  | 'finish'
+  | 'structure'
+  | 'comfort'
+  | 'measure'
+  | 'difference';
+
 type ProductImageInsight = {
+  role?: PublicPhotoRole | null;
   overview?: string[] | null;
   hotspots?: ImageHotspot[] | null;
 };
@@ -37,6 +54,8 @@ type ImageHotspot = {
   y: number; // 0..100
   title: string;
   description?: string | null;
+  kind?: PublicHotspotKind | null;
+  order?: number | null;
 };
 
 function clamp(n: number, min: number, max: number) {
@@ -379,14 +398,133 @@ function formatVariantSummary(variant: PublicCatalogVariant | null) {
   return variant.attributes.map((a) => `${a.name}: ${a.value}`).join(' • ');
 }
 
-function quickViewLabel(index: number, overview?: string[] | null) {
+function normalizePublicPhotoRole(
+  role: unknown,
+  index = 0,
+): PublicPhotoRole {
+  const raw = String(role ?? '').trim();
+
+  if (
+    raw === 'cover' ||
+    raw === 'detail' ||
+    raw === 'material' ||
+    raw === 'context' ||
+    raw === 'structure' ||
+    raw === 'finish'
+  ) {
+    return raw;
+  }
+
+  return index === 0 ? 'cover' : 'detail';
+}
+
+function publicPhotoRoleLabel(role: PublicPhotoRole) {
+  switch (role) {
+    case 'cover':
+      return 'Capa';
+    case 'detail':
+      return 'Detalhe';
+    case 'material':
+      return 'Material';
+    case 'context':
+      return 'Contexto';
+    case 'structure':
+      return 'Estrutura';
+    case 'finish':
+      return 'Acabamento';
+  }
+}
+
+function normalizePublicHotspotKind(kind: unknown): PublicHotspotKind {
+  const raw = String(kind ?? '').trim();
+
+  if (
+    raw === 'material' ||
+    raw === 'finish' ||
+    raw === 'structure' ||
+    raw === 'comfort' ||
+    raw === 'measure' ||
+    raw === 'difference'
+  ) {
+    return raw;
+  }
+
+  return 'difference';
+}
+
+function publicHotspotKindLabel(kind: unknown) {
+  switch (normalizePublicHotspotKind(kind)) {
+    case 'material':
+      return 'Material';
+    case 'finish':
+      return 'Acabamento';
+    case 'structure':
+      return 'Estrutura';
+    case 'comfort':
+      return 'Conforto';
+    case 'measure':
+      return 'Proporção';
+    case 'difference':
+    default:
+      return 'Diferencial';
+  }
+}
+
+function sortPublicHotspots(hotspots?: ImageHotspot[] | null) {
+  const base = Array.isArray(hotspots) ? hotspots.slice() : [];
+
+  return base.sort((a, b) => {
+    const ao =
+      typeof a?.order === 'number' && Number.isFinite(a.order)
+        ? a.order
+        : Number.MAX_SAFE_INTEGER;
+    const bo =
+      typeof b?.order === 'number' && Number.isFinite(b.order)
+        ? b.order
+        : Number.MAX_SAFE_INTEGER;
+
+    if (ao !== bo) return ao - bo;
+    return 0;
+  });
+}
+
+function isSameHotspot(a: ImageHotspot | null, b: ImageHotspot | null) {
+  if (!a || !b) return false;
+
+  return (
+    a.x === b.x &&
+    a.y === b.y &&
+    a.title === b.title &&
+    String(a.description ?? '') === String(b.description ?? '')
+  );
+}
+
+function quickViewLabel(
+  index: number,
+  overview?: string[] | null,
+  role?: PublicPhotoRole | null,
+) {
   const first = Array.isArray(overview) ? String(overview[0] ?? '').trim() : '';
   if (first) return first;
-  if (index === 0) return 'Vista principal';
-  if (index === 1) return 'Detalhe da peça';
-  if (index === 2) return 'Textura e material';
-  if (index === 3) return 'Leitura lateral';
-  return `Vista ${index + 1}`;
+
+  const normalizedRole = normalizePublicPhotoRole(role, index);
+
+  switch (normalizedRole) {
+    case 'cover':
+      return 'Capa da peça';
+    case 'detail':
+      return 'Detalhe da peça';
+    case 'material':
+      return 'Material e textura';
+    case 'context':
+      return 'Peça em contexto';
+    case 'structure':
+      return 'Leitura estrutural';
+    case 'finish':
+      return 'Acabamento da peça';
+    default:
+      return `Vista ${index + 1}`;
+  }
 }
 
 function stripMartoBlocks(desc: string) {
@@ -714,11 +852,6 @@ export default function ShopProductPage({
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryIndex, setGalleryIndex] = useState(0);
   const [hoverHotspot, setHoverHotspot] = useState<ImageHotspot | null>(null);
-  const [pinnedHotspot, setPinnedHotspot] = useState<ImageHotspot | null>(null);
-  const [pinnedHotspotPos, setPinnedHotspotPos] = useState<{
-    x: number;
-    y: number;
-  } | null>(null);
   const [hoverPos, setHoverPos] = useState<{ x: number; y: number } | null>(
     null,
   );
@@ -1110,7 +1243,7 @@ export default function ShopProductPage({
               href="/dash/consumer"
               className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-semibold text-white hover:bg-white/15"
             >
-              Minha central →
+              Ver central
             </Link>
           </div>
         </header>
@@ -1126,11 +1259,9 @@ export default function ShopProductPage({
                =========================== */}
             <section className="overflow-hidden rounded-[32px] border border-white/15 bg-neutral-950/80 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
               {(() => {
-                const ident = extractIdentity(p.description ?? '');
                 const cat = publicCatalog;
                 const activeVariantSummary = formatVariantSummary(selectedVariant);
                 const activeVariantStock = String(selectedVariant?.stock ?? '').trim();
-                const handle = ident.handle ? `@${ident.handle}` : '';
                 const merchantLabel =
                   String(p.merchantTradeName ?? '').trim() || 'Central Marto';
 
@@ -1161,6 +1292,7 @@ export default function ShopProductPage({
 
                 const imagesWithOverview = urls.map((url, i) => ({
                   url,
+                  role: normalizePublicPhotoRole(p.imageInsights?.[i]?.role, i),
                   overview: pickOverview3(p.imageInsights?.[i]?.overview),
                 }));
 
@@ -1172,10 +1304,17 @@ export default function ShopProductPage({
                 const current =
                   imagesWithOverview[safeIndex] ?? imagesWithOverview[0] ?? null;
 
-                const hotspots: ImageHotspot[] =
+                const hotspots = sortPublicHotspots(
                   (p?.imageInsights?.[safeIndex]?.hotspots as
                     | ImageHotspot[]
-                    | undefined) ?? [];
+                    | undefined) ?? [],
+                );
+
+                const activeHotspot = hoverHotspot ?? null;
+
+                const activeHotspotIndex = activeHotspot
+                  ? hotspots.findIndex((hs) => isSameHotspot(hs, activeHotspot))
+                  : -1;
 
                 return (
                   <>
@@ -1189,8 +1328,6 @@ export default function ShopProductPage({
                                 key={`${img.url}-${idx}`}
                                 type="button"
                                 onClick={() => {
-                                  setPinnedHotspot(null);
-                                  setPinnedHotspotPos(null);
                                   setGalleryIndex(idx);
                                 }}
                                 className={[
@@ -1223,19 +1360,16 @@ export default function ShopProductPage({
                             <div
                               className="relative"
                               onClick={() => {
-                                setPinnedHotspot(null);
-                                setPinnedHotspotPos(null);
+                                setHoverHotspot(null);
+                                setHoverPos(null);
                               }}
                               onMouseLeave={() => {
                                 if (hoverTimer.current)
                                   window.clearTimeout(hoverTimer.current);
                                 if (hideTimer.current)
                                   window.clearTimeout(hideTimer.current);
-
-                                if (!pinnedHotspot) {
-                                  setHoverHotspot(null);
-                                  setHoverPos(null);
-                                }
+                                setHoverHotspot(null);
+                                setHoverPos(null);
                               }}
                             >
                               <ImageWithCaption
@@ -1249,10 +1383,7 @@ export default function ShopProductPage({
                               {hotspots.map((hs, i) => {
                                 const left = `${clamp(hs.x, 0, 100)}%`;
                                 const top = `${clamp(hs.y, 0, 100)}%`;
-                                const isPinned =
-                                  pinnedHotspot?.x === hs.x &&
-                                  pinnedHotspot?.y === hs.y &&
-                                  pinnedHotspot?.title === hs.title;
+                                const active = isSameHotspot(hs, activeHotspot);
 
                                 return (
                                   <button
@@ -1262,114 +1393,89 @@ export default function ShopProductPage({
                                     style={{ left, top }}
                                     aria-label={hs.title}
                                     onMouseEnter={() => {
-                                      if (hoverTimer.current)
-                                        window.clearTimeout(hoverTimer.current);
-                                      if (hideTimer.current)
-                                        window.clearTimeout(hideTimer.current);
+                                      if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
+                                      if (hideTimer.current) window.clearTimeout(hideTimer.current);
 
                                       hoverTimer.current = window.setTimeout(() => {
                                         setHoverHotspot(hs);
                                         setHoverPos({
-                                          x: clamp(hs.x, 10, 90),
-                                          y: clamp(hs.y, 12, 88),
+                                          x: clamp(hs.x, 12, 88),
+                                          y: clamp(hs.y, 14, 86),
                                         });
 
                                         hideTimer.current = window.setTimeout(() => {
-                                          if (!pinnedHotspot) {
-                                            setHoverHotspot(null);
-                                            setHoverPos(null);
-                                          }
-                                        }, 2800);
-                                      }, 180);
+                                          setHoverHotspot(null);
+                                          setHoverPos(null);
+                                        }, 2200);
+                                      }, 320);
+                                    }}
+                                    onMouseLeave={() => {
+                                      if (hoverTimer.current) window.clearTimeout(hoverTimer.current);
                                     }}
                                     onClick={(e) => {
+                                      e.preventDefault();
                                       e.stopPropagation();
-                                      setPinnedHotspot(hs);
-                                      setPinnedHotspotPos({
-                                        x: clamp(hs.x, 10, 90),
-                                        y: clamp(hs.y, 12, 88),
-                                      });
-                                      setHoverHotspot(hs);
-                                      setHoverPos({
-                                        x: clamp(hs.x, 10, 90),
-                                        y: clamp(hs.y, 12, 88),
-                                      });
                                     }}
                                   >
-                                    <span className="relative block h-5 w-5">
-                                      <span
-                                        className={[
-                                          'absolute inset-0 rounded-full border transition',
-                                          isPinned
-                                            ? 'border-white/80 bg-white/25'
-                                            : 'border-white/55 bg-white/12 group-hover:bg-white/20',
-                                        ].join(' ')}
-                                      />
+                                    <span
+                                      className={[
+                                        'relative block h-4.5 w-4.5 rounded-full border shadow-[0_0_0_1px_rgba(255,255,255,0.04)] transition',
+                                        active
+                                          ? 'border-white/70 bg-white/18'
+                                          : 'border-white/38 bg-white/8 group-hover:border-white/58 group-hover:bg-white/14',
+                                      ].join(' ')}
+                                    >
                                       <span className="absolute inset-[3px] rounded-full bg-white/92" />
-                                      <span className="absolute inset-[-7px] rounded-full border border-white/18 opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
+                                      <span className="absolute inset-[-6px] rounded-full border border-white/12 opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
                                     </span>
                                   </button>
                                 );
                               })}
 
                               {(() => {
-                                const activeHotspot = pinnedHotspot ?? hoverHotspot;
-                                const activePos = pinnedHotspotPos ?? hoverPos;
+                                const activePos = hoverPos;
 
                                 if (!activeHotspot || !activePos) return null;
 
+                                const alignLeft = activePos.x <= 52;
+                                const openBelow = activePos.y <= 22;
+
                                 return (
                                   <div
-                                    className="absolute z-20 w-[min(320px,78vw)] -translate-x-1/2 rounded-[24px] border border-white/15 bg-neutral-950/86 p-4 shadow-[0_20px_80px_rgba(0,0,0,0.38)] backdrop-blur-xl"
+                                    className="pointer-events-none absolute z-20 w-[min(210px,62vw)] rounded-[16px] border border-white/12 bg-neutral-950/84 p-2.5 shadow-[0_14px_38px_rgba(0,0,0,0.30)] backdrop-blur-xl"
                                     style={{
                                       left: `${activePos.x}%`,
                                       top: `${activePos.y}%`,
+                                      transform: `translate(${alignLeft ? '18px' : '-100%'}, ${openBelow ? '18px' : '-100%'})`,
                                     }}
-                                    onClick={(e) => e.stopPropagation()}
                                   >
                                     <div className="flex items-start justify-between gap-3">
-                                      <div>
-                                        <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/52">
+                                      <div className="min-w-0">
+                                        <div className="text-[9px] font-semibold uppercase tracking-[0.18em] text-white/42">
                                           leitura marto
                                         </div>
-                                        <div className="mt-2 text-lg font-semibold leading-tight text-white/94">
+
+                                        <div className="mt-1 text-[15px] font-semibold leading-tight text-white/92">
                                           {activeHotspot.title}
                                         </div>
                                       </div>
 
-                                      {pinnedHotspot ? (
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setPinnedHotspot(null);
-                                            setPinnedHotspotPos(null);
-                                            setHoverHotspot(null);
-                                            setHoverPos(null);
-                                          }}
-                                          className="rounded-full border border-white/15 bg-white/8 px-2 py-1 text-[11px] font-semibold text-white/78 hover:bg-white/12"
-                                        >
-                                          fechar
-                                        </button>
+                                      {activeHotspotIndex >= 0 ? (
+                                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-[10px] font-semibold text-white/58">
+                                          {activeHotspotIndex + 1}/{hotspots.length}
+                                        </span>
                                       ) : null}
                                     </div>
 
                                     {activeHotspot.description ? (
-                                      <div className="mt-3 text-sm leading-6 text-white/74">
+                                      <div className="mt-1.5 line-clamp-2 text-[12px] leading-5 text-white/68">
                                         {activeHotspot.description}
                                       </div>
-                                    ) : (
-                                      <div className="mt-3 text-sm leading-6 text-white/58">
-                                        Este ponto destaca uma leitura relevante
-                                        da peça.
-                                      </div>
-                                    )}
+                                    ) : null}
 
-                                    <div className="mt-4 flex flex-wrap gap-2">
-                                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold text-white/62">
-                                        ponto relevante da peça
-                                      </span>
-                                      <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold text-white/62">
-                                        toque ou passe o mouse
+                                    <div className="mt-3">
+                                      <span className="rounded-full border border-white/10 bg-white/[0.035] px-2 py-0.5 text-[9px] font-semibold text-white/54">
+                                        {publicHotspotKindLabel(activeHotspot.kind)}
                                       </span>
                                     </div>
                                   </div>
@@ -1377,17 +1483,17 @@ export default function ShopProductPage({
                               })()}
 
                               <div className="absolute left-4 top-4 z-10 flex flex-wrap gap-2">
-                                <span className="rounded-full border border-white/15 bg-black/50 px-3 py-1 text-[11px] font-semibold text-white/82 backdrop-blur">
-                                  verificado pelo rastro
+                                <span className="rounded-full border border-white/12 bg-black/42 px-3 py-1 text-[10px] font-semibold text-white/76 backdrop-blur">
+                                  rastro verificado
                                 </span>
-                                <span className="rounded-full border border-white/15 bg-black/40 px-3 py-1 text-[11px] font-semibold text-white/72 backdrop-blur">
-                                  peça ativa
+                                <span className="rounded-full border border-white/12 bg-black/38 px-3 py-1 text-[10px] font-semibold text-white/68 backdrop-blur">
+                                  {publicPhotoRoleLabel(current?.role ?? 'cover')}
                                 </span>
                               </div>
 
                               <div className="absolute right-4 top-4 z-10 flex items-center gap-2">
                                 {imagesWithOverview.length > 1 ? (
-                                  <div className="rounded-full border border-white/15 bg-black/45 px-3 py-1 text-[11px] font-semibold text-white/82 backdrop-blur">
+                                  <div className="rounded-full border border-white/12 bg-black/40 px-2.5 py-1 text-[10px] font-semibold text-white/74 backdrop-blur">
                                     {safeIndex + 1}/{imagesWithOverview.length}
                                   </div>
                                 ) : null}
@@ -1395,7 +1501,7 @@ export default function ShopProductPage({
                                 <button
                                   type="button"
                                   onClick={() => setGalleryOpen(true)}
-                                  className="rounded-full border border-white/15 bg-black/45 px-3 py-2 text-[11px] font-semibold text-white/84 backdrop-blur hover:bg-black/60"
+                                  className="rounded-full border border-white/12 bg-black/40 px-3 py-1.5 text-[10px] font-semibold text-white/76 backdrop-blur hover:bg-black/55"
                                 >
                                   {imagesWithOverview.length > 1
                                     ? 'Tela cheia'
@@ -1409,8 +1515,6 @@ export default function ShopProductPage({
                                     type="button"
                                     onClick={() =>
                                       {
-                                        setPinnedHotspot(null);
-                                        setPinnedHotspotPos(null);
                                         setGalleryIndex(
                                           (prev) =>
                                             (prev - 1 + imagesWithOverview.length) %
@@ -1418,7 +1522,7 @@ export default function ShopProductPage({
                                         );
                                       }
                                     }
-                                    className="absolute left-4 top-1/2 z-10 -translate-y-1/2 rounded-full border border-white/15 bg-black/45 p-2 text-white/84 backdrop-blur hover:bg-black/60"
+                                    className="absolute left-4 top-1/2 z-10 -translate-y-1/2 rounded-full border border-white/12 bg-black/38 p-2 text-white/76 backdrop-blur hover:bg-black/52"
                                     aria-label="Foto anterior"
                                   >
                                     ‹
@@ -1428,15 +1532,13 @@ export default function ShopProductPage({
                                     type="button"
                                     onClick={() =>
                                       {
-                                        setPinnedHotspot(null);
-                                        setPinnedHotspotPos(null);
                                         setGalleryIndex(
                                           (prev) =>
                                             (prev + 1) % imagesWithOverview.length,
                                         );
                                       }
                                     }
-                                    className="absolute right-4 top-1/2 z-10 -translate-y-1/2 rounded-full border border-white/15 bg-black/45 p-2 text-white/84 backdrop-blur hover:bg-black/60"
+                                    className="absolute right-4 top-1/2 z-10 -translate-y-1/2 rounded-full border border-white/12 bg-black/38 p-2 text-white/76 backdrop-blur hover:bg-black/52"
                                     aria-label="Próxima foto"
                                   >
                                     ›
@@ -1447,228 +1549,27 @@ export default function ShopProductPage({
                           )}
                         </div>
 
-                        <section className="rounded-[28px] border border-white/15 bg-black/24 p-4 xl:p-5">
-                          <div className="grid gap-4 lg:grid-cols-[1.05fr_1fr]">
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                              {hasRealChoices ? (
-                                <>
-                                  <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
-                                    escolhas desta peça
-                                  </div>
+                        <div className="rounded-[22px] border border-white/12 bg-black/24 p-4">
+                          <div className="flex flex-wrap gap-2">
+                            {cat.tipo ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                                {cat.tipo}
+                              </span>
+                            ) : null}
 
-                                  <div className="mt-2 text-sm leading-6 text-white/70">
-                                    Escolha a combinação real publicada no
-                                    catálogo desta peça.
-                                  </div>
+                            {cat.inventario ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                                {cat.inventario}
+                              </span>
+                            ) : null}
 
-                                  <div className="mt-4 grid gap-3">
-                                    {cat.optionGroups.map((group) => (
-                                      <div
-                                        key={group.name}
-                                        className="rounded-2xl border border-white/10 bg-black/35 p-4"
-                                      >
-                                        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/52">
-                                          {group.name}
-                                        </div>
-
-                                        <div className="mt-3 flex flex-wrap gap-2">
-                                          {group.values.map((value) => {
-                                            const active =
-                                              selectedOptions[group.name] ===
-                                              value;
-
-                                            return (
-                                              <button
-                                              key={`${group.name}-${value}`}
-                                              type="button"
-                                              onClick={() =>
-                                                setSelectedOptions((prev) => ({
-                                                  ...prev,
-                                                  [group.name]: value,
-                                                }))
-                                              }
-                                              className={[
-                                                'rounded-full border px-3 py-1 text-[11px] font-semibold transition',
-                                                active
-                                                  ? 'border-white/35 bg-white/12 text-white'
-                                                  : 'border-white/15 bg-white/5 text-white/75 hover:bg-white/10',
-                                              ].join(' ')}
-                                            >
-                                              {value}
-                                            </button>
-                                            );
-                                          })}
-                                        </div>
-                                      </div>
-                                    ))}
-                                  </div>
-
-                                  <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
-                                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/52">
-                                      combinação selecionada
-                                    </div>
-                                    <div className="mt-2 text-sm font-semibold text-white/88">
-                                      {activeVariantSummary ||
-                                        'Escolha uma combinação publicada.'}
-                                    </div>
-
-                                    <div className="mt-2 flex flex-wrap gap-2">
-                                      {selectedVariant?.sku ? (
-                                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold text-white/66">
-                                          SKU {selectedVariant.sku}
-                                        </span>
-                                      ) : null}
-
-                                      {activeVariantStock ? (
-                                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold text-white/66">
-                                          estoque {activeVariantStock}
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                </>
-                              ) : (
-                                <>
-                                  <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
-                                    detalhes desta peça
-                                  </div>
-
-                                  <div className="mt-2 text-sm leading-6 text-white/70">
-                                    Esta peça ainda não tem escolhas publicadas
-                                    no catálogo. Então o Marto destaca
-                                    operação, preparo e leitura visual da peça.
-                                  </div>
-
-                                  <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                                    <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
-                                      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/52">
-                                        disponibilidade
-                                      </div>
-                                      <div className="mt-3 flex flex-wrap gap-2">
-                                        {cat.tipo ? (
-                                          <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/82">
-                                            {cat.tipo}
-                                          </span>
-                                        ) : null}
-                                        {cat.inventario ? (
-                                          <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/82">
-                                            {cat.inventario}
-                                          </span>
-                                        ) : null}
-                                        {cat.estoque ? (
-                                          <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/82">
-                                            lote {cat.estoque}
-                                          </span>
-                                        ) : null}
-                                      </div>
-                                    </div>
-
-                                    <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
-                                      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/52">
-                                        preparo
-                                      </div>
-                                      <div className="mt-3 text-sm font-semibold text-white/88">
-                                        {cat.preparoDias
-                                          ? `${cat.preparoDias} dias de preparo`
-                                          : 'preparo não publicado'}
-                                      </div>
-                                    </div>
-                                  </div>
-
-                                  <div className="mt-4 rounded-2xl border border-white/10 bg-black/30 p-4">
-                                    <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/52">
-                                      o que importa
-                                    </div>
-                                    <div className="mt-2 text-sm leading-6 text-white/72">
-                                      O Marto ajuda a decidir melhor quando a
-                                      peça mostra, com clareza, como ela se
-                                      apresenta, como opera e em quanto tempo
-                                      fica pronta.
-                                    </div>
-                                  </div>
-                                </>
-                              )}
-                            </div>
-
-                            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                              <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
-                                ângulos da peça
-                              </div>
-
-                              {imagesWithOverview.length === 0 ? (
-                                <div className="mt-4 text-sm text-white/65">
-                                  Sem leituras adicionais desta peça.
-                                </div>
-                              ) : (
-                                <div className="mt-4 grid gap-3 sm:grid-cols-2">
-                                  {imagesWithOverview.slice(0, 4).map((img, idx) => {
-                                    const realIndex = idx;
-                                    const active = realIndex === safeIndex;
-                                    const hotspotsCount =
-                                      p?.imageInsights?.[realIndex]?.hotspots
-                                        ?.length ?? 0;
-
-                                    return (
-                                      <button
-                                        key={`${img.url}-quick-${idx}`}
-                                        type="button"
-                                        onClick={() => {
-                                          setPinnedHotspot(null);
-                                          setPinnedHotspotPos(null);
-                                          setGalleryIndex(realIndex);
-                                        }}
-                                        className={[
-                                          'group overflow-hidden rounded-2xl border text-left transition',
-                                          active
-                                            ? 'border-white/45 bg-white/[0.04]'
-                                            : 'border-white/10 bg-black/30 hover:border-white/28',
-                                        ].join(' ')}
-                                      >
-                                        <div className="aspect-[4/3] w-full bg-white/5">
-                                          <img
-                                            src={img.url}
-                                            alt=""
-                                            className="h-full w-full object-cover"
-                                          />
-                                        </div>
-
-                                        <div className="p-3">
-                                          <div className="text-sm font-semibold text-white/86">
-                                            {quickViewLabel(
-                                              realIndex,
-                                              img.overview,
-                                            )}
-                                          </div>
-
-                                          <div className="mt-1 text-[11px] leading-5 text-white/60">
-                                            {Array.isArray(img.overview) &&
-                                            img.overview[0]
-                                              ? img.overview[0]
-                                              : 'abrir esta leitura'}
-                                          </div>
-
-                                          <div className="mt-2 flex flex-wrap gap-2">
-                                            {hotspotsCount > 0 ? (
-                                              <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-semibold text-white/58">
-                                                {hotspotsCount} ponto(s)
-                                              </span>
-                                            ) : null}
-
-                                            {active ? (
-                                              <span className="rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-1 text-[10px] font-semibold text-white/70">
-                                                ângulo ativo
-                                              </span>
-                                            ) : null}
-                                          </div>
-                                        </div>
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              )}
-                            </div>
+                            {cat.preparoDias ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                                preparo em {cat.preparoDias} dias
+                              </span>
+                            ) : null}
                           </div>
-                        </section>
+                        </div>
                       </div>
 
                       {/* lateral enxuta */}
@@ -1676,10 +1577,11 @@ export default function ShopProductPage({
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
-                              central da peça
+                              peça em destaque
                             </div>
-                            <div className="mt-2 text-2xl font-semibold leading-tight text-white/94">
-                              {merchantLabel}
+
+                            <div className="mt-2 text-3xl font-semibold leading-tight text-white/96">
+                              {p.name}
                             </div>
                           </div>
 
@@ -1689,20 +1591,18 @@ export default function ShopProductPage({
                         </div>
 
                         <p className="mt-3 text-sm leading-6 text-white/70">
-                          Origem ativa desta peça no Marto. A central sustenta a
-                          continuidade, a leitura pública e a reputação ao longo do fluxo.
+                          Peça publicada com origem clara, versão ativa e compra
+                          pronta dentro do Marto.
                         </p>
 
                         <div className="mt-4 flex flex-wrap gap-2">
+                          <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
+                            {merchantLabel}
+                          </span>
+
                           {p.merchantHandle ? (
                             <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
                               @{p.merchantHandle}
-                            </span>
-                          ) : null}
-
-                          {cat.inventario ? (
-                            <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
-                              operação {cat.inventario}
                             </span>
                           ) : null}
 
@@ -1713,208 +1613,385 @@ export default function ShopProductPage({
                           ) : null}
                         </div>
 
-                        {p.merchantHandle ? (
-                          <div className="mt-4">
-                            <Link
-                              href={`/loja/${encodeURIComponent(p.merchantHandle)}`}
-                              className="inline-flex rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-xs font-semibold text-white hover:bg-white/15"
-                            >
-                              Entrar na central →
-                            </Link>
+                        {false ? (
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            {Object.entries(selectedOptions).map(
+                              ([name, value]) => (
+                                <span
+                                  key={`${name}-${value}`}
+                                  className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/82"
+                                >
+                                  {name}: {value}
+                                </span>
+                              ),
+                            )}
                           </div>
                         ) : null}
 
-                        <div className="mt-6 border-t border-white/10 pt-6">
-                          <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
-                            peça em destaque
-                          </div>
-
-                          <div className="mt-2 text-3xl font-semibold leading-tight text-white/96">
-                            {p.name}
-                          </div>
-
-                          <p className="mt-3 text-sm leading-6 text-white/72">
-                            Uma peça publicada dentro de uma central viva, pronta para
-                            entrar no seu fluxo de compra e continuar gerando rastro no
-                            Marto.
-                          </p>
-
-                          {hasRealChoices ? (
-                            <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                              <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-white/52">
-                                opção ativa
-                              </div>
-
-                              <div className="mt-2 text-sm font-semibold text-white/88">
-                                {activeVariantSummary ||
-                                  'Escolha uma combinação publicada.'}
-                              </div>
-
-                              <div className="mt-2 flex flex-wrap gap-2">
-                                {selectedVariant?.sku ? (
-                                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold text-white/66">
-                                    SKU {selectedVariant.sku}
-                                  </span>
-                                ) : null}
-
-                                {activeVariantStock ? (
-                                  <span className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] font-semibold text-white/66">
-                                    estoque {activeVariantStock}
-                                  </span>
-                                ) : null}
-                              </div>
+                        <div className="mt-5">
+                          {hasRealChoices && activeVariantSummary ? (
+                            <div className="mb-3 text-sm font-semibold text-white/84">
+                              {activeVariantSummary}
                             </div>
                           ) : null}
 
-                          <div className="mt-5 flex flex-wrap items-center gap-3">
-                            <div className="text-3xl font-semibold text-white/95">
+                          <div className="flex flex-wrap items-center gap-3">
+                            <div className="text-4xl font-semibold tracking-tight text-white/96">
                               {priceBRL}
                             </div>
-
-                            {activeVariantStock ? (
-                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
-                                estoque desta opção {activeVariantStock}
-                              </span>
-                            ) : cat.estoque ? (
-                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
-                                lote ativo {cat.estoque}
-                              </span>
-                            ) : null}
 
                             {cat.preparoDias ? (
                               <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
                                 preparo em {cat.preparoDias} dias
                               </span>
                             ) : null}
-                          </div>
 
-                          <div className="mt-5 flex flex-wrap gap-3">
-                            <button
-                              onClick={buyNow}
-                              disabled={buying}
-                              className="rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-black hover:bg-white/90 disabled:opacity-60"
-                            >
-                              {buying ? 'Iniciando…' : 'Iniciar compra'}
-                            </button>
+                            {activeVariantStock ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
+                                estoque {activeVariantStock}
+                              </span>
+                            ) : cat.estoque ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
+                                lote {cat.estoque}
+                              </span>
+                            ) : null}
 
-                            {p.merchantHandle && p.productHandle ? (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  const url = `${window.location.origin}/shop/@${p.merchantHandle}/p/@${p.productHandle}`;
-                                  navigator.clipboard.writeText(url);
-                                }}
-                                className="rounded-2xl border border-white/15 bg-white/8 px-4 py-3 text-sm font-semibold text-white/84 hover:bg-white/12"
-                              >
-                                Copiar link da peça
-                              </button>
+                            {cat.inventario ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/78">
+                                {cat.inventario}
+                              </span>
                             ) : null}
                           </div>
-
-                          {createdOrderId ? (
-                            <div className="mt-4 rounded-2xl border border-white/10 bg-black/40 p-3">
-                              <div className="flex flex-wrap items-center justify-between gap-3">
-                                <div className="text-sm text-white/82">
-                                  ✅ Pedido criado:{' '}
-                                  <span className="font-semibold">{createdOrderId}</span>
-                                </div>
-
-                                {!paidOrderId ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      if (!createdOrderId) return;
-                                      router.push(
-                                        `/dash/consumer/orders/${encodeURIComponent(createdOrderId)}`,
-                                      );
-                                    }}
-                                    disabled={!createdOrderId}
-                                    className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
-                                  >
-                                    Ir para pagamento →
-                                  </button>
-                                ) : (
-                                  <Link
-                                    href={`/dash/consumer/orders/${encodeURIComponent(
-                                      paidOrderId,
-                                    )}`}
-                                    className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
-                                  >
-                                    Ver pedido →
-                                  </Link>
-                                )}
-                              </div>
-                            </div>
-                          ) : null}
-
-                          <div className="mt-6 border-t border-white/10 pt-6">
-                            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
-                              fluxo marto desta peça
-                            </div>
-
-                            <div className="mt-3 grid gap-3">
-                              {[
-                                [
-                                  'Comprar',
-                                  'A peça entra no seu fluxo com origem e intenção registradas.',
-                                ],
-                                [
-                                  'Receber',
-                                  'Entrega e continuidade operacional passam a fazer parte da jornada.',
-                                ],
-                                [
-                                  'Registrar',
-                                  'Uso real, contexto e experiência começam a virar prova.',
-                                ],
-                                [
-                                  'Reputação',
-                                  'O rastro amadurece e fortalece a central no ecossistema.',
-                                ],
-                              ].map(([title, desc]) => (
-                                <div
-                                  key={title}
-                                  className="rounded-2xl border border-white/10 bg-white/[0.03] p-4"
-                                >
-                                  <div className="text-sm font-semibold text-white/90">
-                                    {title}
-                                  </div>
-                                  <div className="mt-1 text-xs leading-5 text-white/64">
-                                    {desc}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-
-                          <div className="mt-6 border-t border-white/10 pt-6">
-                            <div className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/56">
-                              leitura pública
-                            </div>
-
-                            <div className="mt-3 flex flex-wrap gap-2">
-                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
-                                Central: {merchantLabel}
-                              </span>
-
-                              {handle ? (
-                                <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
-                                  Rastro público: {handle}
-                                </span>
-                              ) : null}
-
-                              {cat.tipo ? (
-                                <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/74">
-                                  Operação: {cat.tipo}
-                                </span>
-                              ) : null}
-                            </div>
-                          </div>
                         </div>
+
+                        <div className="mt-6 grid gap-3">
+                          <button
+                            onClick={buyNow}
+                            disabled={buying}
+                            className="rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-black hover:bg-white/90 disabled:opacity-60"
+                          >
+                            {buying ? 'Iniciando…' : 'Iniciar compra'}
+                          </button>
+
+                          {p.merchantHandle && p.productHandle ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const url = `${window.location.origin}/shop/@${p.merchantHandle}/p/@${p.productHandle}`;
+                                navigator.clipboard.writeText(url);
+                              }}
+                              className="rounded-2xl border border-white/15 bg-white/8 px-4 py-3 text-sm font-semibold text-white/84 hover:bg-white/12"
+                            >
+                              Copiar link da peça
+                            </button>
+                          ) : null}
+                        </div>
+
+                        {createdOrderId ? (
+                          <div className="mt-4 rounded-2xl border border-white/10 bg-black/40 p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                              <div className="text-sm text-white/82">
+                                ✅ Pedido criado:{' '}
+                                <span className="font-semibold">{createdOrderId}</span>
+                              </div>
+
+                              {!paidOrderId ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (!createdOrderId) return;
+                                    router.push(
+                                      `/dash/consumer/orders/${encodeURIComponent(createdOrderId)}`,
+                                    );
+                                  }}
+                                  disabled={!createdOrderId}
+                                  className="rounded-xl bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-60"
+                                >
+                                  Ir para pagamento →
+                                </button>
+                              ) : (
+                                <Link
+                                  href={`/dash/consumer/orders/${encodeURIComponent(
+                                    paidOrderId,
+                                  )}`}
+                                  className="rounded-xl border border-white/15 bg-white/5 px-4 py-2 text-sm font-semibold text-white hover:bg-white/10"
+                                >
+                                  Ver pedido →
+                                </Link>
+                              )}
+                            </div>
+                          </div>
+                        ) : null}
+
                       </aside>
                     </div>
                   </>
                 );
               })()}
+            </section>
+
+            {/* ===========================
+               OPERAÇÃO DA PEÇA
+               =========================== */}
+            <section className="mt-6 rounded-[28px] border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur xl:p-5">
+              {(() => {
+                const clean = stripMartoBlocks(p.description ?? '');
+                const cat = extractCatalog(p.description ?? '');
+                const tech = extractTech(p.description ?? '');
+
+                const merchantLabel =
+                  String(p.merchantTradeName ?? '').trim() || 'Central Marto';
+
+                const hasDimensions =
+                  String(tech.l).trim() &&
+                  String(tech.w).trim() &&
+                  String(tech.h).trim();
+
+                const dims = hasDimensions
+                  ? `${String(tech.l).trim()} × ${String(tech.w).trim()} × ${String(tech.h).trim()} cm`
+                  : '';
+
+                return (
+                  <>
+                    <div className="flex flex-wrap items-baseline justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-white/88">
+                          Operação da peça
+                        </div>
+                        <div className="mt-1 text-sm text-white/70">
+                          Frete, origem, preparo e rastro técnico reunidos numa
+                          leitura só.
+                        </div>
+                      </div>
+
+                      <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/70">
+                        peça conectada ao ecossistema
+                      </span>
+                    </div>
+
+                    <div className="mt-4 grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
+                      <div>
+                        <ShippingEstimator description={p.description ?? null} />
+                      </div>
+
+                      <div className="grid gap-4">
+                        <div className="grid gap-3 sm:grid-cols-3">
+                          <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                              Origem
+                            </div>
+                            <div className="mt-2 text-sm font-semibold text-white/88">
+                              {merchantLabel}
+                            </div>
+                            <div className="mt-2 text-xs leading-5 text-white/60">
+                              Central viva no Marto com jornada pública da peça.
+                            </div>
+                          </div>
+
+                          <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                              Operação
+                            </div>
+                            <div className="mt-2 text-sm font-semibold text-white/88">
+                              {cat.tipo || 'não informada'}
+                            </div>
+                            <div className="mt-2 text-xs leading-5 text-white/60">
+                              Inventário: {cat.inventario || 'em definição'} •
+                              preparo:{' '}
+                              {cat.preparoDias
+                                ? `${cat.preparoDias} dias`
+                                : 'não publicado'}
+                            </div>
+                          </div>
+
+                          <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
+                            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                              Rastro técnico
+                            </div>
+                            <div className="mt-2 text-sm font-semibold text-white/88">
+                              {String(tech.weightKg).trim()
+                                ? `${String(tech.weightKg).trim()} kg`
+                                : 'peso não publicado'}
+                            </div>
+                            <div className="mt-2 text-xs leading-5 text-white/60">
+                              {dims || 'dimensões não publicadas'}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                            Essência publicada
+                          </div>
+
+                          {clean ? (
+                            <div className="mt-3 line-clamp-6 whitespace-pre-wrap text-sm leading-6 text-white/76">
+                              {clean}
+                            </div>
+                          ) : (
+                            <div className="mt-3 text-sm text-white/65">
+                              Esta peça ainda não recebeu uma leitura pública
+                              mais completa.
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
+            </section>
+
+            {/* ===========================
+               CONFIANÇA NO ECOSSISTEMA
+               =========================== */}
+            <section className="mt-8 rounded-[28px] border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur xl:p-5">
+              <div className="flex flex-wrap items-baseline justify-between gap-3">
+                <div>
+                  <div className="text-sm font-semibold text-white/88">
+                    Confiança no ecossistema
+                  </div>
+                  <div className="mt-1 text-sm text-white/70">
+                    Prova verificada, sinais de impacto e experiências reais da
+                    peça.
+                  </div>
+                </div>
+
+                <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/70">
+                  reputação progressiva
+                </span>
+              </div>
+
+              <div className="mt-4">
+                <VerifiedSocialSummary productId={p.id} />
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
+                  <div className="text-xs font-semibold text-white/65">
+                    Experiências verificadas
+                  </div>
+                  <div className="mt-2 text-lg font-semibold text-white/90">
+                    {postsLoading ? '—' : String(posts.length)}
+                  </div>
+                  <div className="mt-1 text-xs text-white/55">
+                    Baseado nos posts ligados ao produto.
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
+                  <div className="text-xs font-semibold text-white/65">
+                    Entrega (MVP)
+                  </div>
+                  <div className="mt-2 text-lg font-semibold text-white/90">
+                    estimativa
+                  </div>
+                  <div className="mt-1 text-xs text-white/55">
+                    Cotação real entra na fase Transportadoras.
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
+                  <div className="text-xs font-semibold text-white/65">
+                    Reputação
+                  </div>
+                  <div className="mt-2 text-lg font-semibold text-white/90">
+                    progressiva
+                  </div>
+                  <div className="mt-1 text-xs text-white/55">
+                    O rastro vira confiança ao longo do ciclo.
+                  </div>
+                </div>
+              </div>
+
+              <div className="mt-5 rounded-2xl border border-white/10 bg-black/30 p-4">
+                <div className="flex items-baseline justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-semibold text-white/85">
+                      Experiências reais
+                    </div>
+                    <div className="mt-1 text-sm text-white/70">
+                      Posts ligados a compras reais dentro da jornada da peça.
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => loadPosts(p.id)}
+                    className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15"
+                  >
+                    Recarregar
+                  </button>
+                </div>
+
+                {postsLoading ? (
+                  <div className="mt-4 text-sm text-white/70">
+                    Carregando experiências…
+                  </div>
+                ) : postsErr ? (
+                  <div className="mt-4 text-sm text-white/75">{postsErr}</div>
+                ) : posts.length === 0 ? (
+                  <div className="mt-4 text-sm text-white/70">
+                    Ainda não há experiências verificadas para este produto.
+                  </div>
+                ) : (
+                  <div className="mt-4 grid gap-3 md:grid-cols-2">
+                    {posts.slice(0, 4).map((post) => {
+                      const rawMediaUrl =
+                        post.media?.[0]?.url != null
+                          ? String(post.media[0].url)
+                          : '';
+                      const media0 = toAbsoluteUrl(rawMediaUrl) ?? '';
+                      const mediaType = String(
+                        post.media?.[0]?.type ?? 'IMAGE',
+                      ).toUpperCase();
+
+                      return (
+                        <div
+                          key={post.id}
+                          className="rounded-2xl border border-white/15 bg-black/60 p-4"
+                        >
+                          <div className="text-xs text-white/65">
+                            verificado •{' '}
+                            {new Date(post.createdAt).toLocaleString('pt-BR')}
+                          </div>
+
+                          {media0 ? (
+                            <div className="mt-3 overflow-hidden rounded-xl border border-white/10 bg-white/5">
+                              {mediaType === 'VIDEO' ? (
+                                <video
+                                  controls
+                                  className="h-auto w-full"
+                                  src={media0}
+                                />
+                              ) : (
+                                <img
+                                  alt="Mídia do post"
+                                  className="h-auto w-full object-cover"
+                                  src={media0}
+                                />
+                              )}
+                            </div>
+                          ) : null}
+
+                          <div className="mt-3 whitespace-pre-wrap text-sm text-white/85">
+                            {post.caption || '(sem texto)'}
+                          </div>
+                        </div>
+                      );
+                    })}
+
+                    <div className="md:col-span-2">
+                      <Link
+                        href={`/shop/p/${encodeURIComponent(p.id)}/posts`}
+                        className="inline-flex items-center rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
+                      >
+                        Ver todos →
+                      </Link>
+                    </div>
+                  </div>
+                )}
+              </div>
             </section>
 
             <section className="mt-6 rounded-[28px] border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur xl:p-5">
@@ -1924,7 +2001,8 @@ export default function ShopProductPage({
                     Continuidade da central
                   </div>
                   <div className="mt-1 text-sm text-white/70">
-                    Outras peças publicadas dentro da mesma origem viva no Marto.
+                    Outras peças publicadas dentro da mesma origem viva no
+                    Marto.
                   </div>
                 </div>
 
@@ -1991,329 +2069,6 @@ export default function ShopProductPage({
                       </Link>
                     );
                   })}
-                </div>
-              )}
-            </section>
-
-            {/* ✅ Entrega (MVP) — seção própria (não infla o Hero) */}
-            <section className="mt-6">
-              <ShippingEstimator description={p.description ?? null} />
-            </section>
-
-            {/* ✅ Leitura da peça — seção própria (controle) */}
-            <section className="mt-6 rounded-2xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-              {(() => {
-                const clean = stripMartoBlocks(p.description ?? '');
-                const ident = extractIdentity(p.description ?? '');
-                const cat = extractCatalog(p.description ?? '');
-                const tech = extractTech(p.description ?? '');
-
-                const merchantLabel =
-                  String(p.merchantTradeName ?? '').trim() || 'Central Marto';
-                const publicHandle = ident.handle
-                  ? `@${String(ident.handle).trim()}`
-                  : '';
-
-                const hasDimensions =
-                  String(tech.l).trim() &&
-                  String(tech.w).trim() &&
-                  String(tech.h).trim();
-
-                const dims = hasDimensions
-                  ? `${String(tech.l).trim()} × ${String(tech.w).trim()} × ${String(tech.h).trim()} cm`
-                  : '';
-
-                return (
-                  <>
-                    <div className="flex flex-wrap items-baseline justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-semibold text-white/85">
-                          Leitura da peça
-                        </div>
-                        <div className="mt-1 text-sm text-white/70">
-                          Origem, operação e rastro técnico apresentados de forma
-                          mais viva dentro do Marto.
-                        </div>
-                      </div>
-
-                      <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/70">
-                        peça conectada ao ecossistema
-                      </span>
-                    </div>
-
-                    <div className="mt-4 grid gap-3 lg:grid-cols-3">
-                      <div className="rounded-2xl border border-white/10 bg-black/40 p-4">
-                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
-                          Origem desta peça
-                        </div>
-
-                        <div className="mt-3 text-sm font-semibold text-white/88">
-                          {merchantLabel}
-                        </div>
-
-                        <div className="mt-2 space-y-1 text-sm text-white/72">
-                          <div>
-                            Central ativa no Marto com jornada pública da peça.
-                          </div>
-                          {publicHandle ? (
-                            <div>
-                              Rastro público:{' '}
-                              <span className="font-semibold text-white/82">
-                                {publicHandle}
-                              </span>
-                            </div>
-                          ) : null}
-                          {p.merchantHandle ? (
-                            <div>
-                              Central pública:{' '}
-                              <span className="font-semibold text-white/82">
-                                @{p.merchantHandle}
-                              </span>
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl border border-white/10 bg-black/40 p-4">
-                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
-                          Leitura operacional
-                        </div>
-
-                        <div className="mt-3 space-y-2 text-sm text-white/72">
-                          <div>
-                            Operação:{' '}
-                            <span className="font-semibold text-white/82">
-                              {cat.tipo || 'não informada'}
-                            </span>
-                          </div>
-                          <div>
-                            Inventário:{' '}
-                            <span className="font-semibold text-white/82">
-                              {cat.inventario || 'em definição'}
-                            </span>
-                          </div>
-                          <div>
-                            Preparo:{' '}
-                            <span className="font-semibold text-white/82">
-                              {cat.preparoDias
-                                ? `${cat.preparoDias} dias`
-                                : 'sem prazo publicado'}
-                            </span>
-                          </div>
-                          <div>
-                            Lote ativo:{' '}
-                            <span className="font-semibold text-white/82">
-                              {cat.estoque || 'não informado'}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="rounded-2xl border border-white/10 bg-black/40 p-4">
-                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
-                          Rastro técnico
-                        </div>
-
-                        <div className="mt-3 space-y-2 text-sm text-white/72">
-                          <div>
-                            Peso:{' '}
-                            <span className="font-semibold text-white/82">
-                              {String(tech.weightKg).trim()
-                                ? `${String(tech.weightKg).trim()} kg`
-                                : 'não publicado'}
-                            </span>
-                          </div>
-                          <div>
-                            Dimensões:{' '}
-                            <span className="font-semibold text-white/82">
-                              {dims || 'não publicadas'}
-                            </span>
-                          </div>
-                          <div className="pt-1 text-xs leading-5 text-white/58">
-                            Esses sinais estruturam a continuidade da peça no
-                            frete, na experiência e na reputação do ecossistema.
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="mt-5 rounded-2xl border border-white/10 bg-black/30 p-4">
-                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
-                        Essência publicada
-                      </div>
-
-                      {clean ? (
-                        <div className="mt-3 whitespace-pre-wrap text-sm leading-6 text-white/76">
-                          {clean}
-                        </div>
-                      ) : (
-                        <div className="mt-3 text-sm text-white/65">
-                          Esta peça ainda não recebeu uma leitura pública mais
-                          completa.
-                        </div>
-                      )}
-                    </div>
-                  </>
-                );
-              })()}
-            </section>
-
-            {/* ===========================
-               VERIFIED SOCIAL (resumo)
-               =========================== */}
-            <section className="mt-8">
-              <VerifiedSocialSummary productId={p.id} />
-            </section>
-
-            {/* ===========================
-               IMPACT (discreto, sem hype)
-               =========================== */}
-            <section className="mt-8 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-              <div className="flex flex-wrap items-baseline justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-white/85">
-                    Impacto no ecossistema
-                  </div>
-                  <div className="mt-1 text-sm text-white/70">
-                    Recompensa é consequência do fluxo bem feito.
-                  </div>
-                </div>
-
-                <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/70">
-                  MVP • sem números finais ainda
-                </span>
-              </div>
-
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
-                  <div className="text-xs font-semibold text-white/65">
-                    Experiências verificadas
-                  </div>
-                  <div className="mt-2 text-lg font-semibold text-white/90">
-                    {postsLoading ? '—' : String(posts.length)}
-                  </div>
-                  <div className="mt-1 text-xs text-white/55">
-                    Baseado nos posts ligados ao produto.
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
-                  <div className="text-xs font-semibold text-white/65">
-                    Entrega (MVP)
-                  </div>
-                  <div className="mt-2 text-lg font-semibold text-white/90">
-                    estimativa
-                  </div>
-                  <div className="mt-1 text-xs text-white/55">
-                    Cotação real entra na fase Transportadoras.
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
-                  <div className="text-xs font-semibold text-white/65">
-                    Reputação
-                  </div>
-                  <div className="mt-2 text-lg font-semibold text-white/90">
-                    progressiva
-                  </div>
-                  <div className="mt-1 text-xs text-white/55">
-                    O rastro vira confiança ao longo do ciclo.
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {/* ===========================
-               EXPERIÊNCIAS REAIS (posts)
-               =========================== */}
-            <section className="mt-8 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-              <div className="flex items-baseline justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-white/85">
-                    Experiências reais
-                  </div>
-                  <div className="mt-1 text-sm text-white/70">
-                    Posts ligados a compras reais (verificados).
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => loadPosts(p.id)}
-                  className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15"
-                >
-                  Recarregar
-                </button>
-              </div>
-
-              {postsLoading ? (
-                <div className="mt-4 text-sm text-white/70">
-                  Carregando experiências…
-                </div>
-              ) : postsErr ? (
-                <div className="mt-4 text-sm text-white/75">{postsErr}</div>
-              ) : posts.length === 0 ? (
-                <div className="mt-4 text-sm text-white/70">
-                  Ainda não há experiências verificadas para este produto.
-                </div>
-              ) : (
-                <div className="mt-4 grid gap-3 md:grid-cols-2">
-                  {posts.slice(0, 4).map((post) => {
-                    const rawMediaUrl =
-                      post.media?.[0]?.url != null
-                        ? String(post.media[0].url)
-                        : '';
-                    const media0 = toAbsoluteUrl(rawMediaUrl) ?? '';
-                    const mediaType = String(
-                      post.media?.[0]?.type ?? 'IMAGE',
-                    ).toUpperCase();
-
-                    return (
-                      <div
-                        key={post.id}
-                        className="rounded-2xl border border-white/15 bg-black/60 p-4"
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div className="text-xs text-white/65">
-                            verificado •{' '}
-                            {new Date(post.createdAt).toLocaleString('pt-BR')}
-                          </div>
-                        </div>
-
-                        {media0 ? (
-                          <div className="mt-3 overflow-hidden rounded-xl border border-white/10 bg-white/5">
-                            {mediaType === 'VIDEO' ? (
-                              <video
-                                controls
-                                className="h-auto w-full"
-                                src={media0}
-                              />
-                            ) : (
-                              // eslint-disable-next-line @next/next/no-img-element
-                              <img
-                                alt="Mídia do post"
-                                className="h-auto w-full object-cover"
-                                src={media0}
-                              />
-                            )}
-                          </div>
-                        ) : null}
-
-                        <div className="mt-3 whitespace-pre-wrap text-sm text-white/85">
-                          {post.caption || '(sem texto)'}
-                        </div>
-                      </div>
-                    );
-                  })}
-
-                  <div className="md:col-span-2">
-                    <Link
-                      href={`/shop/p/${encodeURIComponent(p.id)}/posts`}
-                      className="inline-flex items-center rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
-                    >
-                      Ver todos →
-                    </Link>
-                  </div>
                 </div>
               )}
             </section>
