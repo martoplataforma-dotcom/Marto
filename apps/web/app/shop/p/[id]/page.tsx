@@ -10,6 +10,7 @@ import { ImageWithCaption } from './ImageWithCaption';
 type Product = {
   id: string;
   name: string;
+  title?: string | null;
   description?: string | null;
   price?: number; // legacy
   priceCents?: number | null;
@@ -23,6 +24,7 @@ type Product = {
   imageCaptions?: (string | null)[];
   imageInsights?: ProductImageInsight[] | null;
   productHandle?: string | null;
+  handle?: string | null;
   merchantHandle?: string | null;
   merchantTradeName?: string | null;
 };
@@ -528,35 +530,15 @@ function quickViewLabel(
 }
 
 function stripMartoBlocks(desc: string) {
-  const s = String(desc ?? '');
+  let out = String(desc ?? '');
 
-  const blocks = [
-    {
-      start: '---\n### Ficha técnica (Marto)\n',
-      end: '\n### /Ficha técnica (Marto)\n---',
-    },
-    {
-      start: '---\n### Identidade (Marto)\n',
-      end: '\n### /Identidade (Marto)\n---',
-    },
-    {
-      start: '---\n### Catálogo (Marto)\n',
-      end: '\n### /Catálogo (Marto)\n---',
-    },
-  ];
+  out = out.replace(
+    /---\s*\n### .*?\(Marto\)\n[\s\S]*?\n### \/.*?\n---/g,
+    '',
+  );
 
-  let out = s;
-
-  for (const b of blocks) {
-    const a = out.indexOf(b.start);
-    if (a === -1) continue;
-    const z = out.indexOf(b.end, a);
-    if (z === -1) {
-      out = out.slice(0, a).trim();
-      continue;
-    }
-    out = (out.slice(0, a) + out.slice(z + b.end.length)).trim();
-  }
+  out = out.replace(/^\s*---\s*$/gm, '');
+  out = out.replace(/\n{3,}/g, '\n\n');
 
   return out.trim();
 }
@@ -635,9 +617,16 @@ function moneyBRL(n: number) {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
-function ShippingEstimator({ description }: { description?: string | null }) {
+function ShippingEstimator({
+  description,
+  cep,
+  onCepChange,
+}: {
+  description?: string | null;
+  cep: string;
+  onCepChange: (value: string) => void;
+}) {
   const tech = extractTech(description ?? '');
-  const [cep, setCep] = useState(() => cepMask(readLocalCep()));
   const [loading, setLoading] = useState(false);
   const [where, setWhere] = useState<{ city?: string; uf?: string } | null>(
     null,
@@ -665,6 +654,7 @@ function ShippingEstimator({ description }: { description?: string | null }) {
     setLoading(true);
     try {
       saveLocalCep(cepMask(digits));
+      onCepChange(cepMask(digits));
 
       const resp = await fetch(`https://viacep.com.br/ws/${digits}/json/`);
       const json = (await resp.json()) as ViaCep;
@@ -699,90 +689,101 @@ function ShippingEstimator({ description }: { description?: string | null }) {
   }
 
   return (
-    <div className="mt-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-      <div className="flex items-start justify-between gap-3">
+    <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <div className="text-sm font-semibold text-white/90">
-            Meios de envio
-          </div>
-          <div className="mt-1 text-xs text-white/65">
-            Estimativa (MVP). Depois: cotação real por transportadoras no Marto.
+          <div className="text-sm font-semibold text-white/90">Meios de envio</div>
+          <div className="mt-1 text-xs text-white/60">
+            Estimativa inicial. A cotação real entra na fase de transportadoras.
           </div>
         </div>
 
         {hasWeight ? (
-          <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/80">
-            Peso: {String(tech.weightKg).trim()} kg
+          <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/78">
+            {String(tech.weightKg).trim()} kg
           </span>
         ) : (
           <span className="rounded-full border border-amber-400/25 bg-amber-400/10 px-3 py-1 text-[11px] font-semibold text-amber-100">
-            Falta ficha técnica
+            sem ficha técnica
           </span>
         )}
       </div>
 
-      <div className="mt-4 flex flex-wrap items-end gap-2">
-        <label className="grid flex-1 gap-2">
-          <span className="text-xs font-semibold text-white/65">Seu CEP</span>
+      <div className="mt-4 grid gap-3">
+        <label className="grid gap-2">
+          <span className="text-xs font-semibold text-white/62">Seu CEP</span>
           <input
             value={cep}
-            onChange={(e) => setCep(cepMask(e.target.value))}
+            onChange={(e) => onCepChange(cepMask(e.target.value))}
             className="rounded-xl border border-white/15 bg-black/80 px-4 py-3 text-sm text-white/90 outline-none placeholder:text-white/50 focus:border-white/30"
             placeholder="00000-000"
             inputMode="numeric"
           />
         </label>
 
-        <button
-          type="button"
-          onClick={calc}
-          disabled={loading}
-          className="rounded-xl bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15 disabled:opacity-60"
-        >
-          {loading ? 'Calculando…' : 'Calcular'}
-        </button>
+        <div className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={calc}
+            disabled={loading}
+            className="rounded-xl bg-white/10 px-4 py-3 text-sm font-semibold text-white hover:bg-white/15 disabled:opacity-60"
+          >
+            {loading ? 'Calculando…' : 'Calcular'}
+          </button>
 
-        <button
-          type="button"
-          onClick={() => window.open('https://viacep.com.br', '_blank')}
-          className="rounded-xl border border-white/15 bg-black/40 px-4 py-3 text-sm font-semibold text-white/80 hover:bg-black/55"
-        >
-          Não sei meu CEP
-        </button>
+          <button
+            type="button"
+            onClick={() => window.open('https://viacep.com.br', '_blank')}
+            className="rounded-xl border border-white/15 bg-black/40 px-4 py-3 text-sm font-semibold text-white/80 hover:bg-black/55"
+          >
+            Não sei meu CEP
+          </button>
+        </div>
       </div>
 
-      {where?.uf ? (
-        <div className="mt-3 text-xs text-white/70">
-          Entrega para{' '}
-          <span className="font-semibold text-white/85">{where.city}</span> •{' '}
-          <span className="font-semibold text-white/85">{where.uf}</span>
-        </div>
-      ) : null}
+      {where?.uf || err ? (
+        <div className="mt-3 flex flex-wrap items-center gap-3 text-xs text-white/66">
+          {where?.uf ? (
+            <span>
+              Entrega para{' '}
+              <span className="font-semibold text-white/84">
+                {where.city}
+              </span>{' '}
+              •{' '}
+              <span className="font-semibold text-white/84">
+                {where.uf}
+              </span>
+            </span>
+          ) : null}
 
-      {err ? (
-        <div className="mt-3 rounded-xl border border-white/10 bg-black/40 px-3 py-2 text-xs text-white/75">
-          {err}
+          {err ? (
+            <span className="rounded-full border border-white/10 bg-black/35 px-3 py-1 text-white/72">
+              {err}
+            </span>
+          ) : null}
         </div>
       ) : null}
 
       {result ? (
-        <div className="mt-4 rounded-xl border border-white/10 bg-black/40 p-4">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div className="text-sm font-semibold text-white/90">
-              Entrega padrão (MVP)
+        <div className="mt-4 rounded-xl border border-white/10 bg-black/35 px-4 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="text-sm font-semibold text-white/88">
+                Entrega padrão (MVP)
+              </div>
+              <div className="mt-1 text-xs text-white/60">
+                {result.days[0]}–{result.days[1]} dias úteis
+              </div>
             </div>
-            <div className="text-xs text-white/65">
-              {result.days[0]}–{result.days[1]} dias úteis
+
+            <div className="text-right">
+              <div className="text-sm font-semibold text-white/90">
+                {moneyBRL(result.min)} – {moneyBRL(result.max)}
+              </div>
+              <div className="mt-1 text-[11px] text-white/55">
+                valor final no checkout
+              </div>
             </div>
-          </div>
-
-          <div className="mt-2 text-sm text-white/80">
-            {moneyBRL(result.min)} – {moneyBRL(result.max)}
-          </div>
-
-          <div className="mt-2 text-[11px] text-white/55">
-            Estimativa baseada em região + peso (sem transportadora ainda). Valor
-            final no checkout.
           </div>
         </div>
       ) : null}
@@ -808,9 +809,18 @@ export default function ShopProductPage({
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
   const [p, setP] = useState<Product | null>(null);
+  const [essenceOpen, setEssenceOpen] = useState(false);
+  const [destinationZipCode, setDestinationZipCode] = useState(() =>
+    cepMask(readLocalCep()),
+  );
 
   const publicCatalog = useMemo(
     () => extractCatalog(p?.description ?? ''),
+    [p?.description],
+  );
+
+  const essenceText = useMemo(
+    () => stripMartoBlocks(p?.description ?? ''),
     [p?.description],
   );
 
@@ -1054,15 +1064,13 @@ export default function ShopProductPage({
     };
   }, [id]);
 
+  useEffect(() => {
+    setEssenceOpen(false);
+  }, [p?.id]);
+
   async function buyNow() {
     try {
       setBuying(true);
-      setCreatedOrderId(null);
-      setPaidOrderId(null);
-      setPaymentId(null);
-      setPayOpen(false);
-      setPayStatus('IDLE');
-      setPayMsg('');
       setErr(null);
 
       const token = getToken();
@@ -1072,92 +1080,29 @@ export default function ShopProductPage({
       }
       if (!p) return;
 
-      const payload = {
-        merchantId: p.merchantId,
-        items: [{ productId: p.id, qty: 1 }],
-      };
+      const zip = cepMask(destinationZipCode);
 
-      const res = await fetch(`http://localhost:3001/api/orders`, {
-        method: 'POST',
-        headers: {
-          'content-type': 'application/json',
-          authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const text = await res.text().catch(() => '');
-      let data: CreateOrderResponse = null;
-
-      try {
-        data = text ? (JSON.parse(text) as unknown) : null;
-      } catch {
-        data = text; // pode ser texto puro
-      }
-
-      console.log(
-        'CREATE ORDER status=',
-        res.status,
-        'payload=',
-        payload,
-        'response=',
-        data,
-      );
-
-      // Se o backend devolveu erro HTTP, mostra o conteúdo real
-      if (!res.ok) {
-        const msg = extractErrorMessage(data, `HTTP ${res.status}`);
-        throw new Error(String(msg));
-      }
-
-      // ✅ Aceitar formatos comuns de resposta:
-
-      // 1) { ok: true, order: { id } }
-      if (
-        data &&
-        typeof data === 'object' &&
-        data !== null &&
-        'ok' in data &&
-        (data as Record<string, unknown>).ok === true &&
-        'order' in data &&
-        typeof (data as Record<string, unknown>).order === 'object' &&
-        (data as Record<string, unknown>).order !== null &&
-        'id' in
-          ((data as Record<string, unknown>).order as Record<string, unknown>)
-      ) {
-        setCreatedOrderId(
-          String(
-            (
-              (data as Record<string, unknown>).order as Record<string, unknown>
-            ).id,
-          ),
-        );
+      if (onlyDigits(zip).length !== 8) {
+        setErr('Informe o CEP antes de iniciar a compra.');
         return;
       }
 
-      // 2) { id: "...", status: "..." }
-      if (data && typeof data === 'object' && data !== null && 'id' in data) {
-        setCreatedOrderId(String((data as Record<string, unknown>).id));
-        return;
-      }
+      const cents =
+        typeof p.priceCents === 'number'
+          ? p.priceCents
+          : typeof p.price === 'number'
+            ? p.price
+            : 0;
 
-      // 3) { orderId: "..." }
-      if (
-        data &&
-        typeof data === 'object' &&
-        data !== null &&
-        'orderId' in data
-      ) {
-        setCreatedOrderId(String((data as Record<string, unknown>).orderId));
-        return;
-      }
-
-      // Se chegou aqui, a resposta foi “ok” mas num formato inesperado
-      throw new Error(
-        'Pedido não criado: formato de resposta inesperado (veja console.log).',
+      router.push(
+        `/checkout/pay?productId=${encodeURIComponent(p.id)}` +
+          `&merchantId=${encodeURIComponent(p.merchantId)}` +
+          `&unitPrice=${encodeURIComponent(String(cents))}` +
+          `&qty=1` +
+          `&destinationZipCode=${encodeURIComponent(zip)}`,
       );
     } catch (e) {
-      setErr(e instanceof Error ? e.message : 'Erro ao comprar');
+      setErr(e instanceof Error ? e.message : 'Erro ao iniciar compra');
     } finally {
       setBuying(false);
     }
@@ -1211,30 +1156,25 @@ export default function ShopProductPage({
         <div className="absolute inset-0 opacity-[0.14] [background-image:linear-gradient(to_right,rgba(255,255,255,0.06)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.06)_1px,transparent_1px)] [background-size:60px_60px]" />
       </div>
 
-      <div className="relative mx-auto max-w-6xl p-6">
-        <header className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+      <div className="relative mx-auto max-w-[1440px] px-6 py-6 xl:px-8">
+        <header className="mb-5 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <div className="min-w-0">
-            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-white/60">
-              <Link href="/catalog" className="hover:text-white/80">
+            <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-white/56">
+              <Link href="/catalog" className="hover:text-white/78">
                 Catálogo Marto
               </Link>
-              <span className="text-white/35">/</span>
-              <span className="text-white/70">Peça ativa</span>
+              <span className="text-white/30">/</span>
+              <span className="text-white/68">Peça ativa</span>
               {p?.name ? (
                 <>
-                  <span className="text-white/35">/</span>
-                  <span className="truncate text-white/80">{p.name}</span>
+                  <span className="text-white/30">/</span>
+                  <span className="truncate text-white/72">{p.name}</span>
                 </>
               ) : null}
             </div>
 
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white/95">
-              {p?.name ?? 'Produto'}
-            </h1>
-
-            <p className="mt-2 max-w-2xl text-sm leading-6 text-white/72">
-              Peça ativa no ecossistema Marto. Origem, compra, continuidade e
-              reputação conectadas no mesmo fluxo.
+            <p className="mt-2 text-sm leading-6 text-white/66">
+              Origem clara, compra pronta e continuidade viva dentro do Marto.
             </p>
           </div>
 
@@ -1248,9 +1188,15 @@ export default function ShopProductPage({
           </div>
         </header>
 
+        {err ? (
+          <div className="mb-4 rounded-2xl border border-red-400/20 bg-red-400/10 px-4 py-3 text-sm text-red-100">
+            {err}
+          </div>
+        ) : null}
+
         {loading ? (
           <p className="text-sm text-white/70">Carregando...</p>
-        ) : err ? null : !p ? (
+        ) : !p ? (
           <p className="text-sm text-white/70">Produto não encontrado.</p>
         ) : (
           <>
@@ -1318,7 +1264,7 @@ export default function ShopProductPage({
 
                 return (
                   <>
-                    <div className="grid gap-4 p-4 xl:grid-cols-[92px_minmax(0,1fr)_420px] xl:p-5">
+                    <div className="grid gap-5 p-5 xl:grid-cols-[96px_minmax(0,1fr)_460px] xl:p-6">
                       {/* miniaturas */}
                       <div className="order-2 xl:order-1">
                         {imagesWithOverview.length > 1 ? (
@@ -1351,9 +1297,9 @@ export default function ShopProductPage({
 
                       {/* palco da peça */}
                       <div className="order-1 flex flex-col gap-4 xl:order-2">
-                        <div className="relative overflow-hidden rounded-[28px] border border-white/12 bg-black/50">
+                        <div className="relative overflow-hidden rounded-[30px] border border-white/12 bg-black/50">
                           {!current ? (
-                            <div className="grid min-h-[560px] place-items-center bg-white/5 text-sm font-semibold text-white/60 xl:min-h-[640px]">
+                            <div className="grid min-h-[620px] place-items-center bg-white/5 text-sm font-semibold text-white/60 xl:min-h-[720px]">
                               Sem foto
                             </div>
                           ) : (
@@ -1735,7 +1681,6 @@ export default function ShopProductPage({
                =========================== */}
             <section className="mt-6 rounded-[28px] border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur xl:p-5">
               {(() => {
-                const clean = stripMartoBlocks(p.description ?? '');
                 const cat = extractCatalog(p.description ?? '');
                 const tech = extractTech(p.description ?? '');
 
@@ -1758,64 +1703,62 @@ export default function ShopProductPage({
                         <div className="text-sm font-semibold text-white/88">
                           Operação da peça
                         </div>
-                        <div className="mt-1 text-sm text-white/70">
-                          Frete, origem, preparo e rastro técnico reunidos numa
-                          leitura só.
+                        <div className="mt-1 text-sm text-white/66">
+                          O que importa para decidir com clareza: envio,
+                          origem, preparo e medidas principais.
                         </div>
                       </div>
-
-                      <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/70">
-                        peça conectada ao ecossistema
-                      </span>
                     </div>
 
                     <div className="mt-4 grid gap-4 xl:grid-cols-[360px_minmax(0,1fr)]">
                       <div>
-                        <ShippingEstimator description={p.description ?? null} />
+                        <ShippingEstimator
+                          description={p.description ?? null}
+                          cep={destinationZipCode}
+                          onCepChange={setDestinationZipCode}
+                        />
                       </div>
 
                       <div className="grid gap-4">
-                        <div className="grid gap-3 sm:grid-cols-3">
-                          <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
-                            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
-                              Origem
-                            </div>
-                            <div className="mt-2 text-sm font-semibold text-white/88">
-                              {merchantLabel}
-                            </div>
-                            <div className="mt-2 text-xs leading-5 text-white/60">
-                              Central viva no Marto com jornada pública da peça.
-                            </div>
+                        <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                            Sinais da operação
                           </div>
 
-                          <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
-                            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
-                              Operação
-                            </div>
-                            <div className="mt-2 text-sm font-semibold text-white/88">
-                              {cat.tipo || 'não informada'}
-                            </div>
-                            <div className="mt-2 text-xs leading-5 text-white/60">
-                              Inventário: {cat.inventario || 'em definição'} •
-                              preparo:{' '}
-                              {cat.preparoDias
-                                ? `${cat.preparoDias} dias`
-                                : 'não publicado'}
-                            </div>
-                          </div>
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                              origem {merchantLabel}
+                            </span>
 
-                          <div className="rounded-2xl border border-white/10 bg-black/35 p-4">
-                            <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
-                              Rastro técnico
-                            </div>
-                            <div className="mt-2 text-sm font-semibold text-white/88">
-                              {String(tech.weightKg).trim()
-                                ? `${String(tech.weightKg).trim()} kg`
-                                : 'peso não publicado'}
-                            </div>
-                            <div className="mt-2 text-xs leading-5 text-white/60">
-                              {dims || 'dimensões não publicadas'}
-                            </div>
+                            {cat.tipo ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                                {cat.tipo}
+                              </span>
+                            ) : null}
+
+                            {cat.inventario ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                                {cat.inventario}
+                              </span>
+                            ) : null}
+
+                            {cat.preparoDias ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                                preparo {cat.preparoDias} dias
+                              </span>
+                            ) : null}
+
+                            {String(tech.weightKg).trim() ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                                {String(tech.weightKg).trim()} kg
+                              </span>
+                            ) : null}
+
+                            {dims ? (
+                              <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                                {dims}
+                              </span>
+                            ) : null}
                           </div>
                         </div>
 
@@ -1824,14 +1767,27 @@ export default function ShopProductPage({
                             Essência publicada
                           </div>
 
-                          {clean ? (
-                            <div className="mt-3 line-clamp-6 whitespace-pre-wrap text-sm leading-6 text-white/76">
-                              {clean}
-                            </div>
+                          {essenceText ? (
+                            <>
+                              <div className="mt-3 line-clamp-4 whitespace-pre-wrap text-sm leading-7 text-white/74">
+                                {essenceText}
+                              </div>
+
+                              {essenceText.length > 260 ? (
+                                <div className="mt-4">
+                                  <button
+                                    type="button"
+                                    onClick={() => setEssenceOpen(true)}
+                                    className="rounded-xl border border-white/15 bg-white/8 px-3 py-2 text-xs font-semibold text-white/82 hover:bg-white/12"
+                                  >
+                                    Abrir leitura completa
+                                  </button>
+                                </div>
+                              ) : null}
+                            </>
                           ) : (
                             <div className="mt-3 text-sm text-white/65">
-                              Esta peça ainda não recebeu uma leitura pública
-                              mais completa.
+                              Esta peça ainda não recebeu uma leitura pública mais completa.
                             </div>
                           )}
                         </div>
@@ -1843,155 +1799,232 @@ export default function ShopProductPage({
             </section>
 
             {/* ===========================
-               CONFIANÇA NO ECOSSISTEMA
+               PROVA REAL DA PEÇA
                =========================== */}
             <section className="mt-8 rounded-[28px] border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur xl:p-5">
-              <div className="flex flex-wrap items-baseline justify-between gap-3">
-                <div>
-                  <div className="text-sm font-semibold text-white/88">
-                    Confiança no ecossistema
-                  </div>
-                  <div className="mt-1 text-sm text-white/70">
-                    Prova verificada, sinais de impacto e experiências reais da
-                    peça.
-                  </div>
-                </div>
+              {(() => {
+                const proofMerchantLabel =
+                  String(p.merchantTradeName ?? '').trim() || 'Central Marto';
 
-                <span className="rounded-full border border-white/15 bg-white/5 px-3 py-1 text-[11px] font-semibold text-white/70">
-                  reputação progressiva
-                </span>
-              </div>
+                const hasProofPosts = posts.length > 0;
+                const featuredPost = hasProofPosts ? posts[0] : null;
 
-              <div className="mt-4">
-                <VerifiedSocialSummary productId={p.id} />
-              </div>
+                const featuredRawMediaUrl =
+                  featuredPost?.media?.[0]?.url != null
+                    ? String(featuredPost.media[0].url)
+                    : '';
+                const featuredMedia = toAbsoluteUrl(featuredRawMediaUrl) ?? '';
+                const featuredMediaType = String(
+                  featuredPost?.media?.[0]?.type ?? 'IMAGE',
+                ).toUpperCase();
 
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
-                  <div className="text-xs font-semibold text-white/65">
-                    Experiências verificadas
-                  </div>
-                  <div className="mt-2 text-lg font-semibold text-white/90">
-                    {postsLoading ? '—' : String(posts.length)}
-                  </div>
-                  <div className="mt-1 text-xs text-white/55">
-                    Baseado nos posts ligados ao produto.
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
-                  <div className="text-xs font-semibold text-white/65">
-                    Entrega (MVP)
-                  </div>
-                  <div className="mt-2 text-lg font-semibold text-white/90">
-                    estimativa
-                  </div>
-                  <div className="mt-1 text-xs text-white/55">
-                    Cotação real entra na fase Transportadoras.
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-white/10 bg-black/40 p-4">
-                  <div className="text-xs font-semibold text-white/65">
-                    Reputação
-                  </div>
-                  <div className="mt-2 text-lg font-semibold text-white/90">
-                    progressiva
-                  </div>
-                  <div className="mt-1 text-xs text-white/55">
-                    O rastro vira confiança ao longo do ciclo.
-                  </div>
-                </div>
-              </div>
-
-              <div className="mt-5 rounded-2xl border border-white/10 bg-black/30 p-4">
-                <div className="flex items-baseline justify-between gap-3">
-                  <div>
-                    <div className="text-sm font-semibold text-white/85">
-                      Experiências reais
-                    </div>
-                    <div className="mt-1 text-sm text-white/70">
-                      Posts ligados a compras reais dentro da jornada da peça.
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => loadPosts(p.id)}
-                    className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15"
-                  >
-                    Recarregar
-                  </button>
-                </div>
-
-                {postsLoading ? (
-                  <div className="mt-4 text-sm text-white/70">
-                    Carregando experiências…
-                  </div>
-                ) : postsErr ? (
-                  <div className="mt-4 text-sm text-white/75">{postsErr}</div>
-                ) : posts.length === 0 ? (
-                  <div className="mt-4 text-sm text-white/70">
-                    Ainda não há experiências verificadas para este produto.
-                  </div>
-                ) : (
-                  <div className="mt-4 grid gap-3 md:grid-cols-2">
-                    {posts.slice(0, 4).map((post) => {
-                      const rawMediaUrl =
-                        post.media?.[0]?.url != null
-                          ? String(post.media[0].url)
-                          : '';
-                      const media0 = toAbsoluteUrl(rawMediaUrl) ?? '';
-                      const mediaType = String(
-                        post.media?.[0]?.type ?? 'IMAGE',
-                      ).toUpperCase();
-
-                      return (
-                        <div
-                          key={post.id}
-                          className="rounded-2xl border border-white/15 bg-black/60 p-4"
-                        >
-                          <div className="text-xs text-white/65">
-                            verificado •{' '}
-                            {new Date(post.createdAt).toLocaleString('pt-BR')}
+                if (!postsLoading && !postsErr && !hasProofPosts) {
+                  return (
+                    <>
+                      <div className="flex flex-wrap items-baseline justify-between gap-3">
+                        <div>
+                          <div className="text-sm font-semibold text-white/88">
+                            Reputação desta peça
                           </div>
-
-                          {media0 ? (
-                            <div className="mt-3 overflow-hidden rounded-xl border border-white/10 bg-white/5">
-                              {mediaType === 'VIDEO' ? (
-                                <video
-                                  controls
-                                  className="h-auto w-full"
-                                  src={media0}
-                                />
-                              ) : (
-                                <img
-                                  alt="Mídia do post"
-                                  className="h-auto w-full object-cover"
-                                  src={media0}
-                                />
-                              )}
-                            </div>
-                          ) : null}
-
-                          <div className="mt-3 whitespace-pre-wrap text-sm text-white/85">
-                            {post.caption || '(sem texto)'}
+                          <div className="mt-1 text-sm text-white/68">
+                            A peça já está pronta no Marto. A primeira compra
+                            real é o que liga a reputação viva.
                           </div>
                         </div>
-                      );
-                    })}
+                      </div>
 
-                    <div className="md:col-span-2">
-                      <Link
-                        href={`/shop/p/${encodeURIComponent(p.id)}/posts`}
-                        className="inline-flex items-center rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
-                      >
-                        Ver todos →
-                      </Link>
+                      <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1fr)_260px] xl:items-start">
+                        <div className="self-start rounded-2xl border border-white/10 bg-black/30 p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                            Primeiro rastro desta peça
+                          </div>
+
+                          <div className="mt-2 text-sm font-semibold text-white/88">
+                            A peça está pronta para gerar sua primeira prova real
+                          </div>
+
+                          <div className="mt-3 flex flex-wrap gap-2">
+                            <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                              origem {proofMerchantLabel}
+                            </span>
+                            <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                              compra pronta
+                            </span>
+                            <span className="rounded-full border border-white/15 bg-white/8 px-3 py-1 text-[11px] font-semibold text-white/80">
+                              aguardando primeira experiência
+                            </span>
+                          </div>
+
+                          <div className="mt-3 text-sm leading-6 text-white/66">
+                            Quando a primeira compra concluída entrar no fluxo
+                            do Marto, esta área muda de estado e começa a
+                            mostrar reputação viva da peça.
+                          </div>
+                        </div>
+
+                        <div className="self-start">
+                          <VerifiedSocialSummary productId={p.id} />
+                        </div>
+                      </div>
+                    </>
+                  );
+                }
+
+                return (
+                  <>
+                    <div className="flex flex-wrap items-baseline justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold text-white/88">
+                          Prova real da peça
+                        </div>
+                        <div className="mt-1 text-sm text-white/70">
+                          O que já foi validado pela origem, pela publicação e
+                          pelas experiências reais no Marto.
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                )}
-              </div>
+
+                    <div className="mt-4 grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_320px]">
+                      <div className="grid gap-4">
+                        <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                          <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                            Resumo verificado
+                          </div>
+
+                          <div className="mt-3">
+                            <VerifiedSocialSummary productId={p.id} />
+                          </div>
+                        </div>
+
+                        <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                          <div className="flex items-baseline justify-between gap-3">
+                            <div>
+                              <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                                Experiência em destaque
+                              </div>
+                              <div className="mt-1 text-sm text-white/66">
+                                Uma prova viva da peça quando já existe conteúdo
+                                real publicado.
+                              </div>
+                            </div>
+
+                            <button
+                              type="button"
+                              onClick={() => loadPosts(p.id)}
+                              className="rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-xs font-semibold text-white hover:bg-white/15"
+                            >
+                              Recarregar
+                            </button>
+                          </div>
+
+                          {postsLoading ? (
+                            <div className="mt-4 text-sm text-white/70">
+                              Carregando prova real…
+                            </div>
+                          ) : postsErr ? (
+                            <div className="mt-4 rounded-xl border border-white/10 bg-black/35 px-3 py-3 text-sm text-white/75">
+                              {postsErr}
+                            </div>
+                          ) : !featuredPost ? (
+                            <div className="mt-4 rounded-xl border border-white/10 bg-black/35 p-4">
+                              <div className="text-sm font-semibold text-white/86">
+                                Ainda sem experiência publicada
+                              </div>
+                              <div className="mt-2 text-sm leading-6 text-white/66">
+                                Esta peça ainda não recebeu uma prova social
+                                mais forte dentro do Marto.
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="mt-4 overflow-hidden rounded-[24px] border border-white/10 bg-black/35">
+                              {featuredMedia ? (
+                                <div className="overflow-hidden border-b border-white/10 bg-white/5">
+                                  {featuredMediaType === 'VIDEO' ? (
+                                    <video controls className="h-auto w-full" src={featuredMedia} />
+                                  ) : (
+                                    <img
+                                      alt="Experiência real do produto"
+                                      className="h-auto w-full object-cover"
+                                      src={featuredMedia}
+                                    />
+                                  )}
+                                </div>
+                              ) : null}
+
+                              <div className="p-4">
+                                <div className="text-xs text-white/58">
+                                  verificado •{' '}
+                                  {new Date(featuredPost.createdAt).toLocaleString('pt-BR')}
+                                </div>
+
+                                <div className="mt-3 line-clamp-5 whitespace-pre-wrap text-sm leading-6 text-white/82">
+                                  {featuredPost.caption || '(sem texto)'}
+                                </div>
+
+                                <div className="mt-4">
+                                  <Link
+                                    href={`/shop/p/${encodeURIComponent(p.id)}/posts`}
+                                    className="inline-flex items-center rounded-xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
+                                  >
+                                    Ver todas as experiências →
+                                  </Link>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl border border-white/10 bg-black/30 p-4">
+                        <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/55">
+                          O que já foi provado
+                        </div>
+
+                        <div className="mt-4 grid gap-3">
+                          <div className="rounded-xl border border-white/10 bg-black/35 p-4">
+                            <div className="text-xs font-semibold text-white/60">
+                              Origem visível
+                            </div>
+                            <div className="mt-2 text-sm font-semibold text-white/88">
+                              {proofMerchantLabel}
+                            </div>
+                            <div className="mt-1 text-xs leading-5 text-white/58">
+                              Peça publicada por uma central ativa dentro do
+                              ecossistema.
+                            </div>
+                          </div>
+
+                          <div className="rounded-xl border border-white/10 bg-black/35 p-4">
+                            <div className="text-xs font-semibold text-white/60">
+                              Compra pronta
+                            </div>
+                            <div className="mt-2 text-sm font-semibold text-white/88">
+                              Pedido pode começar agora
+                            </div>
+                            <div className="mt-1 text-xs leading-5 text-white/58">
+                              A decisão principal já está montada na hero com
+                              peça, preço e versão ativa.
+                            </div>
+                          </div>
+
+                          <div className="rounded-xl border border-white/10 bg-black/35 p-4">
+                            <div className="text-xs font-semibold text-white/60">
+                              Reputação em construção
+                            </div>
+                            <div className="mt-2 text-sm font-semibold text-white/88">
+                              O próximo rastro vem da experiência real
+                            </div>
+                            <div className="mt-1 text-xs leading-5 text-white/58">
+                              O Marto faz a prova crescer quando a peça entra no
+                              fluxo de compra, serviço e avaliação.
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                );
+              })()}
             </section>
 
             <section className="mt-6 rounded-[28px] border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur xl:p-5">
@@ -2001,8 +2034,8 @@ export default function ShopProductPage({
                     Continuidade da central
                   </div>
                   <div className="mt-1 text-sm text-white/70">
-                    Outras peças publicadas dentro da mesma origem viva no
-                    Marto.
+                    Outras peças da mesma central, prontas para continuar a
+                    descoberta dentro do Marto.
                   </div>
                 </div>
 
@@ -2025,7 +2058,7 @@ export default function ShopProductPage({
                   Esta central ainda não publicou outras peças por enquanto.
                 </div>
               ) : (
-                <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
                   {more.map((it) => {
                     const img = toAbsoluteUrl(coverFromImages(it.images ?? []));
                     const cents =
@@ -2039,31 +2072,47 @@ export default function ShopProductPage({
                       style: 'currency',
                       currency: 'BRL',
                     });
+                    const moreName =
+                      String(it.name ?? '').trim() ||
+                      String(it.title ?? '').trim() ||
+                      String(it.productHandle ?? '').trim() ||
+                      String(it.handle ?? '').trim() ||
+                      'Peça da central';
 
                     return (
                       <Link
                         key={it.id}
                         href={`/shop/p/${encodeURIComponent(it.id)}`}
-                        className="group overflow-hidden rounded-2xl border border-white/15 bg-black/35 hover:bg-black/50"
+                        className="group overflow-hidden rounded-[24px] border border-white/15 bg-black/35 transition hover:border-white/25 hover:bg-black/45"
                       >
-                        <div className="aspect-[4/3] w-full bg-white/5">
+                        <div className="relative aspect-[4/3] w-full overflow-hidden bg-white/5">
                           {img ? (
                             <img
                               src={img}
-                              alt={it.name}
-                              className="h-full w-full object-cover"
+                              alt={moreName}
+                              className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
                               loading="lazy"
                             />
                           ) : null}
-                        </div>
 
-                        <div className="p-3">
-                          <div className="line-clamp-2 text-sm font-semibold text-white/86">
-                            {it.name}
-                          </div>
-                          <div className="mt-1 text-xs text-white/65">{priceBRL}</div>
-                          <div className="mt-2 text-[11px] text-white/52">
-                            continuidade ativa • central
+                          <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(to_top,rgba(0,0,0,0.78)_0%,rgba(0,0,0,0.22)_42%,rgba(0,0,0,0.03)_100%)] transition duration-300 group-hover:bg-[linear-gradient(to_top,rgba(0,0,0,0.88)_0%,rgba(0,0,0,0.34)_46%,rgba(0,0,0,0.06)_100%)]" />
+
+                          <div className="absolute inset-x-0 bottom-0 p-3">
+                            <div className="translate-y-1 transition duration-300 group-hover:translate-y-0">
+                              <div className="line-clamp-2 text-[13px] font-semibold leading-5 text-white/96 transition duration-300 group-hover:text-white">
+                                {moreName}
+                              </div>
+                            </div>
+
+                            <div className="mt-2 flex items-center justify-between gap-3">
+                              <div className="text-xs font-semibold text-white/84">
+                                {priceBRL}
+                              </div>
+
+                              <span className="rounded-full border border-white/15 bg-white/10 px-2.5 py-1 text-[10px] font-semibold text-white/76 opacity-0 transition duration-300 group-hover:opacity-100">
+                                abrir peça
+                              </span>
+                            </div>
                           </div>
                         </div>
                       </Link>
@@ -2072,6 +2121,44 @@ export default function ShopProductPage({
                 </div>
               )}
             </section>
+
+            {essenceOpen ? (
+              <div className="fixed inset-0 z-40" role="dialog" aria-modal="true" aria-label="Leitura completa da peça">
+                <button
+                  type="button"
+                  onClick={() => setEssenceOpen(false)}
+                  className="absolute inset-0 bg-black/70"
+                  aria-label="Fechar leitura completa"
+                />
+
+                <div className="absolute left-1/2 top-1/2 w-[min(860px,calc(100vw-32px))] -translate-x-1/2 -translate-y-1/2 rounded-[28px] border border-white/15 bg-neutral-950/95 shadow-[0_20px_80px_rgba(0,0,0,0.45)] backdrop-blur">
+                  <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
+                    <div>
+                      <div className="text-[11px] font-semibold uppercase tracking-[0.18em] text-white/52">
+                        Essência da peça
+                      </div>
+                      <div className="mt-1 text-lg font-semibold text-white/92">
+                        Leitura completa
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => setEssenceOpen(false)}
+                      className="rounded-full border border-white/15 bg-white/8 px-3 py-1.5 text-xs font-semibold text-white/80 hover:bg-white/12"
+                    >
+                      Fechar
+                    </button>
+                  </div>
+
+                  <div className="max-h-[70vh] overflow-y-auto px-5 py-5">
+                    <div className="whitespace-pre-wrap text-sm leading-7 text-white/78">
+                      {essenceText}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
 
             {payOpen ? (
               <div

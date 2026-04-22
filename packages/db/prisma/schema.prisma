@@ -40,7 +40,37 @@ model Transporter {
   updatedAt         DateTime        @updatedAt
   serviceProviderId String          @unique
   shipments         Shipment[]
+  rateTables        TransporterRateTable[]
   serviceProvider   ServiceProvider @relation(fields: [serviceProviderId], references: [id], onDelete: Cascade)
+}
+
+model TransporterRateTable {
+  id                  String        @id @default(uuid())
+  transporterId       String
+  active              Boolean       @default(true)
+
+  originCepStart      String
+  originCepEnd        String
+  destinationCepStart String
+  destinationCepEnd   String
+
+  shippingClass       ShippingClass
+  weightMinKg         Decimal       @db.Decimal(10, 3)
+  weightMaxKg         Decimal       @db.Decimal(10, 3)
+
+  priceCents          Int
+  daysMin             Int
+  daysMax             Int
+
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @updatedAt
+
+  transporter         Transporter   @relation(fields: [transporterId], references: [id], onDelete: Cascade)
+
+  @@index([transporterId, active])
+  @@index([originCepStart, originCepEnd])
+  @@index([destinationCepStart, destinationCepEnd])
+  @@index([shippingClass])
 }
 
 model Shipment {
@@ -52,6 +82,8 @@ model Shipment {
   estimatedDays Int?
   createdAt     DateTime           @default(now())
   updatedAt     DateTime           @updatedAt
+
+  order         Order              @relation(fields: [orderId], references: [id], onDelete: Cascade)
   proofs        DeliveryProof[]
   review        LogisticsReview?
   transporter   Transporter?       @relation(fields: [transporterId], references: [id])
@@ -349,6 +381,7 @@ model Order {
 
   events OrderEvent[]
   items  OrderItem[]
+  shipments       Shipment[]
   serviceRequests ServiceRequest[]
   serviceReviews ServiceReview[]
 
@@ -858,6 +891,13 @@ enum ShipmentStatus {
   DELIVERED
   FAILED
   CANCELLED
+}
+
+enum ShippingClass {
+  SMALL
+  MEDIUM
+  LARGE
+  BULKY
 }
 
 enum IncidentType {

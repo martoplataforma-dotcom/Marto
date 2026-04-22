@@ -1416,7 +1416,7 @@ export default function ConsumerOrderDetailsPage({
   // ✅ (NOVO) nextUrl para post
   const pid = firstProductIdFromOrder(order);
   const nextUrl = pid
-    ? `/shop/${encodeURIComponent(pid)}/posts`
+    ? `/shop/p/${encodeURIComponent(pid)}/posts`
     : `/dash/consumer/orders/${encodeURIComponent(order?.id ?? orderId)}`;
 
   return (
@@ -1620,7 +1620,7 @@ export default function ConsumerOrderDetailsPage({
                                       </span>
 
                                       <Link
-                                        href={`/shop/${String(it.productId)}`}
+                                        href={`/shop/p/${String(it.productId)}`}
                                         className="text-white/75 underline decoration-white/20 underline-offset-2 hover:text-white"
                                       >
                                         Ver produto →
@@ -2765,7 +2765,7 @@ export default function ConsumerOrderDetailsPage({
                       <Link
                         href={
                           firstProductIdFromOrder(order)
-                            ? `/shop/${encodeURIComponent(
+                            ? `/shop/p/${encodeURIComponent(
                                 String(firstProductIdFromOrder(order)),
                               )}/posts`
                             : `/dash/consumer/orders/${encodeURIComponent(order.id)}`

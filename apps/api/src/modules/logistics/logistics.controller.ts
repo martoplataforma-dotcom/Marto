@@ -7,14 +7,42 @@ import {
   Param,
   Patch,
   Post,
+  Query,
 } from '@nestjs/common';
+import { ShippingClass } from '@prisma/client';
+import { PrismaService } from '../../common/prisma/prisma.service';
+import { findTransporterOptions } from './domain/find-transporter-options';
 import { LogisticsService } from './logistics.service';
 import type { ConfirmDeliveryDto } from './dto/confirm-delivery.dto';
 import type { UpdateShipmentStatusDto } from './dto/update-shipment-status.dto';
 
 @Controller('logistics')
 export class LogisticsController {
-  constructor(private readonly service: LogisticsService) {}
+  constructor(
+    private readonly service: LogisticsService,
+    private readonly prisma: PrismaService,
+  ) {}
+
+  @Get('transporter-options')
+  async getTransporterOptions(
+    @Query('originZipCode') originZipCode: string,
+    @Query('destinationZipCode') destinationZipCode: string,
+    @Query('shippingClass') shippingClass: ShippingClass,
+    @Query('weightKg') weightKg: string,
+  ) {
+    const options = await findTransporterOptions({
+      prisma: this.prisma,
+      originZipCode,
+      destinationZipCode,
+      shippingClass,
+      weightKg: Number(weightKg),
+    });
+
+    return {
+      ok: true,
+      options,
+    };
+  }
 
   @Post('shipments')
   createShipment(@Body('orderId') orderId: string) {
