@@ -1297,13 +1297,13 @@ export default function MerchantDash() {
           <SectionTitle
             title="Produtos"
             desc="Catálogo simples agora. Gestão completa depois."
-            right={
-              <a
+              right={
+              <Link
                 href="/dash/merchant/products"
                 className="rounded-2xl border border-white/15 bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
               >
                 Gerenciar →
-              </a>
+              </Link>
             }
           />
 
@@ -1436,7 +1436,7 @@ export default function MerchantDash() {
 
         {/* Reputação */}
         <div className="mt-5 grid gap-4 lg:grid-cols-12">
-          <a
+          <Link
             href="/review"
             className="rounded-3xl border border-white/15 bg-neutral-950/75 p-7 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur transition hover:bg-neutral-950/80 lg:col-span-7"
           >
@@ -1448,7 +1448,7 @@ export default function MerchantDash() {
               Histórico real reduz risco e aumenta conversão. No começo: perfil completo + produto com foto.
             </div>
             <div className="mt-6 text-xs font-semibold text-white/80">Abrir →</div>
-          </a>
+          </Link>
 
           <div className="grid gap-4 lg:col-span-5">
             <ActionCard

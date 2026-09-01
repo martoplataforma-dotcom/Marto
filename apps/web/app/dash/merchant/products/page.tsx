@@ -975,63 +975,6 @@ function cartesian(options: Array<{ name: string; values: string[] }>) {
   );
 }
 
-function WizardCard({
-  onCreate,
-  onImport,
-}: {
-  onCreate: () => void;
-  onImport: () => void;
-}) {
-  return (
-    <div className="rounded-3xl border border-white/15 bg-neutral-950/75 p-5 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <div className="text-sm font-semibold text-white/90">Modo Marto</div>
-          <div className="mt-1 text-xs text-white/70">
-            Produto no Marto não é “anúncio”. É uma peça do ciclo:{' '}
-            <span className="font-semibold text-white/85">
-              produto → serviço → avaliação → dados
-            </span>
-            .
-          </div>
-        </div>
-
-        <div className="flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={onCreate}
-            className="rounded-2xl bg-white/10 px-4 py-2 text-sm font-semibold text-white hover:bg-white/15"
-          >
-            Criar produto
-          </button>
-
-          <button
-            type="button"
-            onClick={onImport}
-            className="rounded-2xl border border-white/15 bg-black/40 px-4 py-2 text-sm font-semibold text-white/85 hover:bg-black/55"
-            title="Stub: CSV/colar lista (MVP depois)"
-          >
-            Importar rápido
-          </button>
-
-          <button
-            type="button"
-            onClick={() => {
-              alert(
-                'Em breve: wizard “Preparar para vender + montar” (serviço + checklist + pós-compra).',
-              );
-            }}
-            className="rounded-2xl border border-white/15 bg-black/40 px-4 py-2 text-sm font-semibold text-white/85 hover:bg-black/55"
-            title="Stub: wizard de prontidão (MVP depois)"
-          >
-            Preparar para vender + montar
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function SurfaceMetric({
   label,
   value,
@@ -1169,8 +1112,6 @@ function FilesDropzone({
   disabled?: boolean;
   maxFiles?: number;
 }) {
-  const [dragFrom, setDragFrom] = useState<number | null>(null);
-  const [dragOver, setDragOver] = useState<number | null>(null);
   const [dragZoneOver, setDragZoneOver] = useState(false);
   const [photoEditorIdx, setPhotoEditorIdx] = useState<number | null>(null);
   const [selectedPreviewIdx, setSelectedPreviewIdx] = useState(0);
@@ -1181,18 +1122,12 @@ function FilesDropzone({
     null,
   );
 
-  useEffect(() => {
-    if (!files.length) {
-      setSelectedPreviewIdx(0);
-      setPhotoEditorIdx(null);
-      setHotspotSelectedIdx(null);
-      return;
-    }
-
-    if (selectedPreviewIdx > files.length - 1) {
-      setSelectedPreviewIdx(files.length - 1);
-    }
-  }, [files.length, selectedPreviewIdx, setPhotoEditorIdx]);
+  // avoid calling setState synchronously inside effects (lint rule)
+  // compute a safe preview index for reads without mutating state here
+  const safePreviewIdx = Math.max(
+    0,
+    Math.min(selectedPreviewIdx, Math.max(0, files.length - 1)),
+  );
 
   const previews = useMemo(() => {
     const out = files.map((f) => ({ file: f, url: URL.createObjectURL(f) }));
@@ -1201,19 +1136,19 @@ function FilesDropzone({
 
   const ins = insights ?? [];
   const normalizedInsights = normalizeInsightsForLen(files.length, ins);
-  const selectedPreview = previews[selectedPreviewIdx] ?? null;
+  const selectedPreview = previews[safePreviewIdx] ?? null;
   const selectedInsight =
-    selectedPreviewIdx >= 0 ? normalizedInsights[selectedPreviewIdx] ?? null : null;
+    safePreviewIdx >= 0 ? normalizedInsights[safePreviewIdx] ?? null : null;
 
   const selectedRole = selectedInsight
-    ? normalizePhotoRole(selectedInsight.role, selectedPreviewIdx)
+    ? normalizePhotoRole(selectedInsight.role, safePreviewIdx)
     : 'cover';
 
   const selectedRoleMeta = photoRoleMeta(selectedRole);
 
   const selectedPreviewHotspots =
-    selectedPreviewIdx >= 0
-      ? normalizeHotspots(normalizedInsights[selectedPreviewIdx]?.hotspots)
+    safePreviewIdx >= 0
+      ? normalizeHotspots(normalizedInsights[safePreviewIdx]?.hotspots)
       : [];
 
   function updateInsightAt(
@@ -2376,27 +2311,6 @@ type ChecklistItem = {
   hint?: string;
 };
 
-function lsKeyChecklist(productId: string) {
-  return `marto:product_checklist:${productId}`;
-}
-
-function loadChecklistDone(productId: string): Record<string, boolean> {
-  if (typeof window === 'undefined') return {};
-  try {
-    const raw = localStorage.getItem(lsKeyChecklist(productId));
-    if (!raw) return {};
-    const json = JSON.parse(raw) as { done?: Record<string, boolean> };
-    return json?.done && typeof json.done === 'object' ? json.done : {};
-  } catch {
-    return {};
-  }
-}
-
-function saveChecklistDone(productId: string, done: Record<string, boolean>) {
-  if (typeof window === 'undefined') return;
-  localStorage.setItem(lsKeyChecklist(productId), JSON.stringify({ done }));
-}
-
 function hasTechFilled(spec: {
   weightKg?: string;
   lengthCm?: string;
@@ -2630,35 +2544,6 @@ function firstNonEmptyOverview(insights?: ImageInsight[] | null) {
   return [] as string[];
 }
 
-function buildCardCatalogLens(cat?: Partial<CatalogSpec> | null) {
-  const normalized = normalizeCatalogSpec(cat ?? null);
-
-  const optionGroups = normalized.options
-    .map((opt) => ({
-      name: String(opt?.name ?? '').trim(),
-      values: (opt?.values ?? [])
-        .map((v) => String(v ?? '').trim())
-        .filter(Boolean),
-    }))
-    .filter((opt) => opt.name && opt.values.length)
-    .slice(0, 3);
-
-  const combinations = normalized.variants
-    .slice(0, 3)
-    .map((variant) =>
-      parseVariantKey(variant.key)
-        .map((pair) => `${pair.name}: ${pair.value}`)
-        .join(' • '),
-    )
-    .filter(Boolean);
-
-  return {
-    optionGroups,
-    combinations,
-    totalCombinations: normalized.variants.length,
-  };
-}
-
 function checklistForDraft(input: {
   kind: 'PHYSICAL' | 'DIGITAL' | 'SERVICE';
   inventoryMode: 'INFINITE' | 'LIMITED';
@@ -2773,9 +2658,6 @@ export default function MerchantProductsPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg] = useState('');
   const [products, setProducts] = useState<ProductItem[]>([]);
-
-  // ✅ PATCH 3: força re-render do checklist manual
-  const [checkTick, setCheckTick] = useState(0);
 
   type NewStep = 'BASIC' | 'PHOTOS' | 'CATALOG' | 'TECH' | 'REVIEW';
 
