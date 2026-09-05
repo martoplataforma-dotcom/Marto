@@ -282,33 +282,37 @@ Quando um módulo estiver validado no Marto e em uso real, melhorias novas desse
 - [x] Desenho de `ExternalOrderReference`
 - [x] Separação canônico x específico do canal
 - [x] Regras mínimas de sincronização/idempotência
-- [x] Preparar conteúdo do `INTEGRATION_MASTER.md`
-- [ ] Salvar `INTEGRATION_MASTER.md` no repositório local e enviar ao GitHub
-- [ ] Criar `OPS_CHANGELOG.md`
+- [x] `INTEGRATION_MASTER.md` salvo no repositório
+- [x] `OPS_CHANGELOG.md` salvo no repositório
+- [x] Marco de documentação commitado e enviado ao GitHub
 - [ ] Implementar `SalesChannel` + `ExternalOrderReference` no Prisma
 - [ ] Validar migration Prisma
 - [ ] Rodar testes/build relevantes
-- [ ] Registrar commit e resultado
+- [ ] Registrar resultado da primeira implementação
 
 ## 18. Último ponto confirmado
 
-Arquitetura inicial definida, branch segura criada e conteúdo do controle mestre preparado.
+Documentação-base da integração criada, commitada e sincronizada com o GitHub.
+
+**Commit do marco:** `848c71d` — `docs: registra plano mestre da integração Marto Ops`
+
+A branch de trabalho permanece:
+
+`feat/marto-ops-integration`
 
 ## 19. Próxima ação exata
 
-Salvar este arquivo em:
-
-`docs/marto-ops/INTEGRATION_MASTER.md`
-
-Depois:
-
-1. conferir o conteúdo local;
-2. criar `docs/marto-ops/OPS_CHANGELOG.md`;
-3. commitar e enviar ambos para `feat/marto-ops-integration`.
-
-Somente depois iniciar o primeiro código, limitado a:
+Iniciar a primeira implementação de código, limitada a:
 
 `SalesChannel + ExternalOrderReference` no Prisma.
+
+Primeiro arquivo a ser analisado/alterado:
+
+`packages/db/prisma/schema.prisma`
+
+Antes de gerar qualquer migration, validar os models e relações no schema.
+
+Ainda não integrar Mercado Livre, Shopee ou criar telas.
 
 ## 20. NÃO FAZER AINDA
 
