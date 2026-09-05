@@ -438,26 +438,58 @@ Ainda falta implementar o fluxo interno que receberá um pedido externo normaliz
 
 Portanto, o PASSO 4B ainda não deve ser considerado completamente encerrado.
 
+### Checkpoint — contrato normalizado e motor interno somente-leitura
+
+Foi definido o contrato interno genérico:
+
+- `NormalizedExternalOrderInput`
+- `NormalizedExternalOrderItem`
+
+O contrato não depende de Mercado Livre, Shopee ou qualquer marketplace específico.
+
+Também foi criado o esqueleto de `ExternalOrderIngestionService`.
+
+Nesta fase o motor:
+
+- valida `salesChannelId`;
+- valida `externalOrderId`;
+- localiza o `SalesChannel`;
+- deriva o `merchantId` a partir do próprio canal;
+- localiza `ExternalOrderReference` pela chave única `(salesChannelId, externalOrderId)`;
+- classifica a entrada como `create`, `update` ou `ignored_stale`;
+- usa `externalUpdatedAt` para impedir regressão quando uma atualização comprovadamente mais antiga chega depois de uma mais recente.
+
+Ainda não existe qualquer escrita no banco nesse serviço.
+
+O serviço ainda:
+
+- não cria `Order`;
+- não atualiza `Order`;
+- não cria ou atualiza `ExternalOrderReference`;
+- não cria ou substitui `OrderItem`;
+- não cria `OrderEvent`;
+- não está registrado no `OrdersModule`;
+- não possui endpoint público;
+- não possui regra específica de marketplace.
+
+O build da API NestJS foi executado após essas alterações e concluído sem erros.
+
 ## 19. Próxima ação exata
 
-Implementar o primeiro motor interno genérico de entrada de pedido externo normalizado.
+Antes de adicionar qualquer escrita ao `ExternalOrderIngestionService`, definir as regras transacionais de criação e atualização do pedido externo.
 
-Esse fluxo deverá:
+Precisamos fechar especialmente:
 
-1. receber dados já normalizados, sem depender diretamente de Mercado Livre ou Shopee;
-2. localizar `ExternalOrderReference` por `(salesChannelId, externalOrderId)`;
-3. se já existir, atualizar o mesmo `Order`;
-4. se não existir, criar `Order` + `ExternalOrderReference` de forma transacional;
-5. permitir `Order.userId = null` para comprador externo;
-6. permitir `OrderItem.productId = null` quando ainda não houver correspondência com catálogo Marto;
-7. gravar os snapshots mínimos de comprador, destinatário e itens;
-8. não apagar dados válidos quando a origem enviar informação incompleta;
-9. não gerar duplicidade em sincronizações repetidas;
-10. não adicionar ainda qualquer regra específica de Mercado Livre ou Shopee.
+1. quais dados são obrigatórios para criar um novo `Order`;
+2. quais campos opcionais podem atualizar um `Order` existente;
+3. como preservar dados válidos quando a sincronização vier incompleta;
+4. como tratar `items` em sincronizações repetidas sem apagar, duplicar ou recriar itens incorretamente;
+5. como criar `Order` + `ExternalOrderReference` atomicamente;
+6. em quais mudanças deve ser criado um `OrderEvent`.
 
-Antes de implementar, definir a interface/contrato interno do pedido normalizado e identificar o local correto da API onde esse motor ficará.
+Somente depois dessas regras estarem definidas e registradas será implementada a primeira escrita transacional.
 
-Ainda não integrar Mercado Livre, Shopee ou criar telas.
+Ainda não registrar o serviço no `OrdersModule`, não criar endpoint público e não integrar Mercado Livre ou Shopee.
 
 ## 20. NÃO FAZER AINDA
 
