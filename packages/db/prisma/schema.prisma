@@ -351,6 +351,10 @@ model Order {
   id         String      @id @default(uuid())
   merchantId String
   userId     String?
+  buyerNameSnapshot          String?
+  buyerContactSnapshot       Json?
+  recipientNameSnapshot      String?
+  destinationAddressSnapshot Json?
   status     OrderStatus @default(CREATED)
   destinationZipCode    String?
   selectedShippingMode  String?
@@ -413,13 +417,16 @@ model OrderEvent {
 }
 
 model OrderItem {
-  id        String   @id @default(uuid())
-  orderId   String
-  productId String
-  quantity  Int      @default(1)
-  unitPrice Decimal  @db.Decimal(12, 2)
-  createdAt DateTime @default(now())
-  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  id                String   @id @default(uuid())
+  orderId           String
+  productId         String?
+  titleSnapshot     String?
+  skuSnapshot       String?
+  variationSnapshot Json?
+  quantity          Int      @default(1)
+  unitPrice         Decimal  @db.Decimal(12, 2)
+  createdAt         DateTime @default(now())
+  order             Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
 
   @@index([orderId])
   @@index([productId])

@@ -233,6 +233,7 @@ export class FactoriesService {
     const grouped = await this.prisma.orderItem.groupBy({
       by: ['productId'],
       where: {
+        productId: { not: null },
         order: {
           merchantId: { in: merchantIds },
         },
@@ -242,7 +243,9 @@ export class FactoriesService {
       take: 5,
     });
 
-    const productIds = grouped.map((g) => g.productId);
+    const productIds = grouped
+      .map((g) => g.productId)
+      .filter((productId): productId is string => Boolean(productId));
 
     const products = await this.prisma.product.findMany({
       where: { id: { in: productIds } },
@@ -252,7 +255,7 @@ export class FactoriesService {
     const byId = new Map(products.map((p) => [p.id, p]));
 
     const items = grouped.map((g) => {
-      const p = byId.get(g.productId);
+      const p = g.productId ? byId.get(g.productId) : undefined;
       return {
         productId: g.productId,
         title: p?.title ?? 'Produto',

@@ -298,11 +298,13 @@ Quando um módulo estiver validado no Marto e em uso real, melhorias novas desse
 
 ## 18. Último ponto confirmado
 
-Primeira implementação estrutural da integração concluída e validada localmente.
+### PASSO 4A — canais e referência externa — concluído
 
-**Commit confirmado no GitHub:** `5bc6949` — `feat(db): adiciona canais de venda e referência de pedidos externos`
+Primeira implementação estrutural da integração concluída, validada, commitada e enviada ao GitHub.
 
-### Implementado
+**Commit técnico confirmado:** `5bc6949` — `feat(db): adiciona canais de venda e referência de pedidos externos`
+
+Implementado:
 
 - `SalesChannelType`
 - `SalesChannelStatus`
@@ -311,56 +313,149 @@ Primeira implementação estrutural da integração concluída e validada localm
 - relação `Merchant -> SalesChannel[]`
 - relação `Order -> ExternalOrderReference[]`
 
-### Garantias implementadas
+Garantias:
 
 - `(merchantId, type, externalAccountId)` é único;
 - `(salesChannelId, externalOrderId)` é único;
-- pedidos externos continuam vinculados ao `Order` canônico do Marto;
+- pedidos externos permanecem vinculados ao `Order` canônico;
 - nenhuma coluna específica de Mercado Livre ou Shopee foi adicionada ao `Order`;
 - nenhuma tabela ou coluna existente foi removida.
 
-### Migration
+Migration:
 
 `20260905010401_add_sales_channels_external_order_reference`
 
-O SQL foi revisado antes da aplicação e contém somente criação de enums, tabelas, índices, constraints e foreign keys.
+A migration foi revisada, aplicada no PostgreSQL local e validada com `prisma migrate status`.
 
-A migration foi aplicada no PostgreSQL local e o comando `prisma migrate status` confirmou:
+Validações realizadas:
+
+- `prisma validate` — aprovado;
+- migration SQL revisada — aprovada;
+- migration aplicada — aprovada;
+- Prisma Client v6.19.1 regenerado — aprovado;
+- `git diff --check` — aprovado;
+- build da API NestJS — aprovado.
+
+---
+
+### PASSO 4B — suporte estrutural a pedido externo
+
+A base estrutural necessária para permitir pedidos externos no `Order` canônico foi implementada e validada localmente.
+
+Esta etapa ainda não integra Mercado Livre, Shopee ou outro marketplace e ainda não implementa o motor de sincronização/importação. Ela prepara o modelo canônico para receber esses pedidos sem criar dados falsos ou duplicar entidades.
+
+### Implementado no `Order`
+
+Foram adicionados snapshots opcionais para representar comprador e destinatário externos sem exigir a criação de um `User` Marto:
+
+- `buyerNameSnapshot`
+- `buyerContactSnapshot`
+- `recipientNameSnapshot`
+- `destinationAddressSnapshot`
+
+Regra:
+
+- comprador externo pode existir com `Order.userId = null`;
+- não criar usuário fictício apenas para importar venda externa;
+- comprador e destinatário podem ser pessoas diferentes;
+- dados sensíveis devem ser armazenados somente quando necessários e realmente fornecidos.
+
+### Implementado no `OrderItem`
+
+`OrderItem.productId` passou de obrigatório para opcional.
+
+Também foram adicionados:
+
+- `titleSnapshot`
+- `skuSnapshot`
+- `variationSnapshot`
+
+Regra:
+
+- venda nativa Marto continua usando `productId`;
+- item externo já conciliado com catálogo Marto pode usar `productId`;
+- item externo ainda não conciliado pode ter `productId = null`;
+- não criar `Product` fictício apenas para conseguir importar um item externo;
+- o snapshot preserva o que efetivamente foi vendido independentemente de alterações futuras no cadastro do produto.
+
+Pedidos nativos do Marto passaram também a registrar `titleSnapshot` a partir do título atual do `Product`.
+
+### Compatibilidade da API
+
+O fluxo nativo atual de checkout continua exigindo `productId`.
+
+Foram ajustadas somente as leituras afetadas pela nova nulabilidade:
+
+- `OrdersService.getOrderById()` ignora `productId = null` ao consultar produtos e continua retornando o item normalmente;
+- o resumo de serviços aceita `productId: string | null`;
+- `FactoriesService.topProductsForMe()` ignora itens ainda sem `productId`, pois eles não estão vinculados a um produto Marto e não devem entrar no ranking de produtos da fábrica.
+
+### Migration
+
+`20260905184105_support_external_order_items_buyers`
+
+SQL revisado antes da aplicação.
+
+A migration contém somente:
+
+- adição dos snapshots no `Order`;
+- adição dos snapshots no `OrderItem`;
+- alteração de `OrderItem.productId` para permitir `NULL`.
+
+Nenhuma tabela ou coluna existente foi removida.
+
+A migration foi aplicada no PostgreSQL local.
+
+`prisma migrate status` confirmou:
+
+`65 migrations found in prisma/migrations`
 
 `Database schema is up to date!`
 
 ### Validações realizadas
 
-- `prisma validate` — aprovado;
-- migration SQL revisada — aprovada;
-- migration aplicada no banco local — aprovada;
-- Prisma Client v6.19.1 regenerado — aprovado;
+- schema Prisma validado antes da migration;
+- migration criada inicialmente com `--create-only`;
+- SQL da migration revisado manualmente;
+- migration aplicada com sucesso;
+- Prisma Client v6.19.1 regenerado automaticamente pelo `prisma migrate dev`;
 - `git diff --check` — aprovado;
 - build da API NestJS — aprovado.
 
-Durante a primeira geração do Prisma Client ocorreu `EPERM` porque frontend/backend estavam utilizando o engine do Prisma no Windows. Os processos foram parados e a geração foi executada novamente com sucesso. Não houve falha de migration.
+Durante o primeiro build após tornar `productId` opcional, o TypeScript identificou dois usos em `FactoriesService.topProductsForMe()` que ainda assumiam `productId` obrigatório.
 
-### Pendência explícita para etapa futura
+Esses pontos foram corrigidos para excluir itens sem vínculo de produto Marto do ranking. Depois da correção, o build da API foi executado novamente e concluído sem erros.
 
-O `OrderItem.productId` atual é obrigatório.
+### Estado atual do PASSO 4B
 
-Antes de importar pedidos reais de marketplaces, deverá ser definido como tratar um item externo que ainda não possua um `Product` correspondente no Marto.
+A estrutura canônica necessária para representar:
 
-Essa questão pertence à próxima etapa de suporte a pedidos externos e não deve ser resolvida dentro desta primeira implementação de canais.
+`pedido externo + item externo + comprador externo`
+
+está implementada e validada localmente.
+
+Ainda falta implementar o fluxo interno que receberá um pedido externo normalizado e fará a criação/atualização transacional do `Order` + `ExternalOrderReference`.
+
+Portanto, o PASSO 4B ainda não deve ser considerado completamente encerrado.
 
 ## 19. Próxima ação exata
 
-Iniciar o desenho da próxima micro-etapa:
+Implementar o primeiro motor interno genérico de entrada de pedido externo normalizado.
 
-`Order externo + OrderItem + comprador externo`
+Esse fluxo deverá:
 
-Antes de alterar código, analisar:
+1. receber dados já normalizados, sem depender diretamente de Mercado Livre ou Shopee;
+2. localizar `ExternalOrderReference` por `(salesChannelId, externalOrderId)`;
+3. se já existir, atualizar o mesmo `Order`;
+4. se não existir, criar `Order` + `ExternalOrderReference` de forma transacional;
+5. permitir `Order.userId = null` para comprador externo;
+6. permitir `OrderItem.productId = null` quando ainda não houver correspondência com catálogo Marto;
+7. gravar os snapshots mínimos de comprador, destinatário e itens;
+8. não apagar dados válidos quando a origem enviar informação incompleta;
+9. não gerar duplicidade em sincronizações repetidas;
+10. não adicionar ainda qualquer regra específica de Mercado Livre ou Shopee.
 
-- como um pedido externo será criado no `Order` canônico;
-- como representar comprador externo sem exigir `User` Marto;
-- como tratar `OrderItem.productId`, que hoje é obrigatório;
-- quais snapshots mínimos do item e comprador precisam existir;
-- como manter idempotência usando `ExternalOrderReference`.
+Antes de implementar, definir a interface/contrato interno do pedido normalizado e identificar o local correto da API onde esse motor ficará.
 
 Ainda não integrar Mercado Livre, Shopee ou criar telas.
 

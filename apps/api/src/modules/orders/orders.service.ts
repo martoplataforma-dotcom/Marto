@@ -284,6 +284,7 @@ export class OrdersService {
       select: {
         id: true,
         merchantId: true,
+        title: true,
         requiresShipping: true,
         weightGrams: true,
         lengthCm: true,
@@ -421,6 +422,7 @@ export class OrdersService {
         items: {
           create: params.items.map((it) => ({
             productId: it.productId,
+            titleSnapshot: productsById.get(it.productId)?.title ?? null,
             quantity: it.quantity,
             unitPrice: it.unitPrice ?? '100.00',
           })),
@@ -900,7 +902,7 @@ export class OrdersService {
           hasServiceOptions: boolean;
           serviceTypes: string[];
           items: Array<{
-            productId: string;
+            productId: string | null;
             quantity: number;
             services: Array<{
               serviceType: string;
@@ -925,9 +927,13 @@ export class OrdersService {
 
     if (!order) return null;
 
+    const productIds = order.items
+      .map((item) => item.productId)
+      .filter((productId): productId is string => Boolean(productId));
+
     const products = await this.prisma.product.findMany({
       where: {
-        id: { in: order.items.map((item) => item.productId) },
+        id: { in: productIds },
       },
       select: {
         id: true,
@@ -945,7 +951,9 @@ export class OrdersService {
     const productsById = new Map(products.map((product) => [product.id, product]));
 
     const serviceOffersByItem = order.items.map((item) => {
-      const product = productsById.get(item.productId);
+      const product = item.productId
+        ? productsById.get(item.productId)
+        : undefined;
 
       const services = (product?.serviceLinks ?? []).map((link) => ({
         serviceType: link.serviceType,
