@@ -384,6 +384,7 @@ model Order {
   shipments       Shipment[]
   serviceRequests ServiceRequest[]
   serviceReviews ServiceReview[]
+  externalOrderReferences ExternalOrderReference[]
 
   user        User?        @relation(fields: [userId], references: [id])
   socialPosts SocialPost[]
@@ -688,6 +689,7 @@ model Merchant {
 
   user     User      @relation(fields: [userId], references: [id])
   products Product[]
+  salesChannels SalesChannel[]
 }
 
 model Product {
@@ -1136,4 +1138,62 @@ model PublicScan {
   userAgent String?
   referer   String?
   ipHash    String?
+}
+
+enum SalesChannelType {
+  MARTO
+  MERCADO_LIVRE
+  SHOPEE
+  SITE
+  AMAZON
+  MAGALU
+  OTHER
+}
+
+enum SalesChannelStatus {
+  ACTIVE
+  DISCONNECTED
+  PAUSED
+  ERROR
+}
+
+model SalesChannel {
+  id                String             @id @default(uuid())
+  merchantId        String
+  type              SalesChannelType
+  name              String
+  externalAccountId String
+  status            SalesChannelStatus @default(ACTIVE)
+  lastSyncedAt      DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  merchant       Merchant                 @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  externalOrders ExternalOrderReference[]
+
+  @@unique([merchantId, type, externalAccountId])
+  @@index([merchantId, status])
+  @@index([type, status])
+}
+
+model ExternalOrderReference {
+  id                String   @id @default(uuid())
+  orderId           String
+  salesChannelId    String
+  externalOrderId   String
+  externalStatus    String?
+  externalCreatedAt DateTime?
+  externalUpdatedAt DateTime?
+  lastSyncedAt      DateTime?
+  metadata          Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  order        Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  salesChannel SalesChannel @relation(fields: [salesChannelId], references: [id], onDelete: Restrict)
+
+  @@unique([salesChannelId, externalOrderId])
+  @@index([orderId])
+  @@index([salesChannelId, lastSyncedAt])
+  @@index([externalStatus])
 }

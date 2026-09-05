@@ -285,32 +285,82 @@ Quando um módulo estiver validado no Marto e em uso real, melhorias novas desse
 - [x] `INTEGRATION_MASTER.md` salvo no repositório
 - [x] `OPS_CHANGELOG.md` salvo no repositório
 - [x] Marco de documentação commitado e enviado ao GitHub
-- [ ] Implementar `SalesChannel` + `ExternalOrderReference` no Prisma
-- [ ] Validar migration Prisma
-- [ ] Rodar testes/build relevantes
-- [ ] Registrar resultado da primeira implementação
+- [x] Implementar `SalesChannel` + `ExternalOrderReference` no Prisma
+- [x] Validar schema Prisma
+- [x] Criar e revisar migration Prisma
+- [x] Aplicar migration no banco local de desenvolvimento
+- [x] Confirmar banco sincronizado com `prisma migrate status`
+- [x] Gerar Prisma Client
+- [x] Validar alterações com `git diff --check`
+- [x] Rodar build da API
+- [x] Registrar resultado da primeira implementação
+- [ ] Commitar e enviar a primeira implementação ao GitHub
 
 ## 18. Último ponto confirmado
 
-Documentação-base da integração criada, commitada e sincronizada com o GitHub.
+Primeira implementação estrutural da integração concluída e validada localmente.
 
-**Commit do marco:** `848c71d` — `docs: registra plano mestre da integração Marto Ops`
+### Implementado
 
-A branch de trabalho permanece:
+- `SalesChannelType`
+- `SalesChannelStatus`
+- `SalesChannel`
+- `ExternalOrderReference`
+- relação `Merchant -> SalesChannel[]`
+- relação `Order -> ExternalOrderReference[]`
 
-`feat/marto-ops-integration`
+### Garantias implementadas
+
+- `(merchantId, type, externalAccountId)` é único;
+- `(salesChannelId, externalOrderId)` é único;
+- pedidos externos continuam vinculados ao `Order` canônico do Marto;
+- nenhuma coluna específica de Mercado Livre ou Shopee foi adicionada ao `Order`;
+- nenhuma tabela ou coluna existente foi removida.
+
+### Migration
+
+`20260905010401_add_sales_channels_external_order_reference`
+
+O SQL foi revisado antes da aplicação e contém somente criação de enums, tabelas, índices, constraints e foreign keys.
+
+A migration foi aplicada no PostgreSQL local e o comando `prisma migrate status` confirmou:
+
+`Database schema is up to date!`
+
+### Validações realizadas
+
+- `prisma validate` — aprovado;
+- migration SQL revisada — aprovada;
+- migration aplicada no banco local — aprovada;
+- Prisma Client v6.19.1 regenerado — aprovado;
+- `git diff --check` — aprovado;
+- build da API NestJS — aprovado.
+
+Durante a primeira geração do Prisma Client ocorreu `EPERM` porque frontend/backend estavam utilizando o engine do Prisma no Windows. Os processos foram parados e a geração foi executada novamente com sucesso. Não houve falha de migration.
+
+### Pendência explícita para etapa futura
+
+O `OrderItem.productId` atual é obrigatório.
+
+Antes de importar pedidos reais de marketplaces, deverá ser definido como tratar um item externo que ainda não possua um `Product` correspondente no Marto.
+
+Essa questão pertence à próxima etapa de suporte a pedidos externos e não deve ser resolvida dentro desta primeira implementação de canais.
 
 ## 19. Próxima ação exata
 
-Iniciar a primeira implementação de código, limitada a:
+Criar o commit da primeira implementação contendo somente:
 
-`SalesChannel + ExternalOrderReference` no Prisma.
+- `packages/db/prisma/schema.prisma`
+- `packages/db/prisma/migrations/20260905010401_add_sales_channels_external_order_reference/migration.sql`
+- esta atualização do `INTEGRATION_MASTER.md`
 
-Primeiro arquivo a ser analisado/alterado:
+Depois enviar o commit para:
 
-`packages/db/prisma/schema.prisma`
+`feat/marto-ops-integration`
 
-Antes de gerar qualquer migration, validar os models e relações no schema.
+Somente após confirmar o commit no GitHub iniciar o desenho da próxima micro-etapa:
+
+`Order externo + OrderItem + comprador externo`
 
 Ainda não integrar Mercado Livre, Shopee ou criar telas.
 
