@@ -294,11 +294,13 @@ Quando um módulo estiver validado no Marto e em uso real, melhorias novas desse
 - [x] Validar alterações com `git diff --check`
 - [x] Rodar build da API
 - [x] Registrar resultado da primeira implementação
-- [ ] Commitar e enviar a primeira implementação ao GitHub
+- [x] Commitar e enviar a primeira implementação ao GitHub
 
 ## 18. Último ponto confirmado
 
 Primeira implementação estrutural da integração concluída e validada localmente.
+
+**Commit confirmado no GitHub:** `5bc6949` — `feat(db): adiciona canais de venda e referência de pedidos externos`
 
 ### Implementado
 
@@ -348,19 +350,17 @@ Essa questão pertence à próxima etapa de suporte a pedidos externos e não de
 
 ## 19. Próxima ação exata
 
-Criar o commit da primeira implementação contendo somente:
-
-- `packages/db/prisma/schema.prisma`
-- `packages/db/prisma/migrations/20260905010401_add_sales_channels_external_order_reference/migration.sql`
-- esta atualização do `INTEGRATION_MASTER.md`
-
-Depois enviar o commit para:
-
-`feat/marto-ops-integration`
-
-Somente após confirmar o commit no GitHub iniciar o desenho da próxima micro-etapa:
+Iniciar o desenho da próxima micro-etapa:
 
 `Order externo + OrderItem + comprador externo`
+
+Antes de alterar código, analisar:
+
+- como um pedido externo será criado no `Order` canônico;
+- como representar comprador externo sem exigir `User` Marto;
+- como tratar `OrderItem.productId`, que hoje é obrigatório;
+- quais snapshots mínimos do item e comprador precisam existir;
+- como manter idempotência usando `ExternalOrderReference`.
 
 Ainda não integrar Mercado Livre, Shopee ou criar telas.
 
