@@ -474,6 +474,32 @@ O serviço ainda:
 
 O build da API NestJS foi executado após essas alterações e concluído sem erros.
 
+### Micro-checkpoint — validações de criação antes da primeira escrita
+
+Foi adicionada ao `ExternalOrderIngestionService` a validação inicial do candidato a criação de pedido externo.
+
+Quando ainda não existe `ExternalOrderReference` para `(salesChannelId, externalOrderId)`, o serviço agora valida:
+
+- presença de `canonicalStatus`;
+- presença de pelo menos um item;
+- `title` não vazio em cada item;
+- `quantity` inteira e maior que zero;
+- `unitPrice` válido, finito e maior ou igual a zero.
+
+A validação de `productId` contra o `Merchant` do `SalesChannel` ainda não foi implementada. Essa verificação deverá ocorrer no fluxo transacional, usando o `merchantId` derivado do próprio canal.
+
+O serviço continua sem qualquer escrita no banco:
+
+- não cria `Order`;
+- não cria `OrderItem`;
+- não cria `ExternalOrderReference`;
+- não atualiza pedido existente;
+- não cria `OrderEvent`.
+
+O build da API NestJS foi executado após essa alteração e concluído sem erros.
+
+Este micro-checkpoint prepara a Regra Transacional 1 sem antecipar a implementação da transação.
+
 ### Regra transacional 1 — criação de novo pedido externo
 
 Um novo `Order` externo somente poderá ser criado quando:
@@ -854,21 +880,22 @@ Dados pertencentes à operação interna do Marto — como cotações, transport
 
 ## 19. Próxima ação exata
 
-As regras transacionais do primeiro motor de pedidos externos estão definidas e aprovadas.
+O primeiro micro-passo de implementação da criação de pedidos externos foi concluído: as validações básicas da Regra Transacional 1 já existem no `ExternalOrderIngestionService` e o build da API passou sem erros.
 
-Antes de iniciar qualquer escrita no banco:
+Antes de introduzir qualquer escrita no banco:
 
-1. registrar este conjunto de regras como checkpoint de documentação;
-2. confirmar novamente branch limpa e sincronizada após o commit;
-3. implementar a primeira escrita transacional no `ExternalOrderIngestionService`;
-4. começar somente pelo fluxo de criação de novo pedido externo;
-5. criar `Order + OrderItem(s) + ExternalOrderReference` atomicamente;
-6. aplicar as validações da Regra Transacional 1 dentro da transação;
-7. revalidar `ExternalOrderReference` dentro da transação conforme a Regra Transacional 4;
-8. não implementar ainda reconciliação automática de itens de pedidos existentes;
-9. não registrar ainda endpoint público ou conector de marketplace.
+1. registrar este micro-checkpoint de código e documentação em commit identificável;
+2. enviar o checkpoint para a branch `feat/marto-ops-integration`;
+3. confirmar novamente que a branch ficou limpa e sincronizada;
+4. implementar somente o fluxo transacional de criação de novo pedido externo;
+5. revalidar `ExternalOrderReference` dentro da transação;
+6. validar, dentro da transação, que qualquer `productId` informado existe e pertence ao mesmo `Merchant` derivado do `SalesChannel`;
+7. criar atomicamente `Order + OrderItem(s) + ExternalOrderReference`;
+8. não implementar ainda atualização transacional de pedido externo existente;
+9. não implementar ainda reconciliação automática de itens existentes;
+10. não registrar ainda endpoint público ou conector de marketplace.
 
-A implementação deverá ocorrer em micro-etapas, com build, verificação de regressões, atualização deste MASTER e commit identificável antes de avançar.
+A primeira escrita somente poderá ocorrer depois desse micro-checkpoint estar protegido no Git.
 
 Ainda não integrar Mercado Livre, Shopee ou criar telas.
 
