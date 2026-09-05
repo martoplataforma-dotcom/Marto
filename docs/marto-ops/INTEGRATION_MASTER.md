@@ -474,22 +474,403 @@ O serviço ainda:
 
 O build da API NestJS foi executado após essas alterações e concluído sem erros.
 
+### Regra transacional 1 — criação de novo pedido externo
+
+Um novo `Order` externo somente poderá ser criado quando:
+
+1. `salesChannelId` identificar um `SalesChannel` existente;
+2. `externalOrderId` estiver preenchido;
+3. ainda não existir `ExternalOrderReference` para `(salesChannelId, externalOrderId)`;
+4. `canonicalStatus` estiver presente;
+5. `items` estiver presente e possuir pelo menos um item;
+6. cada item possuir:
+	- `title` não vazio;
+	- `quantity` inteiro maior que zero;
+	- `unitPrice` válido e maior ou igual a zero;
+7. quando `productId` for informado, o produto deverá existir e pertencer ao mesmo `Merchant` do `SalesChannel`.
+
+Na criação:
+
+- `merchantId` será sempre derivado do `SalesChannel`;
+- `Order.userId` será `null` para comprador externo sem conta Marto;
+- não será criado `User` fictício;
+- não será criado `Product` fictício.
+
+Não serão obrigatórios para a criação inicial:
+
+- `buyerName`;
+- `buyerContact`;
+- `recipientName`;
+- `destinationZipCode`;
+- `city`;
+- `state`;
+- `destinationAddress`;
+- `externalCreatedAt`;
+- `externalUpdatedAt`.
+
+Esses campos poderão chegar posteriormente e deverão ser incorporados sem apagar informações válidas já existentes.
+
+`canonicalStatus` será obrigatório para a criação de pedido externo. O motor não deverá usar silenciosamente o default `CREATED`, pois o pedido externo poderá já chegar em outro estágio do ciclo de vida.
+
+A criação deverá ser atômica:
+
+`Order + OrderItem(s) + ExternalOrderReference`
+
+Se qualquer parte da operação falhar, nenhuma das entidades deverá permanecer criada.
+
+A semântica de atualização de `items` em pedidos externos já existentes será definida separadamente antes da implementação.
+
+### Regra transacional 2 — atualização sem apagar dados válidos
+
+Quando já existir `ExternalOrderReference` para `(salesChannelId, externalOrderId)`, o motor tratará a entrada como atualização do mesmo `Order` canônico.
+
+Antes de qualquer escrita:
+
+1. a `ExternalOrderReference` deverá apontar para um `Order` existente;
+2. o `Order` deverá pertencer ao mesmo `merchantId` do `SalesChannel`;
+3. qualquer divergência entre o canal e o `Order` será tratada como erro de integridade e nenhuma escrita deverá ocorrer.
+
+#### Entrada antiga
+
+Quando a sincronização for classificada como `ignored_stale` por possuir `externalUpdatedAt` comprovadamente anterior ao já registrado:
+
+- não alterar o `Order`;
+- não alterar `OrderItem`;
+- não regredir `externalStatus`;
+- não regredir `externalUpdatedAt`;
+- não gerar `OrderEvent`.
+
+`lastSyncedAt` representa o momento em que o Marto recebeu/processou uma sincronização e poderá ser tratado separadamente mesmo quando o conteúdo recebido for antigo.
+
+#### Campos canônicos opcionais
+
+Para:
+
+- `buyerName`;
+- `buyerContact`;
+- `recipientName`;
+- `destinationZipCode`;
+- `city`;
+- `state`;
+- `destinationAddress`;
+
+a regra inicial será:
+
+- campo ausente (`undefined`) → preservar o valor atual;
+- `null` → preservar o valor atual;
+- string vazia → preservar o valor atual;
+- valor válido informado → poderá preencher ou atualizar o valor canônico.
+
+Nesta primeira versão do motor, informação ausente, nula ou vazia não terá poder para apagar informação canônica válida já existente.
+
+#### Status canônico
+
+Para `canonicalStatus`:
+
+- ausente → manter o status atual;
+- igual ao status atual → nenhuma mudança de status;
+- diferente do status atual → somente alterar conforme as regras de sincronização de status definidas na Regra Transacional 5;
+- não gerar `OrderEvent` quando o status efetivamente não mudar.
+
+#### ExternalOrderReference
+
+Para dados pertencentes à referência externa:
+
+- `externalStatus` somente será atualizado quando houver valor válido informado;
+- `externalCreatedAt` ausente ou nulo não apagará valor já existente;
+- `externalUpdatedAt` nunca poderá regredir;
+- `metadata` parcial não deverá apagar metadata válida já armazenada.
+
+#### Itens
+
+Nesta regra ainda não será definida a reconciliação dos itens.
+
+Por enquanto:
+
+- `items` ausente → preservar integralmente os itens existentes;
+- `items` presente → aguardar a regra específica de reconciliação de itens antes de implementar substituição ou merge.
+
+O motor não deverá apagar, recriar ou duplicar `OrderItem` indiscriminadamente em uma sincronização repetida.
+
+#### Idempotência
+
+Uma sincronização que não produza mudança relevante deverá permanecer idempotente:
+
+- não criar outro `Order`;
+- não criar outra `ExternalOrderReference`;
+- não duplicar `OrderItem`;
+- não gerar `OrderEvent` desnecessário.
+
+### Regra transacional 3 — reconciliação segura dos itens externos
+
+A reconciliação automática de `OrderItem` exige uma identidade externa estável por linha do pedido.
+
+O `OrderItem` canônico não deverá usar como identidade externa:
+
+- `title`;
+- `sku`;
+- posição no array;
+- preço;
+- combinação desses campos.
+
+Esses valores podem mudar ou se repetir e, portanto, não são uma chave segura para sincronização.
+
+#### Criação de pedido externo
+
+Na criação de um novo `Order` externo:
+
+- `items` será obrigatório;
+- deverá existir pelo menos um item válido;
+- os itens normalizados recebidos serão criados uma única vez junto com o `Order`;
+- cada `OrderItem` poderá ter `productId = null` quando ainda não existir correspondência com o catálogo Marto;
+- nenhum `Product` fictício será criado.
+
+#### Pedido externo já existente
+
+Quando o pedido já existir:
+
+- `items` ausente → preservar integralmente os `OrderItem` existentes;
+- `items` presente → não apagar, recriar ou fazer merge automático enquanto não existir uma identidade externa estável por linha.
+
+A presença de `items` em uma sincronização não autoriza substituir indiscriminadamente os itens canônicos.
+
+Atualizações de status, comprador, destinatário e referência externa poderão ocorrer independentemente da reconciliação dos itens.
+
+#### Identidade externa de item
+
+Antes de habilitar atualização automática dos itens, deverá existir uma estrutura genérica equivalente a:
+
+`ExternalOrderItemReference`
+
+Conceitualmente:
+
+- `orderItemId`;
+- `externalOrderReferenceId`;
+- `externalItemId`.
+
+Essa estrutura deverá permitir identificar inequivocamente qual item externo corresponde a qual `OrderItem` canônico, sem introduzir campos específicos de Mercado Livre, Shopee ou outro canal no núcleo do pedido.
+
+Depois dessa identidade existir:
+
+- item externo já conhecido → atualizar o mesmo `OrderItem`;
+- item externo novo → criar um novo `OrderItem`;
+- item ausente em uma resposta parcial → não presumir exclusão.
+
+A remoção, cancelamento ou invalidação de um item somente deverá ocorrer quando houver sinal explícito e confiável da origem.
+
+Não será criada ainda `ExternalOrderItemReference`. Esta regra apenas estabelece a condição arquitetural necessária antes da reconciliação automática de itens.
+
+### Regra transacional 4 — atomicidade e concorrência
+
+A classificação preliminar feita antes da transação:
+
+- `create`;
+- `update`;
+- `ignored_stale`;
+
+não será considerada autoridade final para qualquer escrita.
+
+Antes de gravar dados, o motor deverá revalidar o estado dentro da própria transação.
+
+#### Revalidação transacional
+
+Dentro da transação, o motor deverá consultar novamente `ExternalOrderReference` por:
+
+`(salesChannelId, externalOrderId)`
+
+A decisão final entre criação, atualização ou descarte por evento antigo deverá ser feita com base no estado mais recente disponível nessa transação.
+
+#### Criação atômica
+
+A criação de um novo pedido externo deverá ocorrer em uma única operação transacional:
+
+`Order + OrderItem(s) + ExternalOrderReference`
+
+Fluxo conceitual:
+
+1. consultar novamente `ExternalOrderReference`;
+2. confirmar que ainda não existe referência para o pedido externo;
+3. executar todas as validações da criação;
+4. criar o `Order`;
+5. criar os `OrderItem`;
+6. criar a `ExternalOrderReference`.
+
+Se qualquer etapa falhar, toda a transação deverá ser revertida.
+
+Não poderá permanecer um `Order` órfão criado por uma tentativa de importação cuja `ExternalOrderReference` não tenha sido persistida.
+
+#### Concorrência de criação
+
+A restrição única `(salesChannelId, externalOrderId)` continuará sendo a garantia estrutural contra duplicidade.
+
+Se duas sincronizações concorrentes tentarem criar o mesmo pedido externo:
+
+- somente uma poderá consolidar a referência única;
+- a execução perdedora não deverá criar um segundo `Order`;
+- a tentativa perdedora deverá ser integralmente revertida;
+- depois do conflito, uma nova leitura deverá localizar o pedido criado pela execução vencedora;
+- o processamento deverá continuar de forma idempotente sobre o mesmo `Order` canônico.
+
+#### Concorrência de atualização
+
+Uma sincronização mais antiga não poderá terminar depois e sobrescrever informação externa mais recente.
+
+`externalUpdatedAt` deverá ser reavaliado dentro da transação antes de aplicar alterações dependentes da ordem temporal.
+
+Quando a entrada for comprovadamente mais antiga que o estado já persistido:
+
+- não regredir `externalUpdatedAt`;
+- não regredir `externalStatus`;
+- não regredir estado canônico;
+- não sobrescrever dados válidos com informação antiga;
+- não gerar `OrderEvent` correspondente a uma regressão.
+
+#### Estratégia transacional
+
+A implementação deverá utilizar uma estratégia transacional adequada para proteger essas invariantes.
+
+Preferencialmente:
+
+- isolamento serializável;
+- retry limitado para conflitos transacionais esperados;
+- nenhum retry infinito.
+
+Cada retry deverá executar novamente as leituras e validações relevantes.
+
+Decisões obtidas antes da transação não deverão ser reutilizadas cegamente após um conflito.
+
+Princípio:
+
+`múltiplas sincronizações podem competir, mas somente um Order canônico poderá representar o mesmo pedido externo.`
+
+### Regra transacional 5 — status canônico, histórico e atualização futura via APIs
+
+O `canonicalStatus` representa o estado operacional normalizado do pedido dentro do Marto.
+
+O status específico de cada marketplace permanecerá na camada externa, enquanto o `Order.status` continuará usando apenas `OrderStatus` canônico.
+
+#### Criação de pedido externo
+
+Na criação de um novo pedido externo:
+
+- `canonicalStatus` será obrigatório;
+- o `Order` será criado diretamente no status canônico informado;
+- o motor não deverá usar silenciosamente o default `CREATED`;
+- o motor não deverá inventar etapas intermediárias apenas para reproduzir o histórico do canal.
+
+Um pedido poderá ser importado pela primeira vez já em estados como:
+
+- `PAID`;
+- `READY_FOR_PICKUP`;
+- `IN_TRANSIT`;
+- `DELIVERED`;
+- `CANCELLED`;
+
+desde que o normalizador do canal tenha mapeado o estado externo com segurança para um `OrderStatus` do Marto.
+
+#### Atualização de pedido existente
+
+Para `canonicalStatus`:
+
+- ausente → preservar o status atual;
+- igual ao status atual → nenhuma alteração;
+- entrada `ignored_stale` → não alterar o status;
+- diferente e proveniente de entrada válida → poderá atualizar o mesmo `Order` canônico conforme as regras de sincronização externa.
+
+As regras nativas de transição acionadas por comprador, vendedor ou fluxos internos do Marto não deverão ser reutilizadas cegamente para reconstruir o histórico de um pedido externo já avançado.
+
+O canal poderá informar um fato externo já ocorrido sem que o Marto precise simular artificialmente todas as etapas anteriores.
+
+#### OrderEvent
+
+Quando o `canonicalStatus` de um pedido existente realmente mudar por sincronização externa, deverá ser criado exatamente um `OrderEvent`.
+
+Conceitualmente:
+
+- `type`: `STATUS_CHANGED`;
+- `actorUserId`: `null`;
+- `actorRole`: `system`;
+- `fromStatus`: status canônico anterior;
+- `toStatus`: novo status canônico;
+- mensagem indicando atualização proveniente de canal externo.
+
+O `meta` deverá conter apenas contexto genérico e necessário, como:
+
+- `salesChannelId`;
+- `externalOrderId`;
+- `externalStatus`.
+
+Não armazenar payload bruto de marketplace no `OrderEvent`.
+
+Não gerar `OrderEvent` quando:
+
+- o status não tiver mudado;
+- a entrada tiver sido descartada como `ignored_stale`;
+- a sincronização tiver apenas complementado comprador, endereço, metadata ou outros dados sem mudança de status.
+
+#### Datas de lifecycle
+
+`externalUpdatedAt` não deverá ser interpretado como data de pagamento, envio, entrega, cancelamento ou qualquer outro evento de lifecycle.
+
+Portanto:
+
+- não usar `externalUpdatedAt` como `paidAt`;
+- não usar `externalUpdatedAt` como `inTransitAt`;
+- não usar `externalUpdatedAt` como `deliveredAt`;
+- não usar `externalUpdatedAt` como `cancelledAt`;
+- não sobrescrever timestamps de lifecycle válidos com aproximações.
+
+Quando um canal fornecer datas específicas e confiáveis de lifecycle, o contrato normalizado poderá ser enriquecido posteriormente para transportá-las explicitamente.
+
+Princípio:
+
+`dado desconhecido permanece desconhecido; aproximação não será registrada como fato.`
+
+#### Atualização futura via APIs
+
+Quando Mercado Livre, Shopee ou outros canais estiverem conectados, mudanças externas deverão atualizar automaticamente o mesmo `Order` canônico.
+
+As diferentes formas de entrada:
+
+- webhook;
+- sincronização periódica;
+- sincronização manual;
+
+deverão convergir para o mesmo fluxo:
+
+`canal → conector → normalização → ExternalOrderIngestionService → Order canônico`
+
+O conector será responsável por converter o status específico da plataforma para um `canonicalStatus` somente quando esse mapeamento for seguro.
+
+O Marto não copiará diretamente textos ou códigos específicos de marketplace para `Order.status`.
+
+Uma nova atualização do canal deverá localizar o pedido por:
+
+`(salesChannelId, externalOrderId)`
+
+e atualizar o mesmo `Order`, nunca criar duplicata.
+
+Dados pertencentes à operação interna do Marto — como cotações, transportadora escolhida, CT-e, conferência, custos, assistência, observações e decisões operacionais — não deverão ser apagados ou substituídos pelo canal externo.
+
 ## 19. Próxima ação exata
 
-Antes de adicionar qualquer escrita ao `ExternalOrderIngestionService`, definir as regras transacionais de criação e atualização do pedido externo.
+As regras transacionais do primeiro motor de pedidos externos estão definidas e aprovadas.
 
-Precisamos fechar especialmente:
+Antes de iniciar qualquer escrita no banco:
 
-1. quais dados são obrigatórios para criar um novo `Order`;
-2. quais campos opcionais podem atualizar um `Order` existente;
-3. como preservar dados válidos quando a sincronização vier incompleta;
-4. como tratar `items` em sincronizações repetidas sem apagar, duplicar ou recriar itens incorretamente;
-5. como criar `Order` + `ExternalOrderReference` atomicamente;
-6. em quais mudanças deve ser criado um `OrderEvent`.
+1. registrar este conjunto de regras como checkpoint de documentação;
+2. confirmar novamente branch limpa e sincronizada após o commit;
+3. implementar a primeira escrita transacional no `ExternalOrderIngestionService`;
+4. começar somente pelo fluxo de criação de novo pedido externo;
+5. criar `Order + OrderItem(s) + ExternalOrderReference` atomicamente;
+6. aplicar as validações da Regra Transacional 1 dentro da transação;
+7. revalidar `ExternalOrderReference` dentro da transação conforme a Regra Transacional 4;
+8. não implementar ainda reconciliação automática de itens de pedidos existentes;
+9. não registrar ainda endpoint público ou conector de marketplace.
 
-Somente depois dessas regras estarem definidas e registradas será implementada a primeira escrita transacional.
+A implementação deverá ocorrer em micro-etapas, com build, verificação de regressões, atualização deste MASTER e commit identificável antes de avançar.
 
-Ainda não registrar o serviço no `OrdersModule`, não criar endpoint público e não integrar Mercado Livre ou Shopee.
+Ainda não integrar Mercado Livre, Shopee ou criar telas.
 
 ## 20. NÃO FAZER AINDA
 
