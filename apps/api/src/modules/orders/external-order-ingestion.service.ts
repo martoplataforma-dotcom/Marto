@@ -48,6 +48,217 @@ export class ExternalOrderIngestionService {
     });
   }
 
+  private async createExternalOrder(input: {
+    normalized: NormalizedExternalOrderInput;
+    salesChannel: {
+      id: string;
+      merchantId: string;
+      status: string;
+    };
+    externalOrderId: string;
+  }) {
+    const { normalized, salesChannel, externalOrderId } = input;
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const transactionalSalesChannel =
+              await tx.salesChannel.findUnique({
+                where: {
+                  id: salesChannel.id,
+                },
+                select: {
+                  id: true,
+                  merchantId: true,
+                  status: true,
+                },
+              });
+
+            if (!transactionalSalesChannel) {
+              throw new Error('Sales channel not found during transaction.');
+            }
+
+            const existingReference =
+              await tx.externalOrderReference.findUnique({
+                where: {
+                  salesChannelId_externalOrderId: {
+                    salesChannelId: transactionalSalesChannel.id,
+                    externalOrderId,
+                  },
+                },
+                select: {
+                  id: true,
+                  orderId: true,
+                  externalUpdatedAt: true,
+                  lastSyncedAt: true,
+                  order: {
+                    select: {
+                      merchantId: true,
+                    },
+                  },
+                },
+              });
+
+            if (existingReference) {
+              if (
+                existingReference.order.merchantId !==
+                transactionalSalesChannel.merchantId
+              ) {
+                throw new Error(
+                  'External order reference points to an order from another merchant.',
+                );
+              }
+
+              const isStale =
+                existingReference.externalUpdatedAt &&
+                normalized.externalUpdatedAt &&
+                normalized.externalUpdatedAt.getTime() <
+                  existingReference.externalUpdatedAt.getTime();
+
+              return {
+                action: isStale
+                  ? ('ignored_stale' as const)
+                  : ('update' as const),
+                salesChannel: transactionalSalesChannel,
+                externalOrderId,
+                existingReference: {
+                  id: existingReference.id,
+                  orderId: existingReference.orderId,
+                  externalUpdatedAt: existingReference.externalUpdatedAt,
+                  lastSyncedAt: existingReference.lastSyncedAt,
+                },
+              };
+            }
+
+            this.validateCreateInput(normalized);
+
+            const items = normalized.items!;
+            const canonicalStatus = normalized.canonicalStatus!;
+
+            const normalizedItems = items.map((item, index) => {
+              const productId =
+                item.productId === undefined || item.productId === null
+                  ? null
+                  : item.productId.trim();
+
+              if (item.productId != null && !productId) {
+                throw new Error(`items[${index}].productId is invalid.`);
+              }
+
+              return {
+                productId,
+                titleSnapshot: item.title.trim(),
+                skuSnapshot: item.sku?.trim() || null,
+                variationSnapshot: item.variation,
+                quantity: item.quantity,
+                unitPrice: item.unitPrice,
+              };
+            });
+
+            const productIds = Array.from(
+              new Set(
+                normalizedItems
+                  .map((item) => item.productId)
+                  .filter((id): id is string => Boolean(id)),
+              ),
+            );
+
+            if (productIds.length > 0) {
+              const products = await tx.product.findMany({
+                where: {
+                  id: {
+                    in: productIds,
+                  },
+                  merchantId: transactionalSalesChannel.merchantId,
+                },
+                select: {
+                  id: true,
+                },
+              });
+
+              const validProductIds = new Set(
+                products.map((product) => product.id),
+              );
+
+              const invalidProductId = productIds.find(
+                (productId) => !validProductIds.has(productId),
+              );
+
+              if (invalidProductId) {
+                throw new Error(
+                  `Product does not exist or belongs to another merchant: ${invalidProductId}`,
+                );
+              }
+            }
+
+            const order = await tx.order.create({
+              data: {
+                merchantId: transactionalSalesChannel.merchantId,
+                userId: null,
+                status: canonicalStatus,
+
+                buyerNameSnapshot: normalized.buyerName?.trim() || null,
+                buyerContactSnapshot: normalized.buyerContact,
+
+                recipientNameSnapshot:
+                  normalized.recipientName?.trim() || null,
+                destinationZipCode:
+                  normalized.destinationZipCode?.trim() || null,
+                city: normalized.city?.trim() || null,
+                state: normalized.state?.trim() || null,
+                destinationAddressSnapshot: normalized.destinationAddress,
+
+                items: {
+                  create: normalizedItems,
+                },
+
+                externalOrderReferences: {
+                  create: {
+                    salesChannelId: transactionalSalesChannel.id,
+                    externalOrderId,
+                    externalStatus: normalized.externalStatus?.trim() || null,
+                    externalCreatedAt:
+                      normalized.externalCreatedAt ?? null,
+                    externalUpdatedAt:
+                      normalized.externalUpdatedAt ?? null,
+                    lastSyncedAt: new Date(),
+                    metadata: normalized.metadata,
+                  },
+                },
+              },
+              include: {
+                items: true,
+                externalOrderReferences: true,
+              },
+            });
+
+            return {
+              action: 'create' as const,
+              salesChannel: transactionalSalesChannel,
+              externalOrderId,
+              existingReference: null,
+              order,
+            };
+          },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          },
+        );
+      } catch (error) {
+        const retryable =
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          (error.code === 'P2034' || error.code === 'P2002');
+
+        if (!retryable || attempt === 3) {
+          throw error;
+        }
+      }
+    }
+
+    throw new Error('External order creation transaction failed.');
+  }
+
   async ingest(input: NormalizedExternalOrderInput) {
     const salesChannelId = input.salesChannelId.trim();
     const externalOrderId = input.externalOrderId.trim();
@@ -107,11 +318,15 @@ export class ExternalOrderIngestionService {
     }
 
     if (!existingReference) {
-      this.validateCreateInput(input);
+      return this.createExternalOrder({
+        normalized: input,
+        salesChannel,
+        externalOrderId,
+      });
     }
 
     return {
-      action: existingReference ? ('update' as const) : ('create' as const),
+      action: 'update' as const,
       salesChannel,
       externalOrderId,
       existingReference,
