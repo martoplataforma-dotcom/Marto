@@ -1176,23 +1176,92 @@ Continuam fora deste micro-checkpoint:
 - registro no `OrdersModule`;
 - conectores de marketplace.
 
+### Micro-checkpoint — buyerContactSnapshot atômico
+
+Foi implementada e validada a atualização não stale de `buyerContactSnapshot`.
+
+Checkpoint anterior protegido:
+
+- regra de snapshots JSON atômicos: `fd26779` — `docs: define snapshots json atomicos em pedidos externos`;
+- branch: `feat/marto-ops-integration`.
+
+O contrato `NormalizedExternalOrderInput` passou a aceitar:
+
+- `buyerContact?: Prisma.InputJsonValue | null`.
+
+Semântica adotada:
+
+- `undefined` preserva o snapshot existente;
+- `null` preserva o snapshot existente;
+- JSON explicitamente recebido substitui integralmente `buyerContactSnapshot`;
+- não existe merge parcial desse snapshot.
+
+No fluxo de criação de pedido externo:
+
+- JSON válido continua sendo persistido;
+- `null` é tratado como ausência do valor e não é enviado diretamente ao Prisma;
+- isso evita conflito com a semântica específica de `Json?` do Prisma.
+
+O comportamento foi validado no PostgreSQL isolado `marto_ops_test`.
+
+Teste de primeira gravação:
+
+- watermark anterior: `2026-09-05 12:08:00`;
+- entrada não stale: `2026-09-05 12:09:00`;
+- foi persistido um objeto contendo `email`, `phone` e `source`;
+- `destinationAddressSnapshot` permaneceu `NULL`;
+- `OrderEvent` permaneceu com contagem zero;
+- `OrderItem` permaneceu com contagem um.
+
+Teste de substituição atômica:
+
+- nova entrada não stale: `2026-09-05 12:10:00`;
+- foi enviado somente `{ "phone": "32888880000" }`;
+- os campos anteriores `email` e `source` não permaneceram;
+- o snapshot persistido passou a conter somente o novo `phone`;
+- portanto não ocorreu merge parcial.
+
+Teste de preservação por `null`:
+
+- nova entrada não stale: `2026-09-05 12:11:00`;
+- foi enviado `buyerContact: null`;
+- `buyerContactSnapshot` permaneceu `{ "phone": "32888880000" }`;
+- o valor válido persistido não foi apagado;
+- `destinationAddressSnapshot` permaneceu intacto;
+- nenhum `OrderEvent` foi criado;
+- nenhum `OrderItem` foi alterado.
+
+O build da API foi executado após o ajuste do contrato e concluído sem erros.
+
+Ainda não foi implementado neste micro-checkpoint:
+
+- `destinationAddressSnapshot`;
+- `externalStatus`;
+- `externalCreatedAt`;
+- merge de `metadata`;
+- `canonicalStatus`;
+- criação de `OrderEvent` por mudança real de status;
+- reconciliação de `OrderItem`;
+- timestamps de lifecycle;
+- endpoint público;
+- conectores de marketplace.
+
 ## 19. Próxima ação exata
 
-A atualização textual canônica não stale e o avanço seguro de `externalUpdatedAt` foram implementados e validados.
+`buyerContactSnapshot` foi implementado e validado como snapshot JSON atômico.
 
-O próximo micro-passo será tratar somente os snapshots JSON canônicos já autorizados:
+O próximo micro-passo será implementar somente:
 
-- `buyerContactSnapshot`;
 - `destinationAddressSnapshot`.
 
-Nesta etapa:
+A mesma regra deverá ser preservada:
 
-- `undefined` e `null` deverão preservar o valor persistido;
-- `buyerContactSnapshot` e `destinationAddressSnapshot` serão tratados como snapshots atômicos: um JSON válido explicitamente recebido substitui o snapshot inteiro;
-- não haverá merge parcial nesses dois campos; o merge estruturado continuará reservado para `metadata`;
+- `undefined` e `null` preservam o valor persistido;
+- JSON válido explicitamente recebido substitui o snapshot inteiro;
+- não haverá merge parcial;
 - nenhuma alteração de status será feita;
 - nenhum `OrderEvent` será criado;
-- `externalStatus`, `externalCreatedAt` e `metadata` ainda permanecerão fora;
+- `externalStatus`, `externalCreatedAt` e `metadata` permanecerão fora;
 - `OrderItem` continuará intocado;
 - timestamps de lifecycle continuarão intocados.
 

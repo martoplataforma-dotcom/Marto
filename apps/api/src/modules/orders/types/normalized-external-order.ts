@@ -20,7 +20,7 @@ export type NormalizedExternalOrderInput = {
   canonicalStatus?: OrderStatus;
 
   buyerName?: string | null;
-  buyerContact?: Prisma.InputJsonValue;
+  buyerContact?: Prisma.InputJsonValue | null;
 
   recipientName?: string | null;
   destinationZipCode?: string | null;

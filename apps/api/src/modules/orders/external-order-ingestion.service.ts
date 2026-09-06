@@ -209,7 +209,7 @@ export class ExternalOrderIngestionService {
                 status: canonicalStatus,
 
                 buyerNameSnapshot: normalized.buyerName?.trim() || null,
-                buyerContactSnapshot: normalized.buyerContact,
+                buyerContactSnapshot: normalized.buyerContact ?? undefined,
 
                 recipientNameSnapshot:
                   normalized.recipientName?.trim() || null,
@@ -392,6 +392,13 @@ export class ExternalOrderIngestionService {
             const state = this.normalizeOptionalString(normalized.state);
 
             const orderUpdateData: Prisma.OrderUpdateInput = {};
+
+            if (
+              normalized.buyerContact !== undefined &&
+              normalized.buyerContact !== null
+            ) {
+              orderUpdateData.buyerContactSnapshot = normalized.buyerContact;
+            }
 
             if (
               buyerName !== undefined &&
