@@ -1410,35 +1410,84 @@ Ainda não foi implementado neste micro-checkpoint:
 - endpoints;
 - conectores de marketplace.
 
-## 19. Próxima ação exata
+### Micro-checkpoint — externalCreatedAt imutável e enriquecível
 
-`ExternalOrderReference.externalStatus` foi implementado, validado e protegido.
+Foi implementada e validada a atualização segura de `ExternalOrderReference.externalCreatedAt`.
 
-O próximo micro-passo autorizado será tratar somente:
+Checkpoint anterior protegido:
 
-- `ExternalOrderReference.externalCreatedAt`.
+- `4227b01` — `feat(orders): atualiza externalStatus de pedidos externos`;
+- `937712a` — `docs: define regra de externalCreatedAt em pedidos externos`;
+- branch: `feat/marto-ops-integration`.
 
-Regra planejada:
+Semântica implementada:
 
 - `externalCreatedAt` representa a data/hora original de criação do pedido no canal externo;
-- no fluxo de criação, o comportamento atual será preservado;
-- `undefined` ou `null` em uma atualização preservam o valor persistido;
-- se `externalCreatedAt` persistido estiver `NULL` e uma atualização não stale trouxer uma data válida, o campo poderá ser preenchido;
-- depois que `externalCreatedAt` possuir um valor persistido, sincronizações posteriores não deverão substituí-lo automaticamente;
-- uma atualização stale nunca poderá preencher, alterar ou regredir `externalCreatedAt`;
-- `externalUpdatedAt` continuará sendo o watermark de proteção contra regressão;
-- este micro-passo não altera `Order`;
-- não altera `Order.status`;
-- não cria `OrderEvent`;
-- não altera `externalStatus`;
-- `metadata` continuará fora;
-- `canonicalStatus` continuará fora;
-- `OrderItem` continuará intocado;
-- timestamps de lifecycle do `Order` continuarão intocados.
+- no fluxo de criação, o comportamento existente foi preservado;
+- `undefined` ou `null` em atualização preservam o valor persistido;
+- se o valor persistido estiver `NULL`, uma atualização não stale com `externalCreatedAt` informado poderá preenchê-lo;
+- depois que existir um valor persistido, sincronizações posteriores não o substituem automaticamente;
+- entrada stale nunca poderá preencher, alterar ou regredir `externalCreatedAt`;
+- `externalUpdatedAt` continua sendo o watermark de proteção temporal.
 
-A finalidade desta regra é permitir enriquecimento de uma referência externa que ainda não conhece sua data original de criação, sem transformar `externalCreatedAt` em um timestamp mutável de sincronização.
+A implementação adicionou somente a decisão de preenchimento de `externalCreatedAt` no fluxo transacional de atualização existente.
 
-Ainda não implementar neste micro-passo:
+Não houve migration, pois o campo já existia no schema.
+
+O comportamento foi validado por execução real contra o PostgreSQL isolado `marto_ops_test`.
+
+Teste de imutabilidade de valor já existente:
+
+- baseline: `externalCreatedAt = 2026-09-05 12:00:00`;
+- entrada não stale com `externalUpdatedAt = 12:17`;
+- foi tentado `externalCreatedAt = 11:55`;
+- o valor persistido permaneceu `12:00`;
+- `externalUpdatedAt` avançou para `12:17`;
+- `externalStatus` permaneceu `ready_to_ship`;
+- `Order.status` permaneceu `PAID`;
+- `OrderEvent` permaneceu com contagem zero;
+- `OrderItem` permaneceu com contagem um.
+
+Teste de enriquecimento quando o valor estava `NULL`:
+
+- foi criado fixture isolado com `externalCreatedAt = NULL`;
+- baseline do watermark: `12:17`;
+- entrada não stale: `externalUpdatedAt = 12:18`;
+- entrada trouxe `externalCreatedAt = 11:50`;
+- o campo foi preenchido corretamente com `11:50`;
+- `externalUpdatedAt` avançou para `12:18`;
+- `Order.status`, `externalStatus`, eventos e itens permaneceram intactos.
+
+Teste de imutabilidade após o enriquecimento:
+
+- valor persistido: `externalCreatedAt = 11:50`;
+- entrada posterior não stale: `externalUpdatedAt = 12:19`;
+- foi tentado substituir por `externalCreatedAt = 11:40`;
+- o valor persistido permaneceu `11:50`;
+- `externalUpdatedAt` avançou normalmente para `12:19`;
+- nenhum evento ou item foi alterado.
+
+Teste de proteção contra entrada stale quando o campo ainda estava `NULL`:
+
+- fixture isolado com `externalCreatedAt = NULL`;
+- watermark persistido: `externalUpdatedAt = 12:20`;
+- entrada recebida: `externalUpdatedAt = 12:19`;
+- a entrada tentou informar `externalCreatedAt = 11:30`;
+- resultado: `action = ignored_stale`;
+- `externalCreatedAt` permaneceu `NULL`;
+- `externalUpdatedAt` permaneceu `12:20`;
+- `externalStatus` permaneceu `ready_to_ship`;
+- `Order.status` permaneceu `PAID`;
+- `OrderEvent` permaneceu com contagem zero;
+- `OrderItem` permaneceu com contagem um.
+
+O build da API NestJS foi executado após a implementação e concluído sem erros.
+
+`git diff --check` foi executado após os testes e concluído sem erros.
+
+O runner temporário utilizado nos testes foi removido e não faz parte do código oficial.
+
+Continuam fora deste micro-checkpoint:
 
 - merge de `metadata`;
 - `canonicalStatus`;
@@ -1446,7 +1495,24 @@ Ainda não implementar neste micro-passo:
 - reconciliação de itens;
 - lifecycle timestamps;
 - endpoints;
+- registro do serviço no `OrdersModule`;
 - conectores de marketplace.
+
+## 19. Próxima ação exata
+
+`ExternalOrderReference.externalCreatedAt` foi implementado e validado localmente.
+
+O próximo micro-passo autorizado é somente proteger este checkpoint:
+
+1. revisar o diff final do código e do `INTEGRATION_MASTER.md`;
+2. executar novamente o build da API;
+3. executar `git diff --check`;
+4. adicionar ao Git somente o serviço de ingestão e o `INTEGRATION_MASTER.md`;
+5. criar o commit identificável;
+6. enviar o commit para `feat/marto-ops-integration`;
+7. confirmar a branch limpa e sincronizada.
+
+Ainda não iniciar `metadata`, `canonicalStatus`, `OrderEvent` ou qualquer etapa seguinte antes deste checkpoint estar protegido no Git.
 
 ## 20. NÃO FAZER AINDA
 

@@ -382,6 +382,13 @@ export class ExternalOrderIngestionService {
               };
             }
 
+            const externalCreatedAt =
+              existingReference.externalCreatedAt === null &&
+              normalized.externalCreatedAt !== undefined &&
+              normalized.externalCreatedAt !== null
+                ? normalized.externalCreatedAt
+                : undefined;
+
             const externalStatus = this.normalizeOptionalString(
               normalized.externalStatus,
             );
@@ -457,6 +464,7 @@ export class ExternalOrderIngestionService {
               },
               data: {
                 externalStatus,
+                externalCreatedAt,
                 externalUpdatedAt: normalized.externalUpdatedAt ?? undefined,
                 lastSyncedAt: new Date(),
               },
