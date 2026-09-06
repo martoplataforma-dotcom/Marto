@@ -1188,6 +1188,8 @@ O próximo micro-passo será tratar somente os snapshots JSON canônicos já aut
 Nesta etapa:
 
 - `undefined` e `null` deverão preservar o valor persistido;
+- `buyerContactSnapshot` e `destinationAddressSnapshot` serão tratados como snapshots atômicos: um JSON válido explicitamente recebido substitui o snapshot inteiro;
+- não haverá merge parcial nesses dois campos; o merge estruturado continuará reservado para `metadata`;
 - nenhuma alteração de status será feita;
 - nenhum `OrderEvent` será criado;
 - `externalStatus`, `externalCreatedAt` e `metadata` ainda permanecerão fora;
