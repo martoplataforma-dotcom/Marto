@@ -941,26 +941,36 @@ Dados pertencentes à operação interna do Marto — como cotações, transport
 
 ## 19. Próxima ação exata
 
-A primeira escrita transacional de criação de pedido externo está implementada, compilada e validada por execução real contra o banco PostgreSQL isolado `marto_ops_test`.
+A primeira escrita transacional de criação de pedido externo foi concluída, validada e protegida no Git.
 
-As invariantes da criação foram comprovadas, incluindo atomicidade, deduplicação, isolamento entre Merchants, ausência de entidades fictícias e preservação do fluxo nativo Marto.
+Checkpoint:
 
-O próximo micro-checkpoint é proteger esta implementação no Git antes de avançar.
+- commit: `9577207`
+- mensagem: `feat(orders): valida criação transacional de pedidos externos`
+- branch: `feat/marto-ops-integration`
+- commit enviado ao repositório remoto;
+- branch confirmada limpa e sincronizada após o push.
 
-Executar, nesta ordem:
+Com isso, a criação de novo pedido externo está encerrada neste estágio do PASSO 4B.
 
-1. executar novamente o build da API;
-2. executar `git diff --check`;
-3. revisar o diff final do `ExternalOrderIngestionService` e deste MASTER;
-4. remover somente os runners temporários `.tmp-*`;
-5. confirmar que nenhum runner temporário será incluído no commit;
-6. criar commit identificável da primeira escrita transacional validada;
-7. enviar o checkpoint para `feat/marto-ops-integration`;
-8. confirmar que a branch ficou limpa e sincronizada.
+O próximo micro-checkpoint será a atualização transacional de um pedido externo já existente.
 
-Somente depois desse checkpoint estar protegido no Git poderá começar a implementação da atualização transacional de pedido externo já existente.
+Antes de escrever esse fluxo, revisar as Regras Transacionais 2, 4 e 5 e delimitar exatamente quais campos poderão ser atualizados nesta primeira implementação.
 
-Ainda não implementar reconciliação automática de itens, endpoint público, registro no `OrdersModule` ou conectores de marketplace.
+A primeira implementação de atualização deverá permanecer limitada a:
+
+- dados canônicos de comprador e destinatário;
+- CEP, cidade, estado e snapshot de endereço;
+- `externalStatus`;
+- `externalCreatedAt`;
+- `externalUpdatedAt`;
+- `metadata`;
+- `canonicalStatus`, somente conforme as regras de status já aprovadas;
+- criação de exatamente um `OrderEvent` quando houver mudança real do status canônico.
+
+Ainda não reconciliar `OrderItem(s)` de pedido existente.
+
+Também ainda não implementar endpoint público, registro no `OrdersModule` ou conectores de marketplace.
 
 Ainda não integrar Mercado Livre, Shopee ou criar telas.
 
