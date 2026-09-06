@@ -1412,20 +1412,37 @@ Ainda não foi implementado neste micro-checkpoint:
 
 ## 19. Próxima ação exata
 
-`ExternalOrderReference.externalStatus` foi implementado e validado com:
+`ExternalOrderReference.externalStatus` foi implementado, validado e protegido.
 
-- normalização por `trim()`;
-- preservação de valor ausente/vazio;
-- proteção contra atualização stale;
-- independência de `Order.status`.
+O próximo micro-passo autorizado será tratar somente:
 
-O próximo micro-passo deverá ser definido antes de qualquer nova implementação.
+- `ExternalOrderReference.externalCreatedAt`.
 
-Continuam fora:
+Regra planejada:
 
-- `externalCreatedAt`;
-- `metadata`;
-- `canonicalStatus` e histórico correspondente;
+- `externalCreatedAt` representa a data/hora original de criação do pedido no canal externo;
+- no fluxo de criação, o comportamento atual será preservado;
+- `undefined` ou `null` em uma atualização preservam o valor persistido;
+- se `externalCreatedAt` persistido estiver `NULL` e uma atualização não stale trouxer uma data válida, o campo poderá ser preenchido;
+- depois que `externalCreatedAt` possuir um valor persistido, sincronizações posteriores não deverão substituí-lo automaticamente;
+- uma atualização stale nunca poderá preencher, alterar ou regredir `externalCreatedAt`;
+- `externalUpdatedAt` continuará sendo o watermark de proteção contra regressão;
+- este micro-passo não altera `Order`;
+- não altera `Order.status`;
+- não cria `OrderEvent`;
+- não altera `externalStatus`;
+- `metadata` continuará fora;
+- `canonicalStatus` continuará fora;
+- `OrderItem` continuará intocado;
+- timestamps de lifecycle do `Order` continuarão intocados.
+
+A finalidade desta regra é permitir enriquecimento de uma referência externa que ainda não conhece sua data original de criação, sem transformar `externalCreatedAt` em um timestamp mutável de sincronização.
+
+Ainda não implementar neste micro-passo:
+
+- merge de `metadata`;
+- `canonicalStatus`;
+- criação de `OrderEvent`;
 - reconciliação de itens;
 - lifecycle timestamps;
 - endpoints;
