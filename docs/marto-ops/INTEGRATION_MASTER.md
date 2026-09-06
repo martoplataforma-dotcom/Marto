@@ -1327,45 +1327,105 @@ Ainda não foi implementado neste micro-checkpoint:
 - endpoint público;
 - conectores de marketplace.
 
-## 19. Próxima ação exata
+### Micro-checkpoint — externalStatus bruto do canal
 
-Os snapshots JSON canônicos autorizados estão concluídos e protegidos:
+Foi implementada e validada a atualização não stale de `ExternalOrderReference.externalStatus`.
 
-- `buyerContactSnapshot`;
-- `destinationAddressSnapshot`.
+Checkpoint anterior protegido:
 
-O próximo micro-passo autorizado será tratar somente:
+- `ca257ca` — `docs: define regra de externalStatus em pedidos externos`;
+- branch: `feat/marto-ops-integration`.
 
-- `ExternalOrderReference.externalStatus`.
+Semântica implementada:
 
-Regra planejada para atualização de pedido externo existente:
+- `externalStatus` representa somente o status bruto recebido do canal externo;
+- uma string válida é normalizada com `trim()`;
+- string vazia ou somente espaços preserva o valor persistido;
+- atualização stale não altera nem regride `externalStatus`;
+- atualização não stale pode substituir `externalStatus`;
+- `externalUpdatedAt` continua sendo o watermark de proteção contra regressão;
+- `Order.status` não é alterado por este campo;
+- nenhum `OrderEvent` é criado por este campo;
+- `externalCreatedAt`, `metadata` e `canonicalStatus` continuam fora.
 
-- `externalStatus` representa somente o status bruto informado pelo canal externo;
-- ele não altera diretamente `Order.status`;
-- `undefined`, `null`, string vazia ou somente espaços preservam o valor persistido;
-- uma string válida será normalizada com `trim()` e poderá substituir o `externalStatus` existente;
-- atualização stale não poderá alterar nem regredir `externalStatus`;
-- atualização não stale poderá alterar `externalStatus`;
-- `externalUpdatedAt` continuará sendo o watermark usado para proteção contra regressão;
-- nenhuma alteração em `Order` será feita por este micro-passo;
-- nenhum `OrderEvent` será criado;
-- `externalCreatedAt` continuará fora;
-- `metadata` continuará fora;
-- `canonicalStatus` continuará fora;
-- `OrderItem` continuará intocado;
-- timestamps de lifecycle continuarão intocados.
+O build da API foi executado após a implementação e concluído sem erros.
 
-No fluxo de criação já existente:
+O comportamento foi validado no PostgreSQL isolado `marto_ops_test`.
 
-- `externalStatus` continua sendo persistido como status bruto do canal;
-- string vazia ou somente espaços resulta em ausência do valor.
+Baseline:
 
-Ainda não implementar neste micro-passo:
+- `externalStatus = paid`;
+- `externalUpdatedAt = 2026-09-05 12:14:00`;
+- `Order.status = PAID`;
+- `OrderEvent` com contagem zero;
+- `OrderItem` com contagem um.
+
+Teste de atualização válida e normalização:
+
+- entrada não stale: `2026-09-05 12:15:00`;
+- entrada: `externalStatus = "  ready_to_ship  "`;
+- resultado: `action = update`;
+- valor persistido: `ready_to_ship`;
+- os espaços externos foram removidos;
+- `externalUpdatedAt` avançou para `12:15`;
+- `Order.status` permaneceu `PAID`;
+- nenhum `OrderEvent` foi criado;
+- nenhum `OrderItem` foi alterado.
+
+Teste de proteção stale:
+
+- entrada: `2026-09-05 12:14:30`;
+- tentativa de `externalStatus = shipped`;
+- resultado: `action = ignored_stale`;
+- `externalStatus` permaneceu `ready_to_ship`;
+- `externalUpdatedAt` permaneceu `12:15`;
+- somente `lastSyncedAt` avançou;
+- `Order.status` permaneceu `PAID`;
+- nenhum `OrderEvent` foi criado;
+- nenhum `OrderItem` foi alterado.
+
+Teste de preservação por string contendo somente espaços:
+
+- entrada não stale: `2026-09-05 12:16:00`;
+- entrada: `externalStatus = "   "`;
+- resultado: `action = update`;
+- `externalStatus` permaneceu `ready_to_ship`;
+- `externalUpdatedAt` avançou para `12:16`;
+- `Order.status` permaneceu `PAID`;
+- nenhum `OrderEvent` foi criado;
+- nenhum `OrderItem` foi alterado.
+
+`null` e `undefined` seguem o mesmo caminho de normalização que resulta em ausência de atualização, mas não foram testados separadamente no banco neste micro-checkpoint.
+
+O runner temporário utilizado nos testes foi removido e não faz parte do código oficial.
+
+Ainda não foi implementado neste micro-checkpoint:
 
 - `externalCreatedAt`;
 - merge de `metadata`;
 - `canonicalStatus`;
 - criação de `OrderEvent`;
+- reconciliação de itens;
+- lifecycle timestamps;
+- endpoints;
+- conectores de marketplace.
+
+## 19. Próxima ação exata
+
+`ExternalOrderReference.externalStatus` foi implementado e validado com:
+
+- normalização por `trim()`;
+- preservação de valor ausente/vazio;
+- proteção contra atualização stale;
+- independência de `Order.status`.
+
+O próximo micro-passo deverá ser definido antes de qualquer nova implementação.
+
+Continuam fora:
+
+- `externalCreatedAt`;
+- `metadata`;
+- `canonicalStatus` e histórico correspondente;
 - reconciliação de itens;
 - lifecycle timestamps;
 - endpoints;

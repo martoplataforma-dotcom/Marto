@@ -382,6 +382,10 @@ export class ExternalOrderIngestionService {
               };
             }
 
+            const externalStatus = this.normalizeOptionalString(
+              normalized.externalStatus,
+            );
+
             const buyerName = this.normalizeOptionalString(normalized.buyerName);
             const recipientName = this.normalizeOptionalString(
               normalized.recipientName,
@@ -452,6 +456,7 @@ export class ExternalOrderIngestionService {
                 id: existingReference.id,
               },
               data: {
+                externalStatus,
                 externalUpdatedAt: normalized.externalUpdatedAt ?? undefined,
                 lastSyncedAt: new Date(),
               },
