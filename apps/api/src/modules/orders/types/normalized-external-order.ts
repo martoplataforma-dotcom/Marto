@@ -26,7 +26,7 @@ export type NormalizedExternalOrderInput = {
   destinationZipCode?: string | null;
   city?: string | null;
   state?: string | null;
-  destinationAddress?: Prisma.InputJsonValue;
+  destinationAddress?: Prisma.InputJsonValue | null;
 
   items?: NormalizedExternalOrderItem[];
 

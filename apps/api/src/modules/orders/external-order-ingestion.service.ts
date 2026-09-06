@@ -217,7 +217,8 @@ export class ExternalOrderIngestionService {
                   normalized.destinationZipCode?.trim() || null,
                 city: normalized.city?.trim() || null,
                 state: normalized.state?.trim() || null,
-                destinationAddressSnapshot: normalized.destinationAddress,
+                destinationAddressSnapshot:
+                  normalized.destinationAddress ?? undefined,
 
                 items: {
                   create: normalizedItems,
@@ -398,6 +399,14 @@ export class ExternalOrderIngestionService {
               normalized.buyerContact !== null
             ) {
               orderUpdateData.buyerContactSnapshot = normalized.buyerContact;
+            }
+
+            if (
+              normalized.destinationAddress !== undefined &&
+              normalized.destinationAddress !== null
+            ) {
+              orderUpdateData.destinationAddressSnapshot =
+                normalized.destinationAddress;
             }
 
             if (

@@ -1246,24 +1246,112 @@ Ainda não foi implementado neste micro-checkpoint:
 - endpoint público;
 - conectores de marketplace.
 
+### Micro-checkpoint — destinationAddressSnapshot atômico
+
+Foi implementada e validada a atualização não stale de `destinationAddressSnapshot`.
+
+Checkpoint anterior protegido:
+
+- `76e05bc` — `feat(orders): adiciona snapshot atomico de contato externo`;
+- branch: `feat/marto-ops-integration`.
+
+O contrato `NormalizedExternalOrderInput` passou a aceitar:
+
+- `destinationAddress?: Prisma.InputJsonValue | null`.
+
+Semântica adotada:
+
+- `undefined` preserva o snapshot existente;
+- `null` preserva o snapshot existente;
+- JSON explicitamente recebido substitui integralmente `destinationAddressSnapshot`;
+- não existe merge parcial desse snapshot.
+
+No fluxo de criação de pedido externo:
+
+- JSON válido continua sendo persistido;
+- `null` é tratado como ausência do valor por meio de `undefined`;
+- `null` não é enviado diretamente ao campo `Json?` do Prisma.
+
+O build da API foi executado após os ajustes e concluído sem erros.
+
+O comportamento foi validado no PostgreSQL isolado `marto_ops_test`.
+
+Baseline antes dos testes:
+
+- `destinationAddressSnapshot = NULL`;
+- `externalUpdatedAt = 2026-09-05 12:11:00`;
+- `OrderEvent` com contagem zero;
+- `OrderItem` com contagem um.
+
+Teste de primeira gravação:
+
+- entrada não stale: `2026-09-05 12:12:00`;
+- foi persistido endereço contendo `street`, `number`, `neighborhood`, `city`, `state` e `zipCode`;
+- `externalUpdatedAt` avançou para `12:12`;
+- nenhum `OrderEvent` foi criado;
+- nenhum `OrderItem` foi alterado.
+
+Teste de substituição atômica:
+
+- entrada não stale: `2026-09-05 12:13:00`;
+- foi enviado somente `street` e `number`;
+- `city`, `state`, `zipCode` e `neighborhood` anteriores não permaneceram;
+- o snapshot persistido passou a conter somente:
+	- `street: Avenida Marto Atualizada`;
+	- `number: 999`;
+- portanto não ocorreu merge parcial;
+- nenhum `OrderEvent` foi criado;
+- nenhum `OrderItem` foi alterado.
+
+Teste de preservação por `null`:
+
+- entrada não stale: `2026-09-05 12:14:00`;
+- foi enviado `destinationAddress: null`;
+- `destinationAddressSnapshot` permaneceu com `street` e `number` anteriormente persistidos;
+- o valor válido não foi apagado;
+- `externalUpdatedAt` avançou para `12:14`;
+- nenhum `OrderEvent` foi criado;
+- nenhum `OrderItem` foi alterado.
+
+O runner temporário utilizado nos testes foi removido e não faz parte do código oficial.
+
+Ainda não foi implementado neste micro-checkpoint:
+
+- `externalStatus`;
+- `externalCreatedAt`;
+- merge de `metadata`;
+- `canonicalStatus`;
+- criação de `OrderEvent` por mudança real de status;
+- reconciliação de `OrderItem`;
+- timestamps de lifecycle;
+- endpoint público;
+- conectores de marketplace.
+
 ## 19. Próxima ação exata
 
-`buyerContactSnapshot` foi implementado e validado como snapshot JSON atômico.
+Os dois snapshots JSON canônicos atualmente autorizados foram implementados e validados:
 
-O próximo micro-passo será implementar somente:
-
+- `buyerContactSnapshot`;
 - `destinationAddressSnapshot`.
 
-A mesma regra deverá ser preservada:
+Ambos seguem a regra de snapshot atômico:
 
 - `undefined` e `null` preservam o valor persistido;
 - JSON válido explicitamente recebido substitui o snapshot inteiro;
-- não haverá merge parcial;
-- nenhuma alteração de status será feita;
-- nenhum `OrderEvent` será criado;
-- `externalStatus`, `externalCreatedAt` e `metadata` permanecerão fora;
-- `OrderItem` continuará intocado;
-- timestamps de lifecycle continuarão intocados.
+- não existe merge parcial.
+
+O próximo micro-passo deverá ser definido antes de qualquer nova implementação.
+
+Continuam fora:
+
+- `externalStatus`;
+- `externalCreatedAt`;
+- `metadata`;
+- `canonicalStatus` e histórico correspondente;
+- reconciliação de itens;
+- lifecycle timestamps;
+- endpoints;
+- conectores de marketplace.
 
 ## 20. NÃO FAZER AINDA
 
