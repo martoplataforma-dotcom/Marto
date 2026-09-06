@@ -8,6 +8,16 @@ import type { NormalizedExternalOrderInput } from './types/normalized-external-o
 export class ExternalOrderIngestionService {
   constructor(private readonly prisma: PrismaService) {}
 
+  private normalizeOptionalString(value?: string | null) {
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+
+    const normalized = value.trim();
+
+    return normalized || undefined;
+  }
+
   private validateCreateInput(input: NormalizedExternalOrderInput) {
     if (!input.canonicalStatus) {
       throw new Error(
@@ -303,13 +313,23 @@ export class ExternalOrderIngestionService {
                 select: {
                   id: true,
                   orderId: true,
+                  externalStatus: true,
+                  externalCreatedAt: true,
                   externalUpdatedAt: true,
                   lastSyncedAt: true,
+                  metadata: true,
                   order: {
                     select: {
                       id: true,
                       merchantId: true,
                       status: true,
+                      buyerNameSnapshot: true,
+                      buyerContactSnapshot: true,
+                      recipientNameSnapshot: true,
+                      destinationZipCode: true,
+                      city: true,
+                      state: true,
+                      destinationAddressSnapshot: true,
                     },
                   },
                 },
@@ -361,16 +381,77 @@ export class ExternalOrderIngestionService {
               };
             }
 
+            const buyerName = this.normalizeOptionalString(normalized.buyerName);
+            const recipientName = this.normalizeOptionalString(
+              normalized.recipientName,
+            );
+            const destinationZipCode = this.normalizeOptionalString(
+              normalized.destinationZipCode,
+            );
+            const city = this.normalizeOptionalString(normalized.city);
+            const state = this.normalizeOptionalString(normalized.state);
+
+            const orderUpdateData: Prisma.OrderUpdateInput = {};
+
+            if (
+              buyerName !== undefined &&
+              buyerName !== existingReference.order.buyerNameSnapshot
+            ) {
+              orderUpdateData.buyerNameSnapshot = buyerName;
+            }
+
+            if (
+              recipientName !== undefined &&
+              recipientName !== existingReference.order.recipientNameSnapshot
+            ) {
+              orderUpdateData.recipientNameSnapshot = recipientName;
+            }
+
+            if (
+              destinationZipCode !== undefined &&
+              destinationZipCode !== existingReference.order.destinationZipCode
+            ) {
+              orderUpdateData.destinationZipCode = destinationZipCode;
+            }
+
+            if (city !== undefined && city !== existingReference.order.city) {
+              orderUpdateData.city = city;
+            }
+
+            if (state !== undefined && state !== existingReference.order.state) {
+              orderUpdateData.state = state;
+            }
+
+            if (Object.keys(orderUpdateData).length > 0) {
+              await tx.order.update({
+                where: {
+                  id: existingReference.orderId,
+                },
+                data: orderUpdateData,
+              });
+            }
+
+            const updatedReference = await tx.externalOrderReference.update({
+              where: {
+                id: existingReference.id,
+              },
+              data: {
+                externalUpdatedAt: normalized.externalUpdatedAt ?? undefined,
+                lastSyncedAt: new Date(),
+              },
+              select: {
+                id: true,
+                orderId: true,
+                externalUpdatedAt: true,
+                lastSyncedAt: true,
+              },
+            });
+
             return {
               action: 'update' as const,
               salesChannel: transactionalSalesChannel,
               externalOrderId,
-              existingReference: {
-                id: existingReference.id,
-                orderId: existingReference.orderId,
-                externalUpdatedAt: existingReference.externalUpdatedAt,
-                lastSyncedAt: existingReference.lastSyncedAt,
-              },
+              existingReference: updatedReference,
             };
           },
           {

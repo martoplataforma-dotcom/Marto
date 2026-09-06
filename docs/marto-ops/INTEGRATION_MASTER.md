@@ -1088,32 +1088,111 @@ Também continuam fora deste micro-checkpoint:
 - registro no `OrdersModule`;
 - conectores de marketplace.
 
+### Micro-checkpoint — atualização textual canônica não stale e avanço do watermark
+
+A primeira escrita canônica de atualização de pedido externo existente foi implementada e validada em banco isolado.
+
+Checkpoint anterior protegido:
+
+- proteção transacional contra entrada stale: `0e14d1d` — `feat(orders): protege atualizações stale de pedidos externos`;
+- branch: `feat/marto-ops-integration`.
+
+No caminho não stale, o `ExternalOrderIngestionService` agora pode atualizar somente os seguintes campos canônicos textuais do `Order`:
+
+- `buyerNameSnapshot`;
+- `recipientNameSnapshot`;
+- `destinationZipCode`;
+- `city`;
+- `state`.
+
+Foi adicionada normalização de strings opcionais.
+
+Regras validadas:
+
+- strings válidas são normalizadas com `trim()`;
+- `undefined` preserva o valor existente;
+- `null` preserva o valor existente;
+- string vazia preserva o valor existente;
+- string contendo apenas espaços preserva o valor existente;
+- valor válido diferente pode atualizar o campo;
+- valor válido igual não gera `Order.update()` desnecessário.
+
+Neste mesmo fluxo, `ExternalOrderReference.lastSyncedAt` é atualizado para registrar o processamento da sincronização.
+
+O `externalUpdatedAt` também passou a funcionar como watermark persistido da sincronização externa:
+
+- entrada não stale com `externalUpdatedAt` informado pode avançar o valor persistido;
+- entrada sem `externalUpdatedAt` preserva o valor existente;
+- o valor nunca regride pelo caminho stale;
+- a decisão continua sendo reavaliada dentro da transação `Serializable`.
+
+Esse comportamento foi validado contra o PostgreSQL isolado `marto_ops_test`.
+
+Teste de atualização válida:
+
+- estado inicial do watermark: `2026-09-05 12:05:00`;
+- entrada válida utilizada posteriormente: `2026-09-05 12:08:00`;
+- `buyerNameSnapshot` passou para `Marto Ops Buyer Atualizado`;
+- `recipientNameSnapshot` passou para `Marto Ops Recipient Atualizado`;
+- CEP passou para `20040002`;
+- cidade passou para `Rio de Janeiro`;
+- estado passou para `RJ`;
+- `externalUpdatedAt` avançou para `2026-09-05 12:08:00`;
+- `status` permaneceu `PAID`;
+- `externalStatus` permaneceu `paid`;
+- `metadata` permaneceu inalterada;
+- `OrderEvent` permaneceu com contagem zero;
+- `OrderItem` permaneceu com contagem um.
+
+Teste de preservação:
+
+- foram enviados `null`, string vazia e strings contendo apenas espaços;
+- nenhum dos cinco campos canônicos válidos foi apagado;
+- somente o processamento da sincronização foi registrado.
+
+Teste de regressão do watermark:
+
+- após persistir `externalUpdatedAt = 2026-09-05 12:08:00`, foi enviada uma entrada atrasada com `2026-09-05 12:07:00`;
+- resultado: `action = ignored_stale`;
+- os cinco campos canônicos permaneceram intactos;
+- `externalUpdatedAt` permaneceu em `12:08`;
+- nenhum evento foi criado;
+- nenhum item foi alterado.
+
+O build da API foi executado após a implementação e concluído sem erros.
+
+Continuam fora deste micro-checkpoint:
+
+- `buyerContactSnapshot`;
+- `destinationAddressSnapshot`;
+- `externalStatus`;
+- `externalCreatedAt`;
+- merge de `metadata`;
+- alteração de `canonicalStatus`;
+- criação de `OrderEvent` para mudança real de status;
+- reconciliação de `OrderItem`;
+- timestamps de lifecycle;
+- endpoint público;
+- registro no `OrdersModule`;
+- conectores de marketplace.
+
 ## 19. Próxima ação exata
 
-A estrutura transacional da atualização de pedido externo existente foi iniciada e a proteção contra sincronização stale foi validada em banco isolado.
+A atualização textual canônica não stale e o avanço seguro de `externalUpdatedAt` foram implementados e validados.
 
-O próximo micro-passo será implementar somente a atualização válida e não stale dos campos já autorizados.
+O próximo micro-passo será tratar somente os snapshots JSON canônicos já autorizados:
 
-A implementação deverá:
+- `buyerContactSnapshot`;
+- `destinationAddressSnapshot`.
 
-1. preservar campos ausentes, nulos ou strings vazias;
-2. atualizar somente dados canônicos válidos recebidos;
-3. atualizar os campos autorizados da `ExternalOrderReference`;
-4. fazer merge seguro de `metadata`;
-5. atualizar `canonicalStatus` somente quando realmente diferente;
-6. criar exatamente um `OrderEvent` quando houver mudança real de status;
-7. não gerar `OrderEvent` quando o status permanecer igual;
-8. não alterar `OrderItem`;
-9. não alterar timestamps de lifecycle;
-10. permanecer dentro da mesma transação `Serializable`.
+Nesta etapa:
 
-Antes de avançar para itens, endpoints ou conectores, esse fluxo deverá ser compilado e validado novamente no banco isolado.
-
-Ainda não reconciliar `OrderItem(s)` de pedido existente.
-
-Também ainda não implementar endpoint público, registro no `OrdersModule` ou conectores de marketplace.
-
-Ainda não integrar Mercado Livre, Shopee ou criar telas.
+- `undefined` e `null` deverão preservar o valor persistido;
+- nenhuma alteração de status será feita;
+- nenhum `OrderEvent` será criado;
+- `externalStatus`, `externalCreatedAt` e `metadata` ainda permanecerão fora;
+- `OrderItem` continuará intocado;
+- timestamps de lifecycle continuarão intocados.
 
 ## 20. NÃO FAZER AINDA
 
