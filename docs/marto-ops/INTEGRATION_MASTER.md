@@ -1329,25 +1329,43 @@ Ainda não foi implementado neste micro-checkpoint:
 
 ## 19. Próxima ação exata
 
-Os dois snapshots JSON canônicos atualmente autorizados foram implementados e validados:
+Os snapshots JSON canônicos autorizados estão concluídos e protegidos:
 
 - `buyerContactSnapshot`;
 - `destinationAddressSnapshot`.
 
-Ambos seguem a regra de snapshot atômico:
+O próximo micro-passo autorizado será tratar somente:
 
-- `undefined` e `null` preservam o valor persistido;
-- JSON válido explicitamente recebido substitui o snapshot inteiro;
-- não existe merge parcial.
+- `ExternalOrderReference.externalStatus`.
 
-O próximo micro-passo deverá ser definido antes de qualquer nova implementação.
+Regra planejada para atualização de pedido externo existente:
 
-Continuam fora:
+- `externalStatus` representa somente o status bruto informado pelo canal externo;
+- ele não altera diretamente `Order.status`;
+- `undefined`, `null`, string vazia ou somente espaços preservam o valor persistido;
+- uma string válida será normalizada com `trim()` e poderá substituir o `externalStatus` existente;
+- atualização stale não poderá alterar nem regredir `externalStatus`;
+- atualização não stale poderá alterar `externalStatus`;
+- `externalUpdatedAt` continuará sendo o watermark usado para proteção contra regressão;
+- nenhuma alteração em `Order` será feita por este micro-passo;
+- nenhum `OrderEvent` será criado;
+- `externalCreatedAt` continuará fora;
+- `metadata` continuará fora;
+- `canonicalStatus` continuará fora;
+- `OrderItem` continuará intocado;
+- timestamps de lifecycle continuarão intocados.
 
-- `externalStatus`;
+No fluxo de criação já existente:
+
+- `externalStatus` continua sendo persistido como status bruto do canal;
+- string vazia ou somente espaços resulta em ausência do valor.
+
+Ainda não implementar neste micro-passo:
+
 - `externalCreatedAt`;
-- `metadata`;
-- `canonicalStatus` e histórico correspondente;
+- merge de `metadata`;
+- `canonicalStatus`;
+- criação de `OrderEvent`;
 - reconciliação de itens;
 - lifecycle timestamps;
 - endpoints;
