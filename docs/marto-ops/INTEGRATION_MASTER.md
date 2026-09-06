@@ -939,6 +939,94 @@ e atualizar o mesmo `Order`, nunca criar duplicata.
 
 Dados pertencentes à operação interna do Marto — como cotações, transportadora escolhida, CT-e, conferência, custos, assistência, observações e decisões operacionais — não deverão ser apagados ou substituídos pelo canal externo.
 
+### Micro-checkpoint — escopo da primeira atualização transacional de pedido externo
+
+Antes da implementação da escrita de atualização, foi delimitado o primeiro escopo seguro para pedidos externos já existentes.
+
+A atualização deverá utilizar o mesmo princípio de proteção da criação:
+
+`SalesChannel + ExternalOrderReference + Order` serão relidos dentro de uma transação `Serializable` antes de qualquer escrita.
+
+Dentro da transação:
+
+1. reler o `SalesChannel`;
+2. reler `ExternalOrderReference` por `(salesChannelId, externalOrderId)` junto com o `Order` canônico;
+3. confirmar que a referência existe;
+4. confirmar que o `Order` pertence ao mesmo `Merchant` do `SalesChannel`;
+5. reavaliar `externalUpdatedAt`;
+6. se a entrada for comprovadamente antiga, retornar `ignored_stale` sem alterar `Order`, status externo ou histórico;
+7. se a entrada for válida, aplicar somente os campos autorizados neste micro-checkpoint.
+
+Campos canônicos autorizados:
+
+- `buyerNameSnapshot`;
+- `buyerContactSnapshot`;
+- `recipientNameSnapshot`;
+- `destinationZipCode`;
+- `city`;
+- `state`;
+- `destinationAddressSnapshot`;
+- `status`, somente quando `canonicalStatus` válido realmente diferir do status atual.
+
+Para campos opcionais:
+
+- `undefined` preserva o valor atual;
+- `null` preserva o valor atual;
+- string vazia preserva o valor atual;
+- valor válido informado poderá preencher ou atualizar o valor existente.
+
+Campos da `ExternalOrderReference` autorizados:
+
+- `externalStatus`;
+- `externalCreatedAt`;
+- `externalUpdatedAt`;
+- `metadata`;
+- `lastSyncedAt`.
+
+Para `metadata` nesta primeira implementação:
+
+- `undefined` ou `null` preserva integralmente a metadata existente;
+- metadata recebida não deverá substituir cegamente o objeto já armazenado;
+- quando ambos os valores forem objetos JSON, os dados recebidos deverão ser incorporados preservando chaves válidas já existentes que não tenham sido informadas na nova sincronização;
+- valores ausentes ou nulos na entrada não terão poder para apagar metadata válida já persistida;
+- arrays ou valores escalares somente poderão substituir a chave correspondente quando forem explicitamente fornecidos.
+
+Regras temporais:
+
+- `externalUpdatedAt` nunca poderá regredir;
+- `externalCreatedAt` ausente ou nulo não apagará o valor existente;
+- uma entrada comprovadamente mais antiga não poderá alterar `externalStatus`, dados canônicos ou `canonicalStatus`;
+- `externalUpdatedAt` nunca será utilizado como timestamp de lifecycle do `Order`.
+
+Mesmo quando a entrada for `ignored_stale`, `lastSyncedAt` poderá ser atualizado para registrar que a sincronização foi recebida e processada. Nesse caso, nenhum outro campo da `ExternalOrderReference` ou do `Order` poderá ser alterado.
+
+Histórico:
+
+Quando `canonicalStatus` realmente mudar por uma sincronização externa válida, criar exatamente um `OrderEvent` com:
+
+- `type = STATUS_CHANGED`;
+- `actorUserId = null`;
+- `actorRole = system`;
+- `fromStatus` igual ao status anterior;
+- `toStatus` igual ao novo status;
+- mensagem identificando atualização proveniente de canal externo;
+- `meta` contendo somente `salesChannelId`, `externalOrderId` e `externalStatus`.
+
+Não gerar `OrderEvent` quando não houver mudança real de status.
+
+Nesta primeira atualização transacional:
+
+- não alterar `OrderItem`;
+- não apagar nem recriar itens mesmo que `items` seja recebido;
+- não criar `ExternalOrderItemReference`;
+- não alterar timestamps de lifecycle;
+- não alterar dados operacionais pertencentes ao Marto;
+- não criar endpoint;
+- não registrar o serviço no `OrdersModule`;
+- não implementar conector de marketplace.
+
+Toda decisão que resultar em escrita deverá ser baseada nas leituras realizadas dentro da própria transação.
+
 ## 19. Próxima ação exata
 
 A primeira escrita transacional de criação de pedido externo foi concluída, validada e protegida no Git.
