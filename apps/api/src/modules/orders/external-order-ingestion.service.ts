@@ -259,6 +259,138 @@ export class ExternalOrderIngestionService {
     throw new Error('External order creation transaction failed.');
   }
 
+  private async updateExternalOrder(input: {
+    normalized: NormalizedExternalOrderInput;
+    salesChannel: {
+      id: string;
+      merchantId: string;
+      status: string;
+    };
+    externalOrderId: string;
+  }) {
+    const { normalized, salesChannel, externalOrderId } = input;
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const transactionalSalesChannel =
+              await tx.salesChannel.findUnique({
+                where: {
+                  id: salesChannel.id,
+                },
+                select: {
+                  id: true,
+                  merchantId: true,
+                  status: true,
+                },
+              });
+
+            if (!transactionalSalesChannel) {
+              throw new Error(
+                'Sales channel not found during update transaction.',
+              );
+            }
+
+            const existingReference =
+              await tx.externalOrderReference.findUnique({
+                where: {
+                  salesChannelId_externalOrderId: {
+                    salesChannelId: transactionalSalesChannel.id,
+                    externalOrderId,
+                  },
+                },
+                select: {
+                  id: true,
+                  orderId: true,
+                  externalUpdatedAt: true,
+                  lastSyncedAt: true,
+                  order: {
+                    select: {
+                      id: true,
+                      merchantId: true,
+                      status: true,
+                    },
+                  },
+                },
+              });
+
+            if (!existingReference) {
+              throw new Error(
+                'External order reference not found during update transaction.',
+              );
+            }
+
+            if (
+              existingReference.order.merchantId !==
+              transactionalSalesChannel.merchantId
+            ) {
+              throw new Error(
+                'External order reference points to an order from another merchant.',
+              );
+            }
+
+            const isStale =
+              existingReference.externalUpdatedAt &&
+              normalized.externalUpdatedAt &&
+              normalized.externalUpdatedAt.getTime() <
+                existingReference.externalUpdatedAt.getTime();
+
+            if (isStale) {
+              const updatedReference =
+                await tx.externalOrderReference.update({
+                  where: {
+                    id: existingReference.id,
+                  },
+                  data: {
+                    lastSyncedAt: new Date(),
+                  },
+                  select: {
+                    id: true,
+                    orderId: true,
+                    externalUpdatedAt: true,
+                    lastSyncedAt: true,
+                  },
+                });
+
+              return {
+                action: 'ignored_stale' as const,
+                salesChannel: transactionalSalesChannel,
+                externalOrderId,
+                existingReference: updatedReference,
+              };
+            }
+
+            return {
+              action: 'update' as const,
+              salesChannel: transactionalSalesChannel,
+              externalOrderId,
+              existingReference: {
+                id: existingReference.id,
+                orderId: existingReference.orderId,
+                externalUpdatedAt: existingReference.externalUpdatedAt,
+                lastSyncedAt: existingReference.lastSyncedAt,
+              },
+            };
+          },
+          {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+          },
+        );
+      } catch (error) {
+        const retryable =
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2034';
+
+        if (!retryable || attempt === 3) {
+          throw error;
+        }
+      }
+    }
+
+    throw new Error('External order update transaction failed.');
+  }
+
   async ingest(input: NormalizedExternalOrderInput) {
     const salesChannelId = input.salesChannelId.trim();
     const externalOrderId = input.externalOrderId.trim();
@@ -302,21 +434,6 @@ export class ExternalOrderIngestionService {
         },
       });
 
-    const isStale =
-      existingReference?.externalUpdatedAt &&
-      input.externalUpdatedAt &&
-      input.externalUpdatedAt.getTime() <
-        existingReference.externalUpdatedAt.getTime();
-
-    if (isStale) {
-      return {
-        action: 'ignored_stale' as const,
-        salesChannel,
-        externalOrderId,
-        existingReference,
-      };
-    }
-
     if (!existingReference) {
       return this.createExternalOrder({
         normalized: input,
@@ -325,11 +442,10 @@ export class ExternalOrderIngestionService {
       });
     }
 
-    return {
-      action: 'update' as const,
+    return this.updateExternalOrder({
+      normalized: input,
       salesChannel,
       externalOrderId,
-      existingReference,
-    };
+    });
   }
 }

@@ -1027,34 +1027,87 @@ Nesta primeira atualização transacional:
 
 Toda decisão que resultar em escrita deverá ser baseada nas leituras realizadas dentro da própria transação.
 
+### Micro-checkpoint — revalidação transacional e proteção contra entrada stale
+
+Checkpoint anterior protegido:
+
+- criação transacional validada: `9577207` — `feat(orders): valida criação transacional de pedidos externos`;
+- escopo desta atualização transacional definido em: `4d63814` — `docs: define escopo da atualização transacional externa`;
+- branch: `feat/marto-ops-integration`.
+
+Foi iniciado o fluxo transacional de atualização de pedido externo já existente.
+
+O `ExternalOrderIngestionService` agora direciona pedidos externos já existentes para um fluxo específico de atualização com transação `Serializable`.
+
+Dentro da transação, o fluxo:
+
+1. relê o `SalesChannel`;
+2. relê a `ExternalOrderReference` por `(salesChannelId, externalOrderId)` junto com o `Order`;
+3. confirma que a referência continua existente;
+4. confirma que o `Order` pertence ao mesmo `Merchant` do `SalesChannel`;
+5. reavalia `externalUpdatedAt` usando o estado persistido dentro da própria transação.
+
+A classificação `ignored_stale` deixou de ser decisão definitiva feita antes da transação.
+
+Quando a entrada é comprovadamente mais antiga que `externalUpdatedAt` já persistido:
+
+- o `Order` não é alterado;
+- `canonicalStatus` não é alterado;
+- `externalStatus` não é alterado;
+- `externalUpdatedAt` não regride;
+- `metadata` não é alterada;
+- nenhum `OrderEvent` é criado;
+- somente `lastSyncedAt` é atualizado para registrar o processamento da sincronização.
+
+Esse comportamento foi validado por execução real contra o banco PostgreSQL isolado `marto_ops_test`.
+
+No teste controlado:
+
+- estado persistido anterior: `externalUpdatedAt = 2026-09-05 12:05:00`;
+- entrada recebida: `externalUpdatedAt = 2026-09-05 12:04:00`;
+- a entrada tentou informar outro comprador, outro `externalStatus`, outro `canonicalStatus` e nova `metadata`;
+- resultado: `action = ignored_stale`;
+- `Order.status` permaneceu `PAID`;
+- comprador permaneceu inalterado;
+- `externalStatus` permaneceu `paid`;
+- `externalUpdatedAt` permaneceu `2026-09-05 12:05:00`;
+- `metadata` permaneceu inalterada;
+- `OrderEvent` permaneceu com contagem zero;
+- somente `lastSyncedAt` recebeu novo valor.
+
+O build da API também foi executado após a alteração e concluído sem erros.
+
+Neste ponto, a atualização válida e não stale ainda não grava comprador, destinatário, endereço, metadata, status canônico ou histórico.
+
+Também continuam fora deste micro-checkpoint:
+
+- reconciliação de `OrderItem`;
+- `ExternalOrderItemReference`;
+- timestamps de lifecycle;
+- endpoint público;
+- registro no `OrdersModule`;
+- conectores de marketplace.
+
 ## 19. Próxima ação exata
 
-A primeira escrita transacional de criação de pedido externo foi concluída, validada e protegida no Git.
+A estrutura transacional da atualização de pedido externo existente foi iniciada e a proteção contra sincronização stale foi validada em banco isolado.
 
-Checkpoint:
+O próximo micro-passo será implementar somente a atualização válida e não stale dos campos já autorizados.
 
-- commit: `9577207`
-- mensagem: `feat(orders): valida criação transacional de pedidos externos`
-- branch: `feat/marto-ops-integration`
-- commit enviado ao repositório remoto;
-- branch confirmada limpa e sincronizada após o push.
+A implementação deverá:
 
-Com isso, a criação de novo pedido externo está encerrada neste estágio do PASSO 4B.
+1. preservar campos ausentes, nulos ou strings vazias;
+2. atualizar somente dados canônicos válidos recebidos;
+3. atualizar os campos autorizados da `ExternalOrderReference`;
+4. fazer merge seguro de `metadata`;
+5. atualizar `canonicalStatus` somente quando realmente diferente;
+6. criar exatamente um `OrderEvent` quando houver mudança real de status;
+7. não gerar `OrderEvent` quando o status permanecer igual;
+8. não alterar `OrderItem`;
+9. não alterar timestamps de lifecycle;
+10. permanecer dentro da mesma transação `Serializable`.
 
-O próximo micro-checkpoint será a atualização transacional de um pedido externo já existente.
-
-Antes de escrever esse fluxo, revisar as Regras Transacionais 2, 4 e 5 e delimitar exatamente quais campos poderão ser atualizados nesta primeira implementação.
-
-A primeira implementação de atualização deverá permanecer limitada a:
-
-- dados canônicos de comprador e destinatário;
-- CEP, cidade, estado e snapshot de endereço;
-- `externalStatus`;
-- `externalCreatedAt`;
-- `externalUpdatedAt`;
-- `metadata`;
-- `canonicalStatus`, somente conforme as regras de status já aprovadas;
-- criação de exatamente um `OrderEvent` quando houver mudança real do status canônico.
+Antes de avançar para itens, endpoints ou conectores, esse fluxo deverá ser compilado e validado novamente no banco isolado.
 
 Ainda não reconciliar `OrderItem(s)` de pedido existente.
 
