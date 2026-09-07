@@ -1500,19 +1500,30 @@ Continuam fora deste micro-checkpoint:
 
 ## 19. Próxima ação exata
 
-`ExternalOrderReference.externalCreatedAt` foi implementado e validado localmente.
+`ExternalOrderReference.externalCreatedAt` está concluído, validado e protegido.
 
-O próximo micro-passo autorizado é somente proteger este checkpoint:
+Checkpoint técnico:
 
-1. revisar o diff final do código e do `INTEGRATION_MASTER.md`;
-2. executar novamente o build da API;
-3. executar `git diff --check`;
-4. adicionar ao Git somente o serviço de ingestão e o `INTEGRATION_MASTER.md`;
-5. criar o commit identificável;
-6. enviar o commit para `feat/marto-ops-integration`;
-7. confirmar a branch limpa e sincronizada.
+- `38cec18` — `feat(orders): protege externalCreatedAt de pedidos externos`;
+- branch: `feat/marto-ops-integration`;
+- commit enviado ao GitHub;
+- branch local sincronizada com `origin/feat/marto-ops-integration`.
 
-Ainda não iniciar `metadata`, `canonicalStatus`, `OrderEvent` ou qualquer etapa seguinte antes deste checkpoint estar protegido no Git.
+O próximo micro-passo autorizado será somente definir a regra de atualização de:
+
+- `ExternalOrderReference.metadata`.
+
+Antes de implementar qualquer escrita de `metadata`, deverá ser definida explicitamente sua semântica de atualização, preservação e merge.
+
+Ainda não implementar:
+
+- `canonicalStatus`;
+- criação de `OrderEvent`;
+- reconciliação de itens;
+- lifecycle timestamps;
+- endpoints;
+- registro do serviço no `OrdersModule`;
+- conectores de marketplace.
 
 ## 20. NÃO FAZER AINDA
 
