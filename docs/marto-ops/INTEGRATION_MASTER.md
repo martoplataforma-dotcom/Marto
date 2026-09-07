@@ -1498,22 +1498,132 @@ Continuam fora deste micro-checkpoint:
 - registro do serviço no `OrdersModule`;
 - conectores de marketplace.
 
+### Micro-checkpoint — definição da atualização segura de metadata externa
+
+Antes de implementar qualquer escrita de `ExternalOrderReference.metadata`, fica definida sua semântica de atualização.
+
+`metadata` pertence à camada da referência externa e deve conter somente contexto específico do canal que seja realmente necessário.
+
+Não armazenar indiscriminadamente o payload bruto completo de Mercado Livre, Shopee ou outro canal.
+
+#### Regra geral
+
+Em atualização de pedido externo:
+
+- `metadata` ausente (`undefined`) preserva integralmente a metadata persistida;
+- `metadata = null` deverá preservar integralmente a metadata persistida;
+- entrada `ignored_stale` nunca altera `metadata`;
+- uma atualização válida não stale poderá enriquecer ou atualizar metadata;
+- a sincronização não poderá apagar silenciosamente informação válida que deixou de aparecer em uma resposta parcial do canal.
+
+#### Estrutura de atualização
+
+Na primeira versão, a atualização automática de `metadata` será baseada em objeto JSON.
+
+Quando a metadata recebida e a metadata persistida forem objetos JSON:
+
+- realizar merge recursivo por chave;
+- chave ausente na entrada preserva o valor persistido;
+- chave recebida com `null` preserva o valor persistido dessa chave;
+- objeto recebido em uma chave será mesclado recursivamente quando o valor persistido dessa mesma chave também for objeto;
+- valor escalar explicitamente recebido (`string`, `number`, `boolean`) substitui somente o valor daquela chave;
+- array explicitamente recebido substitui integralmente o array daquela chave;
+- arrays não serão concatenados, mesclados por posição ou deduplicados automaticamente.
+
+Exemplo conceitual:
+
+Persistido:
+
+`{ shipment: { id: "123", status: "ready" }, source: "api" }`
+
+Recebido:
+
+`{ shipment: { status: "shipped" } }`
+
+Resultado:
+
+`{ shipment: { id: "123", status: "shipped" }, source: "api" }`
+
+A atualização parcial não poderá apagar `shipment.id` nem `source`.
+
+#### Valores nulos
+
+Nesta primeira versão, `null` não terá semântica de exclusão.
+
+Exemplo:
+
+Persistido:
+
+`{ shipmentId: "123", tracking: "ABC" }`
+
+Recebido:
+
+`{ tracking: null }`
+
+Resultado:
+
+`{ shipmentId: "123", tracking: "ABC" }`
+
+Se futuramente for necessário permitir remoção explícita de uma chave, isso deverá possuir uma regra própria e inequívoca. Não utilizar `null` implicitamente como comando de exclusão.
+
+#### Metadata ainda inexistente
+
+Se a metadata persistida estiver `NULL` e uma atualização válida não stale trouxer um objeto JSON válido, esse objeto poderá ser persistido como primeira metadata da referência externa.
+
+#### Tipos incompatíveis
+
+Se uma chave persistida possuir um tipo e uma atualização válida trouxer explicitamente outro tipo:
+
+- objeto recebido substitui valor escalar ou array existente naquela chave;
+- escalar recebido substitui objeto ou array existente naquela chave;
+- array recebido substitui objeto, escalar ou array existente naquela chave.
+
+A substituição ocorre somente na chave explicitamente recebida e não autoriza apagar outras chaves da metadata.
+
+#### Metadata no nível raiz
+
+Para atualização automática nesta primeira versão, `metadata` recebida deverá ser um objeto JSON.
+
+Array ou valor escalar no nível raiz não terá semântica automática de substituição integral da metadata persistida.
+
+Isso evita que uma resposta malformada ou uma mudança de formato do canal apague todo o contexto externo já conhecido.
+
+#### Idempotência
+
+Receber repetidamente a mesma metadata deverá produzir o mesmo estado final.
+
+Uma repetição não deverá:
+
+- criar outra `ExternalOrderReference`;
+- alterar `Order`;
+- alterar `OrderItem`;
+- alterar `Order.status`;
+- criar `OrderEvent`;
+- alterar timestamps de lifecycle.
+
+`lastSyncedAt` poderá continuar registrando que uma sincronização foi processada.
+
+#### Limites deste micro-passo
+
+A implementação de metadata não autoriza:
+
+- alterar `canonicalStatus`;
+- criar `OrderEvent`;
+- reconciliar `OrderItem`;
+- alterar lifecycle timestamps;
+- criar endpoint;
+- registrar o serviço no `OrdersModule`;
+- criar conector de Mercado Livre, Shopee ou outro marketplace.
+
+`externalUpdatedAt` continuará sendo o watermark utilizado para impedir que uma entrada comprovadamente stale modifique metadata mais recente.
+
 ## 19. Próxima ação exata
 
-`ExternalOrderReference.externalCreatedAt` está concluído, validado e protegido.
+A semântica de atualização segura de `ExternalOrderReference.metadata` foi definida.
 
-Checkpoint técnico:
+O próximo micro-passo autorizado será somente proteger esta definição documental no Git antes de escrever código.
 
-- `38cec18` — `feat(orders): protege externalCreatedAt de pedidos externos`;
-- branch: `feat/marto-ops-integration`;
-- commit enviado ao GitHub;
-- branch local sincronizada com `origin/feat/marto-ops-integration`.
-
-O próximo micro-passo autorizado será somente definir a regra de atualização de:
-
-- `ExternalOrderReference.metadata`.
-
-Antes de implementar qualquer escrita de `metadata`, deverá ser definida explicitamente sua semântica de atualização, preservação e merge.
+Depois desse checkpoint documental estar commitado e enviado ao GitHub, poderá ser iniciada a implementação do merge seguro de `metadata`.
 
 Ainda não implementar:
 
