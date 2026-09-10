@@ -30,5 +30,5 @@ export type NormalizedExternalOrderInput = {
 
   items?: NormalizedExternalOrderItem[];
 
-  metadata?: Prisma.InputJsonValue;
+  metadata?: Prisma.InputJsonValue | null;
 };

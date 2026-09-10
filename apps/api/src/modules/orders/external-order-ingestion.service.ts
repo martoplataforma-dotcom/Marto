@@ -18,6 +18,37 @@ export class ExternalOrderIngestionService {
     return normalized || undefined;
   }
 
+  private isJsonObject(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+  }
+
+  private mergeJsonObjects(
+    existing: Record<string, unknown>,
+    incoming: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const merged: Record<string, unknown> = { ...existing };
+
+    for (const [key, incomingValue] of Object.entries(incoming)) {
+      if (incomingValue === null) {
+        continue;
+      }
+
+      const existingValue = merged[key];
+
+      if (
+        this.isJsonObject(existingValue) &&
+        this.isJsonObject(incomingValue)
+      ) {
+        merged[key] = this.mergeJsonObjects(existingValue, incomingValue);
+        continue;
+      }
+
+      merged[key] = incomingValue;
+    }
+
+    return merged;
+  }
+
   private validateCreateInput(input: NormalizedExternalOrderInput) {
     if (!input.canonicalStatus) {
       throw new Error(
@@ -234,7 +265,7 @@ export class ExternalOrderIngestionService {
                     externalUpdatedAt:
                       normalized.externalUpdatedAt ?? null,
                     lastSyncedAt: new Date(),
-                    metadata: normalized.metadata,
+                    metadata: normalized.metadata ?? undefined,
                   },
                 },
               },
@@ -389,6 +420,19 @@ export class ExternalOrderIngestionService {
                 ? normalized.externalCreatedAt
                 : undefined;
 
+            let metadata: Prisma.InputJsonValue | undefined;
+
+            if (this.isJsonObject(normalized.metadata)) {
+              if (existingReference.metadata === null) {
+                metadata = normalized.metadata as Prisma.InputJsonObject;
+              } else if (this.isJsonObject(existingReference.metadata)) {
+                metadata = this.mergeJsonObjects(
+                  existingReference.metadata,
+                  normalized.metadata,
+                ) as Prisma.InputJsonObject;
+              }
+            }
+
             const externalStatus = this.normalizeOptionalString(
               normalized.externalStatus,
             );
@@ -465,6 +509,7 @@ export class ExternalOrderIngestionService {
               data: {
                 externalStatus,
                 externalCreatedAt,
+                metadata,
                 externalUpdatedAt: normalized.externalUpdatedAt ?? undefined,
                 lastSyncedAt: new Date(),
               },

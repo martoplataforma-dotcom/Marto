@@ -1586,6 +1586,15 @@ Para atualização automática nesta primeira versão, `metadata` recebida dever
 
 Array ou valor escalar no nível raiz não terá semântica automática de substituição integral da metadata persistida.
 
+Se a metadata já persistida no nível raiz for um array ou valor escalar, uma atualização automática que receba um objeto JSON também deverá preservar o valor persistido, em vez de substituir silenciosamente o formato raiz.
+
+Portanto, o merge automático desta primeira versão somente ocorrerá quando:
+
+- a metadata persistida estiver `NULL` e a entrada for um objeto JSON válido; ou
+- a metadata persistida e a metadata recebida forem ambas objetos JSON.
+
+Qualquer mudança de formato da raiz já persistida deverá possuir tratamento explícito em uma etapa futura.
+
 Isso evita que uma resposta malformada ou uma mudança de formato do canal apague todo o contexto externo já conhecido.
 
 #### Idempotência
@@ -1617,13 +1626,83 @@ A implementação de metadata não autoriza:
 
 `externalUpdatedAt` continuará sendo o watermark utilizado para impedir que uma entrada comprovadamente stale modifique metadata mais recente.
 
+### Implementação e validação concluídas
+
+A implementação do merge seguro de `ExternalOrderReference.metadata` foi concluída no serviço de ingestão externa, sem migration e sem ampliar o escopo para outros componentes do sistema.
+
+O contrato normalizado passou a aceitar:
+```ts
+metadata?: Prisma.InputJsonValue | null;
+```
+
+Na criação de uma referência externa:
+
+- `metadata` válida poderá ser persistida;
+- `null` não será gravado como comando de remoção.
+
+Na atualização de uma referência existente:
+
+- entrada `undefined` preserva a metadata persistida;
+- entrada `null` preserva a metadata persistida;
+- entrada stale não altera metadata;
+- objeto recebido com objeto persistido executa merge recursivo por chave;
+- chave recebida com `null` preserva o valor persistido daquela chave;
+- escalar não nulo substitui somente a chave explicitamente recebida;
+- array recebido em uma chave substitui integralmente o array daquela chave;
+- array no nível raiz não substitui automaticamente a metadata persistida;
+- escalar no nível raiz não substitui automaticamente a metadata persistida;
+- metadata persistida `NULL` pode receber o primeiro objeto JSON válido;
+- metadata raiz já persistida como array ou escalar não muda automaticamente de formato ao receber um objeto;
+- o merge não altera `Order`, `OrderItem`, `Order.status`, lifecycle timestamps ou `OrderEvent`.
+
+A implementação utiliza `externalUpdatedAt` como watermark e mantém `lastSyncedAt` como registro de processamento da sincronização.
+
+#### Validação realizada
+
+A implementação foi validada exclusivamente no banco isolado `marto_ops_test`.
+
+Foram verificados com sucesso:
+
+- inclusão de nova chave sem apagar chaves existentes;
+- merge recursivo de objeto aninhado;
+- preservação de chave quando a entrada recebida é `null`;
+- preservação integral quando `metadata` recebida é `null`;
+- preservação integral quando `metadata` não é enviada;
+- substituição integral de array em chave interna;
+- substituição de tipo somente na chave explicitamente recebida;
+- rejeição de array como substituição automática no nível raiz;
+- rejeição de escalar como substituição automática no nível raiz;
+- primeira gravação quando a metadata persistida era `NULL`;
+- preservação de raiz persistida como array quando a entrada nova é objeto;
+- preservação de raiz persistida como escalar quando a entrada nova é objeto;
+- proteção contra entrada stale;
+- idempotência com o mesmo `externalUpdatedAt`.
+
+Durante todos esses testes também foi confirmado que:
+
+- `Order.status` permaneceu `PAID`;
+- nenhum `OrderEvent` foi criado;
+- a quantidade de `OrderItem` permaneceu inalterada;
+- `externalStatus` não sofreu alteração indevida;
+- nenhum lifecycle timestamp foi utilizado ou aproximado.
+
 ## 19. Próxima ação exata
 
-A semântica de atualização segura de `ExternalOrderReference.metadata` foi definida.
+A implementação do merge seguro de `ExternalOrderReference.metadata` foi concluída e validada no banco isolado `marto_ops_test`.
 
-O próximo micro-passo autorizado será somente proteger esta definição documental no Git antes de escrever código.
+O próximo micro-passo autorizado será somente executar a verificação técnica final desta implementação e proteger o checkpoint no Git:
 
-Depois desse checkpoint documental estar commitado e enviado ao GitHub, poderá ser iniciada a implementação do merge seguro de `metadata`.
+1. conferir o diff dos arquivos alterados;
+2. executar `git diff --check`;
+3. executar o build da API;
+4. confirmar que nenhum arquivo temporário `.tmp-*` permanece;
+5. adicionar somente os arquivos desta etapa;
+6. revisar o diff staged;
+7. criar o commit;
+8. enviar a branch ao GitHub;
+9. confirmar sincronização local/remota.
+
+Somente depois desse checkpoint estar protegido no Git poderá ser definida documentalmente a próxima regra de ingestão externa.
 
 Ainda não implementar:
 
