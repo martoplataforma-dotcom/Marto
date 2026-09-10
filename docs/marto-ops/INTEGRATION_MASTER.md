@@ -1686,28 +1686,145 @@ Durante todos esses testes também foi confirmado que:
 - `externalStatus` não sofreu alteração indevida;
 - nenhum lifecycle timestamp foi utilizado ou aproximado.
 
+### Micro-checkpoint — atualização de canonicalStatus e histórico externo
+
+O próximo comportamento a ser implementado no motor de ingestão externa será a atualização segura de `Order.status` por meio de `canonicalStatus` em pedidos externos já existentes.
+
+Esta etapa reutiliza a Regra transacional 5 já definida e não altera sua semântica.
+
+#### Estado atual da criação
+
+A criação de pedido externo já utiliza `canonicalStatus` diretamente:
+
+- `canonicalStatus` é obrigatório para criação;
+- o `Order` é criado diretamente no status informado;
+- não é utilizado silenciosamente o default `CREATED`;
+- não são inventadas etapas intermediárias;
+- não é criado `OrderEvent` para reconstruir histórico anterior ao Marto.
+
+Esse comportamento não será alterado neste micro-passo.
+
+#### Atualização de pedido existente
+
+Para uma `ExternalOrderReference` já existente:
+
+- `canonicalStatus` ausente preserva `Order.status`;
+- `canonicalStatus` igual ao `Order.status` atual não gera escrita de status;
+- entrada comprovadamente stale não altera `Order.status`;
+- entrada válida, não stale e com `canonicalStatus` diferente poderá atualizar o mesmo `Order` canônico.
+
+A comparação deverá utilizar o `Order.status` obtido novamente dentro da transação.
+
+Para isso, o `select` transacional de `existingReference.order` deverá passar a incluir `status`.
+
+Não utilizar as regras nativas de transição de comprador, vendedor ou operação interna para reconstruir artificialmente o histórico de um pedido vindo de canal externo.
+
+#### Atomicidade entre status e histórico
+
+Quando uma sincronização externa válida realmente alterar `Order.status`, a mudança de status e a criação do respectivo `OrderEvent` deverão ocorrer dentro da mesma transação serializável.
+
+Não poderá existir estado intermediário em que:
+
+- `Order.status` tenha sido alterado sem o respectivo evento; ou
+- o evento tenha sido criado sem a alteração efetiva de `Order.status`.
+
+O retry transacional já existente continuará protegendo conflitos concorrentes.
+
+Após eventual retry, a decisão deverá sempre considerar novamente o estado mais recente lido dentro da transação.
+
+#### OrderEvent
+
+Somente quando houver mudança real de status deverá ser criado exatamente um `OrderEvent`.
+
+O evento deverá utilizar:
+
+- `type = STATUS_CHANGED`;
+- `actorUserId = null`;
+- `actorRole = "system"`;
+- `fromStatus` igual ao `Order.status` persistido antes da mudança;
+- `toStatus` igual ao novo `canonicalStatus`;
+- mensagem indicando que a alteração foi proveniente de sincronização de canal externo.
+
+O `meta` poderá conter somente:
+
+- `salesChannelId`;
+- `externalOrderId`;
+- `externalStatus`, quando houver valor externo válido.
+
+Não armazenar payload bruto do marketplace no evento.
+
+#### Situações que não geram OrderEvent
+
+Não criar `OrderEvent` quando:
+
+- `canonicalStatus` não for informado;
+- `canonicalStatus` for igual ao status atual;
+- a entrada for `ignored_stale`;
+- a sincronização apenas enriquecer comprador, destinatário, endereço, metadata ou campos da referência externa;
+- nenhuma mudança real de `Order.status` ocorrer.
+
+A repetição idempotente da mesma sincronização não deverá produzir eventos adicionais.
+
+#### Lifecycle timestamps
+
+Este micro-passo não altera timestamps de lifecycle.
+
+Em especial:
+
+- `externalUpdatedAt` não será usado como `paidAt`;
+- `externalUpdatedAt` não será usado como `inTransitAt`;
+- `externalUpdatedAt` não será usado como `deliveredAt`;
+- `externalUpdatedAt` não será usado como `cancelledAt`;
+- nenhum timestamp será aproximado a partir do status recebido.
+
+Datas específicas de lifecycle continuarão fora deste micro-passo.
+
+#### Prisma e migration
+
+A estrutura atual já suporta esta implementação.
+
+`OrderEvent` possui:
+
+- `type`;
+- `actorUserId`;
+- `actorRole`;
+- `fromStatus`;
+- `toStatus`;
+- `message`;
+- `meta`.
+
+`OrderEventType` já possui `STATUS_CHANGED`.
+
+Portanto:
+
+- não alterar `schema.prisma`;
+- não criar migration;
+- não executar `prisma format`;
+- não atualizar Prisma.
+
+#### Limites deste micro-passo
+
+A implementação de `canonicalStatus` e `OrderEvent` não autoriza:
+
+- reconciliar `OrderItem`;
+- alterar timestamps de lifecycle;
+- criar endpoint público;
+- registrar `ExternalOrderIngestionService` no `OrdersModule`;
+- criar conector de Mercado Livre, Shopee ou outro marketplace;
+- alterar regras nativas de status dos pedidos internos do Marto.
+
 ## 19. Próxima ação exata
 
-A implementação do merge seguro de `ExternalOrderReference.metadata` foi concluída e validada no banco isolado `marto_ops_test`.
+O checkpoint de merge seguro de `ExternalOrderReference.metadata` foi implementado, validado, commitado e enviado ao GitHub.
 
-O próximo micro-passo autorizado será somente executar a verificação técnica final desta implementação e proteger o checkpoint no Git:
+A semântica da próxima etapa — atualização segura de `canonicalStatus` com criação atômica de `OrderEvent` quando houver mudança real de status — foi definida documentalmente.
 
-1. conferir o diff dos arquivos alterados;
-2. executar `git diff --check`;
-3. executar o build da API;
-4. confirmar que nenhum arquivo temporário `.tmp-*` permanece;
-5. adicionar somente os arquivos desta etapa;
-6. revisar o diff staged;
-7. criar o commit;
-8. enviar a branch ao GitHub;
-9. confirmar sincronização local/remota.
+O próximo micro-passo autorizado será somente proteger esta definição documental no Git antes de escrever código.
 
-Somente depois desse checkpoint estar protegido no Git poderá ser definida documentalmente a próxima regra de ingestão externa.
+Depois desse checkpoint documental estar commitado e enviado ao GitHub, poderá ser iniciada a implementação de `canonicalStatus` e `OrderEvent` no `ExternalOrderIngestionService`.
 
 Ainda não implementar:
 
-- `canonicalStatus`;
-- criação de `OrderEvent`;
 - reconciliação de itens;
 - lifecycle timestamps;
 - endpoints;
