@@ -1,5 +1,5 @@
 import { Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { OrderEventType, Prisma } from '@prisma/client';
 
 import { PrismaService } from '../../common/prisma/prisma.service';
 import type { NormalizedExternalOrderInput } from './types/normalized-external-order';
@@ -447,6 +447,10 @@ export class ExternalOrderIngestionService {
             const city = this.normalizeOptionalString(normalized.city);
             const state = this.normalizeOptionalString(normalized.state);
 
+            const statusChanged =
+              normalized.canonicalStatus !== undefined &&
+              normalized.canonicalStatus !== existingReference.order.status;
+
             const orderUpdateData: Prisma.OrderUpdateInput = {};
 
             if (
@@ -493,12 +497,44 @@ export class ExternalOrderIngestionService {
               orderUpdateData.state = state;
             }
 
+            if (statusChanged) {
+              orderUpdateData.status = normalized.canonicalStatus;
+            }
+
             if (Object.keys(orderUpdateData).length > 0) {
               await tx.order.update({
                 where: {
                   id: existingReference.orderId,
                 },
                 data: orderUpdateData,
+              });
+            }
+
+            if (statusChanged) {
+              const eventMeta: Prisma.InputJsonObject =
+                externalStatus !== undefined
+                  ? {
+                      salesChannelId: transactionalSalesChannel.id,
+                      externalOrderId,
+                      externalStatus,
+                    }
+                  : {
+                      salesChannelId: transactionalSalesChannel.id,
+                      externalOrderId,
+                    };
+
+              await tx.orderEvent.create({
+                data: {
+                  orderId: existingReference.orderId,
+                  type: OrderEventType.STATUS_CHANGED,
+                  actorUserId: null,
+                  actorRole: 'system',
+                  fromStatus: existingReference.order.status,
+                  toStatus: normalized.canonicalStatus,
+                  message:
+                    'Status atualizado por sincronização de canal externo.',
+                  meta: eventMeta,
+                },
               });
             }
 

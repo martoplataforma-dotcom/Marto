@@ -1813,20 +1813,106 @@ A implementação de `canonicalStatus` e `OrderEvent` não autoriza:
 - criar conector de Mercado Livre, Shopee ou outro marketplace;
 - alterar regras nativas de status dos pedidos internos do Marto.
 
+### Implementação e validação concluídas — canonicalStatus e histórico externo
+
+A atualização segura de `Order.status` por meio de `canonicalStatus` foi implementada no `ExternalOrderIngestionService`.
+
+A implementação permanece dentro da transação serializável já existente e não exigiu alteração de `schema.prisma` nem migration.
+
+Na atualização de pedido externo existente:
+
+- o `Order.status` é relido dentro da própria transação;
+- `canonicalStatus` ausente preserva o status atual;
+- `canonicalStatus` igual ao status atual não gera escrita de status nem novo evento;
+- entrada comprovadamente stale não altera `Order.status`;
+- `canonicalStatus` diferente, válido e não stale atualiza o mesmo `Order` canônico;
+- uma mudança real de status cria exatamente um `OrderEvent` na mesma transação.
+
+O evento de mudança externa utiliza:
+
+- `type = STATUS_CHANGED`;
+- `actorUserId = null`;
+- `actorRole = "system"`;
+- `fromStatus` igual ao status persistido imediatamente antes da mudança;
+- `toStatus` igual ao novo `canonicalStatus`;
+- mensagem identificando atualização por sincronização de canal externo;
+- `meta` limitado a `salesChannelId`, `externalOrderId` e, somente quando recebido, `externalStatus`.
+
+Nenhum payload bruto do marketplace é armazenado no `OrderEvent`.
+
+#### Validação realizada
+
+A implementação foi validada exclusivamente no PostgreSQL isolado `marto_ops_test`.
+
+Baseline utilizado:
+
+- `Order.status = PAID`;
+- `externalStatus = ready_to_ship`;
+- `externalUpdatedAt = 2026-09-05 12:28:00`;
+- `OrderEvent` com contagem zero;
+- `OrderItem` com contagem um.
+
+Foram verificados com sucesso:
+
+- mudança real `PAID -> READY_FOR_PICKUP`;
+- criação de exatamente um `OrderEvent` para essa mudança;
+- `fromStatus = PAID`;
+- `toStatus = READY_FOR_PICKUP`;
+- `actorUserId = null`;
+- `actorRole = system`;
+- `meta` com `salesChannelId`, `externalOrderId` e `externalStatus`;
+- repetição de `READY_FOR_PICKUP` sem criação de segundo evento;
+- ausência de `canonicalStatus` preservando `READY_FOR_PICKUP` sem novo evento;
+- entrada stale tentando alterar para `IN_TRANSIT` sendo retornada como `ignored_stale`;
+- entrada stale sem alterar `Order.status`, `externalStatus` ou `externalUpdatedAt`;
+- segunda mudança real `READY_FOR_PICKUP -> IN_TRANSIT`;
+- criação de exatamente um segundo `OrderEvent`;
+- evento sem `externalStatus` recebido gerando `meta` somente com `salesChannelId` e `externalOrderId`;
+- repetição idempotente da sincronização de `IN_TRANSIT` sem criação de terceiro evento;
+- quantidade de `OrderItem` permanecendo inalterada.
+
+Após as mudanças canônicas, também foi conferido que permaneceram `NULL`:
+
+- `paidAt`;
+- `confirmedAt`;
+- `readyForPickupAt`;
+- `inTransitAt`;
+- `deliveredAt`;
+- `completedAt`;
+- `cancelledAt`;
+- `returnRequestedAt`;
+- `returnInTransitAt`;
+- `returnedAt`;
+- `disputeAt`.
+
+Portanto, a sincronização externa não inventou nem aproximou timestamps de lifecycle a partir de `externalUpdatedAt` ou do status recebido.
+
+O build da API foi executado após a implementação e concluído sem erros.
+
+Nenhum runner temporário `.tmp-*` permanece no diretório `apps/api`.
+
 ## 19. Próxima ação exata
 
-O checkpoint de merge seguro de `ExternalOrderReference.metadata` foi implementado, validado, commitado e enviado ao GitHub.
+A atualização segura de `canonicalStatus` com criação atômica de `OrderEvent` foi implementada e validada no banco isolado `marto_ops_test`.
 
-A semântica da próxima etapa — atualização segura de `canonicalStatus` com criação atômica de `OrderEvent` quando houver mudança real de status — foi definida documentalmente.
+O próximo micro-passo autorizado será somente executar a verificação técnica final desta implementação e proteger o checkpoint no Git:
 
-O próximo micro-passo autorizado será somente proteger esta definição documental no Git antes de escrever código.
+1. conferir o diff dos arquivos alterados;
+2. executar `git diff --check`;
+3. executar novamente o build da API;
+4. confirmar que nenhum `.tmp-*` permanece;
+5. adicionar somente os arquivos desta etapa;
+6. revisar o diff staged;
+7. criar o commit;
+8. enviar a branch ao GitHub;
+9. confirmar sincronização local/remota.
 
-Depois desse checkpoint documental estar commitado e enviado ao GitHub, poderá ser iniciada a implementação de `canonicalStatus` e `OrderEvent` no `ExternalOrderIngestionService`.
+Somente depois desse checkpoint estar protegido no Git poderá ser definida documentalmente a próxima regra de ingestão externa.
 
 Ainda não implementar:
 
 - reconciliação de itens;
-- lifecycle timestamps;
+- timestamps de lifecycle;
 - endpoints;
 - registro do serviço no `OrdersModule`;
 - conectores de marketplace.
