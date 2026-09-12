@@ -2197,31 +2197,94 @@ Ainda não foram implementados:
 
 Nenhum `prisma format` foi executado e nenhuma atualização do Prisma foi realizada.
 
+### Micro-checkpoint — validação de runtime de externalItemId
+
+A validação de runtime de `externalItemId` foi adicionada ao fluxo de criação de pedidos externos.
+
+A alteração foi realizada somente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Dentro de `validateCreateInput()`, cada item agora exige um `externalItemId` válido.
+
+Regras implementadas:
+
+- `externalItemId` deve ser uma string não vazia após `trim()`;
+- valor ausente ou inválido é rejeitado;
+- string vazia ou contendo somente espaços é rejeitada;
+- `externalItemId` deve ser único dentro do mesmo pedido externo;
+- a verificação de duplicidade considera o valor normalizado com `trim()`.
+
+Exemplo:
+
+`item-1`
+
+e
+
+` item-1 `
+
+são considerados a mesma identidade e a criação é rejeitada.
+
+Nenhuma referência de item é criada ainda neste micro-passo.
+
+Também não foram alterados:
+
+- `schema.prisma`;
+- migrations;
+- fluxo de atualização de itens;
+- reconciliação de `OrderItem`;
+- bootstrap/backfill de pedidos legados;
+- endpoints;
+- `OrdersModule`.
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter ./apps/api build` — aprovado;
+- teste pelo método público `ingest()` no banco `marto_ops_test`.
+
+Casos testados:
+
+- `externalItemId` ausente — rejeitado;
+- `externalItemId` contendo somente espaços — rejeitado;
+- dois itens com o mesmo `externalItemId` após `trim()` — rejeitados.
+
+Nos três casos o resultado foi o erro esperado.
+
+Também foi confirmado:
+
+`REFERENCIAS_CRIADAS=0`
+
+Nenhuma `ExternalOrderReference` foi criada pelos casos inválidos.
+
+O runner utilizado para o teste foi temporário e foi removido após a validação.
+
+Este checkpoint ainda não cria `ExternalOrderItemReference` automaticamente junto com novos pedidos externos.
+
 ## 19. Próxima ação exata
 
-A estrutura Prisma de `ExternalOrderItemReference` foi protegida no commit:
+A migration de `ExternalOrderItemReference` foi protegida no commit:
 
-`9c28573` — `feat(db): adiciona referencia externa dos itens`
+`b40f74a` — `feat(db): adiciona migration de referencia externa dos itens`
 
-A migration correspondente foi criada:
+O próximo micro-passo foi implementado:
 
-`20260912185200_add_external_order_item_reference`
+- validação de runtime de `externalItemId` na criação de pedido externo;
+- rejeição de valor ausente/vazio;
+- rejeição de duplicidade após `trim()`;
+- build da API aprovado;
+- testes controlados aprovados no `marto_ops_test`;
+- nenhuma referência ou pedido parcial foi criado nos casos inválidos.
 
-Ela foi revisada e aplicada com sucesso somente no banco de teste `marto_ops_test`.
+O próximo micro-passo autorizado será somente revisar e proteger no Git esta validação junto com o registro correspondente no `INTEGRATION_MASTER.md`.
 
-O banco de teste possui agora 66 migrations e está atualizado.
+Somente depois desse checkpoint estar commitado e enviado ao GitHub poderá começar a alteração do fluxo de criação para produzir atomicamente:
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git:
-
-- a migration `20260912185200_add_external_order_item_reference`;
-- este registro correspondente no `INTEGRATION_MASTER.md`.
-
-Somente depois desse checkpoint estar commitado e enviado ao GitHub poderá começar a preparação da validação de runtime de `externalItemId`.
+`Order + OrderItem(s) + ExternalOrderReference + ExternalOrderItemReference(s)`
 
 Ainda não implementar:
 
-- validação de runtime de `externalItemId`;
-- criação de referências externas de item no fluxo de criação;
+- criação automática de `ExternalOrderItemReference`;
 - reconciliação de `OrderItem`;
 - fluxo de atualização de itens;
 - bootstrap/backfill de pedidos legados;

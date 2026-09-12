@@ -62,7 +62,26 @@ export class ExternalOrderIngestionService {
       );
     }
 
+    const externalItemIds = new Set<string>();
+
     input.items.forEach((item, index) => {
+      const externalItemId =
+        typeof item.externalItemId === 'string'
+          ? item.externalItemId.trim()
+          : '';
+
+      if (!externalItemId) {
+        throw new Error(`items[${index}].externalItemId is required.`);
+      }
+
+      if (externalItemIds.has(externalItemId)) {
+        throw new Error(
+          `items[${index}].externalItemId must be unique within the external order.`,
+        );
+      }
+
+      externalItemIds.add(externalItemId);
+
       if (!item.title.trim()) {
         throw new Error(`items[${index}].title is required.`);
       }
