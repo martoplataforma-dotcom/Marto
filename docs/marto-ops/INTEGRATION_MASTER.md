@@ -2084,34 +2084,103 @@ Este checkpoint ainda não cria `ExternalOrderItemReference` e não habilita rec
 
 O próximo passo estrutural deverá ser preparado somente depois deste contrato estar protegido no Git.
 
+### Micro-checkpoint — estrutura Prisma de ExternalOrderItemReference
+
+A estrutura Prisma para a identidade externa estável dos itens foi preparada.
+
+Foi criado o model:
+
+`ExternalOrderItemReference`
+
+com os campos:
+
+- `id`;
+- `orderItemId`;
+- `externalOrderReferenceId`;
+- `externalItemId`;
+- `createdAt`;
+- `updatedAt`.
+
+Foram adicionadas as relações:
+
+`ExternalOrderReference -> ExternalOrderItemReference -> OrderItem`
+
+com `onDelete: Cascade` nas referências dependentes.
+
+Foram definidas as seguintes garantias estruturais:
+
+- `(externalOrderReferenceId, externalItemId)` é único;
+- `(externalOrderReferenceId, orderItemId)` é único;
+- `orderItemId` possui índice próprio.
+
+Também foram adicionadas as relações reversas em:
+
+- `OrderItem`;
+- `ExternalOrderReference`.
+
+Este micro-passo alterou somente:
+
+`packages/db/prisma/schema.prisma`
+
+Ainda não existe migration para esta estrutura.
+
+Também não foram alterados:
+
+- `ExternalOrderIngestionService`;
+- fluxo de criação de pedido externo;
+- fluxo de atualização de pedido externo;
+- reconciliação de `OrderItem`;
+- validação de runtime de `externalItemId`;
+- endpoints;
+- `OrdersModule`.
+
+A integridade que exige que o `OrderItem` pertença ao mesmo `Order` da `ExternalOrderReference` não é garantida somente por estas FKs e deverá ser validada transacionalmente no serviço em etapa posterior.
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- `prisma validate` — aprovado;
+- `prisma generate` com Prisma `6.19.1` — aprovado.
+
+O aviso de versão mais nova do Prisma foi ignorado intencionalmente. Nenhuma atualização de Prisma foi realizada.
+
+Nenhum `prisma format` foi executado.
+
+Este checkpoint ainda não altera o banco de dados.
+
 ## 19. Próxima ação exata
 
-O checkpoint documental da identidade externa dos itens foi protegido no commit:
+O contrato normalizado com `externalItemId` foi protegido no commit:
 
-`18883b6` — `docs: define identidade externa dos itens de pedido`
+`ca28236` — `feat(orders): adiciona externalItemId ao contrato externo`
 
-O primeiro micro-passo de implementação foi concluído:
+O próximo micro-passo estrutural foi preparado no Prisma:
 
-- `NormalizedExternalOrderItem` passou a exigir `externalItemId: string`;
-- `git diff --check` foi aprovado;
-- o build da API foi aprovado;
-- nenhum schema ou migration foi alterado.
+- criado `ExternalOrderItemReference`;
+- adicionadas relações com `OrderItem` e `ExternalOrderReference`;
+- definidas unicidades por referência externa;
+- `prisma validate` aprovado;
+- `prisma generate` aprovado;
+- nenhuma migration foi criada ainda.
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git esta alteração do contrato junto com o registro correspondente no `INTEGRATION_MASTER.md`.
+O próximo micro-passo autorizado será somente revisar e proteger no Git esta alteração estrutural do schema junto com o registro correspondente no `INTEGRATION_MASTER.md`.
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub será iniciada a preparação estrutural de `ExternalOrderItemReference` no Prisma.
+Somente depois desse checkpoint estar commitado e enviado ao GitHub poderá ser preparada a migration correspondente.
 
 Ainda não implementar:
 
-- validação de runtime de `externalItemId`;
-- `ExternalOrderItemReference`;
 - migration;
+- validação de runtime de `externalItemId`;
 - reconciliação de `OrderItem`;
-- alteração do fluxo de criação;
+- alteração do fluxo de criação de pedido externo;
+- alteração do fluxo de atualização de itens;
+- bootstrap/backfill de pedidos legados;
 - timestamps de lifecycle;
 - endpoints;
 - registro do serviço no `OrdersModule`;
-- conectores de marketplace.
+- conectores de marketplace;
+- `prisma format`;
+- atualização do Prisma.
 
 ## 20. NÃO FAZER AINDA
 

@@ -427,6 +427,7 @@ model OrderItem {
   unitPrice         Decimal  @db.Decimal(12, 2)
   createdAt         DateTime @default(now())
   order             Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  externalOrderItemReferences ExternalOrderItemReference[]
 
   @@index([orderId])
   @@index([productId])
@@ -1198,9 +1199,26 @@ model ExternalOrderReference {
 
   order        Order        @relation(fields: [orderId], references: [id], onDelete: Cascade)
   salesChannel SalesChannel @relation(fields: [salesChannelId], references: [id], onDelete: Restrict)
+  externalItems ExternalOrderItemReference[]
 
   @@unique([salesChannelId, externalOrderId])
   @@index([orderId])
   @@index([salesChannelId, lastSyncedAt])
   @@index([externalStatus])
+}
+
+model ExternalOrderItemReference {
+  id                       String   @id @default(uuid())
+  orderItemId              String
+  externalOrderReferenceId String
+  externalItemId           String
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
+
+  orderItem              OrderItem              @relation(fields: [orderItemId], references: [id], onDelete: Cascade)
+  externalOrderReference ExternalOrderReference @relation(fields: [externalOrderReferenceId], references: [id], onDelete: Cascade)
+
+  @@unique([externalOrderReferenceId, externalItemId])
+  @@unique([externalOrderReferenceId, orderItemId])
+  @@index([orderItemId])
 }
