@@ -1891,26 +1891,183 @@ O build da API foi executado após a implementação e concluído sem erros.
 
 Nenhum runner temporário `.tmp-*` permanece no diretório `apps/api`.
 
+### Micro-checkpoint — definição estrutural da identidade externa dos itens
+
+Antes de implementar reconciliação automática de `OrderItem`, fica definida a estrutura mínima necessária para identificar de forma estável cada linha de um pedido externo.
+
+Nenhuma implementação de schema ou código será realizada neste micro-checkpoint.
+
+#### externalItemId no contrato normalizado
+
+`NormalizedExternalOrderItem` deverá futuramente receber:
+
+`externalItemId: string`
+
+Para pedidos externos novos, `externalItemId` deverá ser obrigatório.
+
+O valor deverá:
+
+- identificar de forma estável uma linha dentro daquele pedido externo;
+- ser fornecido pelo adaptador/conector do canal;
+- ser normalizado com `trim`;
+- não ser vazio;
+- não depender de `title`, `sku`, posição no array ou preço;
+- não ser confundido obrigatoriamente com ID de produto ou anúncio do marketplace.
+
+Quando um canal não possuir um identificador de linha pronto, caberá ao adaptador produzir uma identidade estável baseada somente em identificadores imutáveis e confiáveis fornecidos pela própria origem.
+
+Dentro de uma mesma `ExternalOrderReference`, dois itens recebidos não poderão possuir o mesmo `externalItemId`.
+
+#### ExternalOrderItemReference
+
+Será criada futuramente uma entidade genérica:
+
+`ExternalOrderItemReference`
+
+Estrutura mínima prevista:
+
+- `id`;
+- `orderItemId`;
+- `externalOrderReferenceId`;
+- `externalItemId`;
+- `createdAt`;
+- `updatedAt`.
+
+Ela será responsável somente pelo vínculo entre a linha externa e o `OrderItem` canônico.
+
+Não adicionar campos específicos de Mercado Livre, Shopee ou outro marketplace ao `OrderItem`.
+
+#### Relações
+
+A estrutura deverá relacionar:
+
+`ExternalOrderReference -> ExternalOrderItemReference -> OrderItem`
+
+A exclusão de um `ExternalOrderReference` deverá remover suas referências de itens dependentes.
+
+A exclusão de um `OrderItem` deverá remover suas referências externas dependentes.
+
+A exclusão da referência não deverá apagar automaticamente o `OrderItem` por efeito inverso da relação.
+
+#### Unicidade
+
+Deverão ser protegidas pelo menos as seguintes garantias:
+
+- `(externalOrderReferenceId, externalItemId)` único;
+- um mesmo `OrderItem` não poderá ser vinculado duas vezes à mesma `ExternalOrderReference`.
+
+Não tornar `externalItemId` globalmente único, pois canais e pedidos distintos podem reutilizar o mesmo identificador.
+
+Também não tornar `orderItemId` globalmente único na tabela de referência, pois o desenho deve continuar permitindo que um mesmo pedido canônico possua referências externas distintas quando arquiteturalmente necessário.
+
+#### Integridade do pedido
+
+Uma `ExternalOrderItemReference` somente poderá relacionar:
+
+- um `OrderItem` pertencente ao mesmo `Order`;
+- uma `ExternalOrderReference` pertencente a esse mesmo `Order`.
+
+Essa integridade deverá ser validada dentro da transação de ingestão antes de qualquer escrita.
+
+Não será permitido relacionar item de um pedido canônico com referência externa pertencente a outro pedido.
+
+#### Criação de novo pedido externo
+
+Depois da estrutura estar implementada, a criação de um novo pedido externo deverá produzir atomicamente:
+
+`Order + OrderItem(s) + ExternalOrderReference + ExternalOrderItemReference(s)`
+
+Se qualquer vínculo de item falhar, toda a criação deverá sofrer rollback.
+
+Não poderá existir novo `OrderItem` externo sem sua identidade de linha quando o fluxo já estiver utilizando esta nova estrutura.
+
+#### Pedido externo existente
+
+A existência de `ExternalOrderItemReference` permitirá futuramente a reconciliação segura:
+
+- `externalItemId` já conhecido -> localizar e atualizar o mesmo `OrderItem`;
+- `externalItemId` novo -> criar novo `OrderItem` e sua referência;
+- item omitido de resposta parcial -> preservar;
+- remoção/cancelamento -> somente mediante sinal explícito e confiável da origem.
+
+A lógica efetiva de atualização, criação ou remoção de itens ainda não será implementada neste micro-checkpoint.
+
+#### Pedidos existentes sem referência de item
+
+Pedidos externos criados antes da ativação de `ExternalOrderItemReference` poderão possuir `OrderItem` canônicos sem identidade externa de linha vinculada.
+
+Esses itens não poderão ser associados automaticamente a um `externalItemId` posterior usando:
+
+- `title`;
+- `sku`;
+- posição no array;
+- preço;
+- quantidade;
+- combinação desses campos.
+
+Enquanto não existir um vínculo confiável, a ausência de `ExternalOrderItemReference` em um pedido já existente deverá ser tratada como estado legado não reconciliável automaticamente.
+
+Nesse cenário:
+
+- não presumir que um `externalItemId` recebido representa necessariamente um item novo;
+- não criar automaticamente um novo `OrderItem` apenas porque a referência externa ainda não existe;
+- não substituir nem apagar `OrderItem` existente;
+- preservar os itens canônicos atuais;
+- permitir que status, comprador, destinatário e demais campos independentes continuem sendo sincronizados normalmente;
+- exigir uma estratégia explícita e segura de bootstrap/backfill antes de habilitar reconciliação automática desses itens.
+
+O bootstrap de referências históricas será uma etapa separada e não poderá usar heurísticas frágeis para inventar correspondências.
+
+Depois que um pedido possuir cobertura confiável de identidade externa para seus itens, ele poderá entrar no fluxo normal de reconciliação por `externalItemId`.
+
+Pedidos externos criados após a ativação completa desta estrutura deverão nascer já com `ExternalOrderItemReference` para todos os seus itens, evitando a criação de novos casos legados.
+
+#### Compatibilidade atual
+
+Foi confirmado que atualmente:
+
+- `NormalizedExternalOrderItem` ainda não possui `externalItemId`;
+- não existe `ExternalOrderItemReference` no código ou no Prisma;
+- `ExternalOrderIngestionService` ainda não está registrado no `OrdersModule`;
+- não existe endpoint ou conector ativo utilizando esse contrato;
+- a criação atual gera `OrderItem(s)` e `ExternalOrderReference` dentro da mesma transação serializável.
+
+Portanto, a introdução futura da identidade de item poderá ser feita de forma controlada antes da exposição pública do motor.
+
+#### Limites deste micro-checkpoint
+
+Ainda não:
+
+- alterar `NormalizedExternalOrderItem`;
+- alterar `schema.prisma`;
+- criar migration;
+- reconciliar `OrderItem`;
+- modificar o fluxo de criação;
+- criar endpoint;
+- registrar `ExternalOrderIngestionService` no `OrdersModule`;
+- criar conector de marketplace;
+- executar `prisma format`;
+- atualizar Prisma.
+
 ## 19. Próxima ação exata
 
-A atualização segura de `canonicalStatus` com criação atômica de `OrderEvent` foi implementada e validada no banco isolado `marto_ops_test`.
+O checkpoint de `canonicalStatus` e `OrderEvent` foi implementado, validado e protegido no commit:
 
-O próximo micro-passo autorizado será somente executar a verificação técnica final desta implementação e proteger o checkpoint no Git:
+`92ff71d` — `feat(orders): sincroniza status canonico de pedidos externos`
 
-1. conferir o diff dos arquivos alterados;
-2. executar `git diff --check`;
-3. executar novamente o build da API;
-4. confirmar que nenhum `.tmp-*` permanece;
-5. adicionar somente os arquivos desta etapa;
-6. revisar o diff staged;
-7. criar o commit;
-8. enviar a branch ao GitHub;
-9. confirmar sincronização local/remota.
+A próxima etapa arquitetural é a identidade externa estável dos itens.
 
-Somente depois desse checkpoint estar protegido no Git poderá ser definida documentalmente a próxima regra de ingestão externa.
+A definição estrutural de `externalItemId` e `ExternalOrderItemReference` foi documentada antes de qualquer alteração de código ou banco.
+
+O próximo micro-passo autorizado será somente revisar esta definição documental e protegê-la no Git.
+
+Somente depois desse checkpoint documental estar commitado e enviado ao GitHub poderá ser preparada a alteração estrutural do contrato e do Prisma.
 
 Ainda não implementar:
 
+- `ExternalOrderItemReference`;
+- `externalItemId` no contrato;
+- migration;
 - reconciliação de itens;
 - timestamps de lifecycle;
 - endpoints;
