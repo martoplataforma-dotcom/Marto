@@ -2049,26 +2049,65 @@ Ainda não:
 - executar `prisma format`;
 - atualizar Prisma.
 
+### Micro-checkpoint — externalItemId incorporado ao contrato normalizado
+
+A primeira parte estrutural da identidade externa dos itens foi implementada no contrato normalizado.
+
+`NormalizedExternalOrderItem` agora possui obrigatoriamente:
+
+`externalItemId: string`
+
+Neste micro-passo foi alterado somente:
+
+`apps/api/src/modules/orders/types/normalized-external-order.ts`
+
+Nenhuma validação de runtime de `externalItemId` foi adicionada ainda.
+
+Também não foram alterados:
+
+- `ExternalOrderIngestionService`;
+- `schema.prisma`;
+- migrations;
+- `OrderItem`;
+- `ExternalOrderReference`;
+- fluxo de criação de pedido externo;
+- fluxo de atualização de pedido externo.
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter ./apps/api build` — aprovado.
+
+A introdução do campo no contrato não apresentou erro de compilação.
+
+Este checkpoint ainda não cria `ExternalOrderItemReference` e não habilita reconciliação de itens.
+
+O próximo passo estrutural deverá ser preparado somente depois deste contrato estar protegido no Git.
+
 ## 19. Próxima ação exata
 
-O checkpoint de `canonicalStatus` e `OrderEvent` foi implementado, validado e protegido no commit:
+O checkpoint documental da identidade externa dos itens foi protegido no commit:
 
-`92ff71d` — `feat(orders): sincroniza status canonico de pedidos externos`
+`18883b6` — `docs: define identidade externa dos itens de pedido`
 
-A próxima etapa arquitetural é a identidade externa estável dos itens.
+O primeiro micro-passo de implementação foi concluído:
 
-A definição estrutural de `externalItemId` e `ExternalOrderItemReference` foi documentada antes de qualquer alteração de código ou banco.
+- `NormalizedExternalOrderItem` passou a exigir `externalItemId: string`;
+- `git diff --check` foi aprovado;
+- o build da API foi aprovado;
+- nenhum schema ou migration foi alterado.
 
-O próximo micro-passo autorizado será somente revisar esta definição documental e protegê-la no Git.
+O próximo micro-passo autorizado será somente revisar e proteger no Git esta alteração do contrato junto com o registro correspondente no `INTEGRATION_MASTER.md`.
 
-Somente depois desse checkpoint documental estar commitado e enviado ao GitHub poderá ser preparada a alteração estrutural do contrato e do Prisma.
+Somente depois desse checkpoint estar commitado e enviado ao GitHub será iniciada a preparação estrutural de `ExternalOrderItemReference` no Prisma.
 
 Ainda não implementar:
 
+- validação de runtime de `externalItemId`;
 - `ExternalOrderItemReference`;
-- `externalItemId` no contrato;
 - migration;
-- reconciliação de itens;
+- reconciliação de `OrderItem`;
+- alteração do fluxo de criação;
 - timestamps de lifecycle;
 - endpoints;
 - registro do serviço no `OrdersModule`;

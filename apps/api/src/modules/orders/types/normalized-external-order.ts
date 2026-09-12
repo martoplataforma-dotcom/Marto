@@ -1,6 +1,7 @@
 import type { OrderStatus, Prisma } from '@prisma/client';
 
 export type NormalizedExternalOrderItem = {
+  externalItemId: string;
   productId?: string | null;
   title: string;
   sku?: string | null;
