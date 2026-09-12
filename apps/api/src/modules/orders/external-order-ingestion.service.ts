@@ -417,6 +417,18 @@ export class ExternalOrderIngestionService {
                       city: true,
                       state: true,
                       destinationAddressSnapshot: true,
+                      items: {
+                        select: {
+                          id: true,
+                        },
+                      },
+                    },
+                  },
+                  externalItems: {
+                    select: {
+                      id: true,
+                      orderItemId: true,
+                      externalItemId: true,
                     },
                   },
                 },

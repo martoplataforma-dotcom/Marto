@@ -2343,30 +2343,76 @@ Ainda não foram implementados:
 
 Nenhuma alteração adicional de Prisma ou migration foi necessária neste micro-passo.
 
+### Micro-checkpoint — leitura transacional da identidade dos itens no update
+
+O fluxo de atualização de pedidos externos passou a carregar, dentro da mesma transação `Serializable`, os dados mínimos necessários para classificar o estado de identidade dos itens.
+
+No `existingReference` agora também são lidos:
+
+- os `OrderItem` pertencentes ao `Order`, somente com `id`;
+- as `ExternalOrderItemReference` pertencentes à referência externa, com:
+  - `id`;
+  - `orderItemId`;
+  - `externalItemId`.
+
+A alteração foi realizada somente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Este micro-passo é somente de leitura.
+
+Não foram adicionadas ainda:
+
+- classificação de pedido legado;
+- reconciliação de itens;
+- criação de `OrderItem` durante atualização;
+- criação de `ExternalOrderItemReference` durante atualização;
+- atualização ou remoção de itens existentes;
+- associação automática por SKU, título, posição, quantidade ou preço.
+
+O comportamento atual de atualização permanece preservado.
+
+A fixture legada `ops-test-order-001` foi inspecionada no banco `marto_ops_test` e possui:
+
+- 1 `OrderItem` canônico;
+- 0 `ExternalOrderItemReference`.
+
+Também foi confirmado que as três referências externas legadas atualmente presentes no banco de teste possuem itens canônicos, mas nenhuma referência externa de item.
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter ./apps/api build` — aprovado.
+
+Este checkpoint apenas prepara os dados necessários para que a próxima etapa consiga distinguir com segurança pedido legado de pedido com identidade externa de item já estabelecida.
+
 ## 19. Próxima ação exata
 
-A validação de runtime de `externalItemId` foi protegida no commit:
+A criação atômica de `ExternalOrderItemReference` para novos pedidos externos foi protegida no commit:
 
-`7b36e0a` — `feat(orders): valida externalItemId em pedidos externos`
+`9e01000` — `feat(orders): cria referencias externas de item atomicamente`
 
-O próximo micro-passo foi implementado:
+O próximo micro-passo foi preparado:
 
-- novos pedidos externos criam `OrderItem` e `ExternalOrderItemReference` atomicamente;
-- `externalItemId` é persistido normalizado;
-- cada referência externa de item aponta para um `OrderItem` do mesmo pedido;
-- o formato atual do retorno da criação foi preservado;
-- build da API aprovado;
-- criação válida com dois itens aprovada;
-- rollback total após falha aprovado.
+- o fluxo de atualização agora lê os `OrderItem` do pedido;
+- também lê as `ExternalOrderItemReference` da referência externa;
+- nenhuma reconciliação ou escrita de item foi adicionada;
+- `git diff --check` foi aprovado;
+- o build da API foi aprovado.
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git esta alteração junto com o registro correspondente no `INTEGRATION_MASTER.md`.
+O próximo micro-passo autorizado será somente revisar e proteger no Git esta ampliação de leitura junto com o registro correspondente no `INTEGRATION_MASTER.md`.
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub será iniciada a preparação da reconciliação de itens de pedidos externos existentes.
+Somente depois desse checkpoint estar commitado e enviado ao GitHub será preparada a classificação segura do estado dos itens:
+
+- itens omitidos no payload → preservar;
+- itens presentes + itens canônicos + nenhuma referência externa de item → estado legado, preservar sem inferir vínculos;
+- itens presentes + referências externas existentes → identidade disponível para futura reconciliação.
 
 Ainda não implementar:
 
 - reconciliação de `OrderItem`;
 - criação de item novo durante atualização;
+- associação automática de item legado;
 - remoção/cancelamento de item por ausência no payload;
 - bootstrap/backfill de pedidos legados;
 - timestamps de lifecycle;
