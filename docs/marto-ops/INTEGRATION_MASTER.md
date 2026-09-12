@@ -2148,39 +2148,90 @@ Nenhum `prisma format` foi executado.
 
 Este checkpoint ainda não altera o banco de dados.
 
+### Micro-checkpoint — migration de ExternalOrderItemReference
+
+A migration correspondente à estrutura de identidade externa dos itens foi criada e validada no banco de teste.
+
+Migration:
+
+`20260912185200_add_external_order_item_reference`
+
+A migration cria somente a tabela:
+
+`ExternalOrderItemReference`
+
+com:
+
+- chave primária em `id`;
+- índice em `orderItemId`;
+- unicidade de `(externalOrderReferenceId, externalItemId)`;
+- unicidade de `(externalOrderReferenceId, orderItemId)`;
+- FK de `orderItemId` para `OrderItem(id)` com `ON DELETE CASCADE`;
+- FK de `externalOrderReferenceId` para `ExternalOrderReference(id)` com `ON DELETE CASCADE`.
+
+O SQL gerado foi revisado antes da aplicação e não contém operações destrutivas sobre tabelas existentes.
+
+A migration foi aplicada somente no banco de teste:
+
+`marto_ops_test`
+
+Resultado:
+
+- antes: 65 migrations;
+- depois: 66 migrations;
+- `prisma migrate status` confirmou `Database schema is up to date!`.
+
+A estrutura física também foi conferida diretamente no PostgreSQL com `\d "ExternalOrderItemReference"` e corresponde ao schema planejado.
+
+O banco normal `marto` não foi alterado.
+
+Ainda não foram implementados:
+
+- validação de runtime de `externalItemId`;
+- criação automática de `ExternalOrderItemReference` no fluxo de pedido externo;
+- reconciliação de `OrderItem`;
+- bootstrap/backfill de pedidos legados;
+- alterações no `ExternalOrderIngestionService`;
+- endpoints;
+- registro do serviço no `OrdersModule`.
+
+Nenhum `prisma format` foi executado e nenhuma atualização do Prisma foi realizada.
+
 ## 19. Próxima ação exata
 
-O contrato normalizado com `externalItemId` foi protegido no commit:
+A estrutura Prisma de `ExternalOrderItemReference` foi protegida no commit:
 
-`ca28236` — `feat(orders): adiciona externalItemId ao contrato externo`
+`9c28573` — `feat(db): adiciona referencia externa dos itens`
 
-O próximo micro-passo estrutural foi preparado no Prisma:
+A migration correspondente foi criada:
 
-- criado `ExternalOrderItemReference`;
-- adicionadas relações com `OrderItem` e `ExternalOrderReference`;
-- definidas unicidades por referência externa;
-- `prisma validate` aprovado;
-- `prisma generate` aprovado;
-- nenhuma migration foi criada ainda.
+`20260912185200_add_external_order_item_reference`
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git esta alteração estrutural do schema junto com o registro correspondente no `INTEGRATION_MASTER.md`.
+Ela foi revisada e aplicada com sucesso somente no banco de teste `marto_ops_test`.
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub poderá ser preparada a migration correspondente.
+O banco de teste possui agora 66 migrations e está atualizado.
+
+O próximo micro-passo autorizado será somente revisar e proteger no Git:
+
+- a migration `20260912185200_add_external_order_item_reference`;
+- este registro correspondente no `INTEGRATION_MASTER.md`.
+
+Somente depois desse checkpoint estar commitado e enviado ao GitHub poderá começar a preparação da validação de runtime de `externalItemId`.
 
 Ainda não implementar:
 
-- migration;
 - validação de runtime de `externalItemId`;
+- criação de referências externas de item no fluxo de criação;
 - reconciliação de `OrderItem`;
-- alteração do fluxo de criação de pedido externo;
-- alteração do fluxo de atualização de itens;
+- fluxo de atualização de itens;
 - bootstrap/backfill de pedidos legados;
 - timestamps de lifecycle;
 - endpoints;
 - registro do serviço no `OrdersModule`;
 - conectores de marketplace;
 - `prisma format`;
-- atualização do Prisma.
+- atualização do Prisma;
+- aplicação desta migration no banco normal `marto`.
 
 ## 20. NÃO FAZER AINDA
 
