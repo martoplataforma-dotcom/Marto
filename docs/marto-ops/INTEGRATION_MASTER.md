@@ -2261,32 +2261,113 @@ O runner utilizado para o teste foi temporário e foi removido após a validaç�
 
 Este checkpoint ainda não cria `ExternalOrderItemReference` automaticamente junto com novos pedidos externos.
 
+### Micro-checkpoint — criação atômica das referências externas de item
+
+O fluxo de criação de novos pedidos externos passou a criar também as referências externas de cada item.
+
+A alteração foi realizada somente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+A criação permanece dentro da mesma transação `Serializable`.
+
+A sequência transacional agora é:
+
+`Order -> ExternalOrderReference -> OrderItem(s) -> ExternalOrderItemReference(s)`
+
+Para cada item normalizado:
+
+- `externalItemId` é normalizado com `trim()`;
+- `externalItemId` não é armazenado em `OrderItem`;
+- o `OrderItem` canônico é criado normalmente;
+- uma `ExternalOrderItemReference` é criada ligando esse `OrderItem` à `ExternalOrderReference`;
+- a identidade externa persistida é o `externalItemId` normalizado.
+
+Depois das gravações, o `Order` é relido com os mesmos dados retornados anteriormente:
+
+- `items`;
+- `externalOrderReferences`.
+
+Assim, o formato atual do retorno de criação foi preservado.
+
+Atomicidade:
+
+Se qualquer etapa falhar, toda a transação é revertida.
+
+Foram realizados testes controlados no banco:
+
+`marto_ops_test`
+
+Teste de criação válida com dois itens:
+
+- `SUCCESS_ACTION=create`;
+- `SUCCESS_ITEMS=2`;
+- `SUCCESS_ORDER_REFS=1`;
+- `SUCCESS_ITEM_REFS=2`;
+- `SUCCESS_EXTERNAL_ITEM_IDS=line-1,line-2`;
+- `SUCCESS_SAME_ORDER=true`.
+
+Isso confirmou que:
+
+- os dois `OrderItem` foram criados;
+- cada item recebeu uma `ExternalOrderItemReference`;
+- o `externalItemId` foi persistido já normalizado;
+- todas as referências de item pertencem ao mesmo `Order` da `ExternalOrderReference`.
+
+Também foi executado um teste de rollback provocando falha durante `tx.orderItem.create()` depois do início da transação.
+
+Resultado:
+
+- `ROLLBACK_REFERENCES=0`;
+- `ROLLBACK_ORDERS=0`.
+
+Portanto, nenhuma criação parcial permaneceu no banco após a falha.
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter ./apps/api build` — aprovado;
+- criação atômica com dois itens — aprovada;
+- rollback total após falha durante criação — aprovado.
+
+O runner utilizado nos testes foi temporário e foi removido.
+
+Ainda não foram implementados:
+
+- reconciliação de itens em pedidos externos já existentes;
+- criação automática de novos itens durante atualização;
+- remoção/cancelamento de itens;
+- bootstrap/backfill de pedidos legados sem `ExternalOrderItemReference`;
+- endpoints;
+- registro do serviço no `OrdersModule`.
+
+Nenhuma alteração adicional de Prisma ou migration foi necessária neste micro-passo.
+
 ## 19. Próxima ação exata
 
-A migration de `ExternalOrderItemReference` foi protegida no commit:
+A validação de runtime de `externalItemId` foi protegida no commit:
 
-`b40f74a` — `feat(db): adiciona migration de referencia externa dos itens`
+`7b36e0a` — `feat(orders): valida externalItemId em pedidos externos`
 
 O próximo micro-passo foi implementado:
 
-- validação de runtime de `externalItemId` na criação de pedido externo;
-- rejeição de valor ausente/vazio;
-- rejeição de duplicidade após `trim()`;
+- novos pedidos externos criam `OrderItem` e `ExternalOrderItemReference` atomicamente;
+- `externalItemId` é persistido normalizado;
+- cada referência externa de item aponta para um `OrderItem` do mesmo pedido;
+- o formato atual do retorno da criação foi preservado;
 - build da API aprovado;
-- testes controlados aprovados no `marto_ops_test`;
-- nenhuma referência ou pedido parcial foi criado nos casos inválidos.
+- criação válida com dois itens aprovada;
+- rollback total após falha aprovado.
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git esta validação junto com o registro correspondente no `INTEGRATION_MASTER.md`.
+O próximo micro-passo autorizado será somente revisar e proteger no Git esta alteração junto com o registro correspondente no `INTEGRATION_MASTER.md`.
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub poderá começar a alteração do fluxo de criação para produzir atomicamente:
-
-`Order + OrderItem(s) + ExternalOrderReference + ExternalOrderItemReference(s)`
+Somente depois desse checkpoint estar commitado e enviado ao GitHub será iniciada a preparação da reconciliação de itens de pedidos externos existentes.
 
 Ainda não implementar:
 
-- criação automática de `ExternalOrderItemReference`;
 - reconciliação de `OrderItem`;
-- fluxo de atualização de itens;
+- criação de item novo durante atualização;
+- remoção/cancelamento de item por ausência no payload;
 - bootstrap/backfill de pedidos legados;
 - timestamps de lifecycle;
 - endpoints;

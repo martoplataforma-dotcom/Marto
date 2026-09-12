@@ -207,6 +207,7 @@ export class ExternalOrderIngestionService {
               }
 
               return {
+                externalItemId: item.externalItemId.trim(),
                 productId,
                 titleSnapshot: item.title.trim(),
                 skuSnapshot: item.sku?.trim() || null,
@@ -252,7 +253,7 @@ export class ExternalOrderIngestionService {
               }
             }
 
-            const order = await tx.order.create({
+            const createdOrder = await tx.order.create({
               data: {
                 merchantId: transactionalSalesChannel.merchantId,
                 userId: null,
@@ -269,24 +270,59 @@ export class ExternalOrderIngestionService {
                 state: normalized.state?.trim() || null,
                 destinationAddressSnapshot:
                   normalized.destinationAddress ?? undefined,
+              },
+              select: {
+                id: true,
+              },
+            });
 
-                items: {
-                  create: normalizedItems,
+            const externalOrderReference =
+              await tx.externalOrderReference.create({
+                data: {
+                  orderId: createdOrder.id,
+                  salesChannelId: transactionalSalesChannel.id,
+                  externalOrderId,
+                  externalStatus: normalized.externalStatus?.trim() || null,
+                  externalCreatedAt:
+                    normalized.externalCreatedAt ?? null,
+                  externalUpdatedAt:
+                    normalized.externalUpdatedAt ?? null,
+                  lastSyncedAt: new Date(),
+                  metadata: normalized.metadata ?? undefined,
                 },
+                select: {
+                  id: true,
+                },
+              });
 
-                externalOrderReferences: {
-                  create: {
-                    salesChannelId: transactionalSalesChannel.id,
-                    externalOrderId,
-                    externalStatus: normalized.externalStatus?.trim() || null,
-                    externalCreatedAt:
-                      normalized.externalCreatedAt ?? null,
-                    externalUpdatedAt:
-                      normalized.externalUpdatedAt ?? null,
-                    lastSyncedAt: new Date(),
-                    metadata: normalized.metadata ?? undefined,
-                  },
+            for (const item of normalizedItems) {
+              const orderItem = await tx.orderItem.create({
+                data: {
+                  orderId: createdOrder.id,
+                  productId: item.productId,
+                  titleSnapshot: item.titleSnapshot,
+                  skuSnapshot: item.skuSnapshot,
+                  variationSnapshot: item.variationSnapshot,
+                  quantity: item.quantity,
+                  unitPrice: item.unitPrice,
                 },
+                select: {
+                  id: true,
+                },
+              });
+
+              await tx.externalOrderItemReference.create({
+                data: {
+                  orderItemId: orderItem.id,
+                  externalOrderReferenceId: externalOrderReference.id,
+                  externalItemId: item.externalItemId,
+                },
+              });
+            }
+
+            const order = await tx.order.findUniqueOrThrow({
+              where: {
+                id: createdOrder.id,
               },
               include: {
                 items: true,
