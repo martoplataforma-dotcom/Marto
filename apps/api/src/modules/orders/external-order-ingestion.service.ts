@@ -539,6 +539,16 @@ export class ExternalOrderIngestionService {
                   orderItemId: externalItemReference?.orderItemId ?? null,
                 };
               });
+
+              const incomingItemMatchState =
+                incomingItemMatches.length === 0
+                  ? 'items_empty'
+                  : incomingItemMatches.some((match) => match.orderItemId === null)
+                    ? 'contains_unmatched'
+                    : incomingItemMatches.length ===
+                        existingReference.externalItems.length
+                      ? 'matched_complete_set'
+                      : 'matched_subset';
             }
 
             const externalCreatedAt =

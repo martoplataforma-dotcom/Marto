@@ -2600,26 +2600,82 @@ Validações realizadas:
 
 Este micro-passo apenas prepara uma correspondência determinística por identidade externa já estabelecida, sem alterar dados.
 
+### Micro-checkpoint — classificação do resultado da correspondência dos itens
+
+Após a correspondência somente-leitura por `externalItemId`, o fluxo de atualização passou a classificar internamente o resultado do conjunto recebido.
+
+A classificação ocorre somente para pedidos em estado `identified_complete`, com `items` presentes e estruturalmente válidos.
+
+Estados definidos:
+
+- `items_empty`
+  - o payload trouxe `items: []`;
+  - não significa remoção dos itens existentes.
+
+- `contains_unmatched`
+  - pelo menos um `externalItemId` recebido não possui `ExternalOrderItemReference` correspondente;
+  - neste checkpoint, isso não significa automaticamente item novo e não gera rejeição.
+
+- `matched_complete_set`
+  - todos os itens recebidos possuem correspondência;
+  - a quantidade recebida é igual à quantidade de referências externas existentes;
+  - representa cobertura completa do conjunto identificado.
+
+- `matched_subset`
+  - todos os itens recebidos possuem correspondência;
+  - o payload contém somente parte das referências externas existentes;
+  - itens ausentes no payload permanecem preservados.
+
+A classificação utiliza `incomingItemMatches`, que já foi construído exclusivamente a partir de `externalItemId`.
+
+A variável `incomingItemMatchState` ainda não controla nenhuma decisão operacional.
+
+Neste checkpoint:
+
+- `items: []` não remove itens;
+- item ausente do payload não é considerado removido;
+- `externalItemId` desconhecido não é rejeitado;
+- `externalItemId` desconhecido não é criado automaticamente;
+- nenhuma atualização de `OrderItem` ocorre;
+- nenhuma alteração de `ExternalOrderItemReference` ocorre;
+- nenhuma reconciliação é executada.
+
+Não existe correspondência alternativa por SKU, título, posição, quantidade ou preço.
+
+A alteração foi realizada somente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter ./apps/api build` — aprovado.
+
+Este micro-passo apenas distingue os possíveis resultados da correspondência antes que qualquer política de reconciliação seja autorizada.
+
 ## 19. Próxima ação exata
 
-A validação condicional de itens identificados no update foi protegida no commit:
+A correspondência somente-leitura por `externalItemId` foi protegida no commit:
 
-`ba03076` — `feat(orders): valida itens identificados no update`
+`925ce48` — `feat(orders): prepara correspondencia externa dos itens`
 
 O próximo micro-passo foi implementado localmente:
 
-- para pedidos `identified_complete`, as referências externas existentes são indexadas por `externalItemId`;
-- cada item recebido é relacionado somente pelo seu `externalItemId`;
-- correspondências encontradas expõem o `ExternalOrderItemReference` e o `OrderItem` canônico;
-- itens recebidos sem correspondência permanecem explicitamente sem vínculo;
-- nenhuma inferência por SKU, título, posição, quantidade ou preço foi adicionada;
-- nenhuma reconciliação ou escrita de item foi adicionada;
+- o resultado da correspondência passou a ser classificado como:
+  - `items_empty`;
+  - `contains_unmatched`;
+  - `matched_complete_set`;
+  - `matched_subset`;
+- `items: []` ainda não significa remoção;
+- itens ausentes em payload parcial continuam preservados;
+- itens sem correspondência ainda não são rejeitados nem criados;
+- nenhuma escrita ou reconciliação foi adicionada;
 - `git diff --check` foi aprovado;
 - o build da API foi aprovado.
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git esta correspondência somente-leitura junto com o registro correspondente no `INTEGRATION_MASTER.md`.
+O próximo micro-passo autorizado será somente revisar e proteger no Git esta classificação junto com o registro correspondente no `INTEGRATION_MASTER.md`.
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub será definida, separadamente, a política segura para itens recebidos sem correspondência e para itens já correspondidos.
+Somente depois desse checkpoint estar commitado e enviado ao GitHub será definida, separadamente, a primeira política operacional segura para esses estados.
 
 Ainda não implementar:
 
