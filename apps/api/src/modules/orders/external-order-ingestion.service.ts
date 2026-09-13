@@ -558,6 +558,14 @@ export class ExternalOrderIngestionService {
                         existingReference.externalItems.length
                       ? 'matched_complete_set'
                       : 'matched_subset';
+
+              const itemUpdateEligibility =
+                incomingItemMatchState === 'matched_complete_set' ||
+                incomingItemMatchState === 'matched_subset'
+                  ? 'matched_items_only'
+                  : incomingItemMatchState === 'contains_unmatched'
+                    ? 'blocked_unmatched'
+                    : 'preserve_items';
             }
 
             const externalCreatedAt =

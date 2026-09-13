@@ -2670,34 +2670,79 @@ Validações realizadas:
 
 Este micro-passo apenas distingue os possíveis resultados da correspondência antes que qualquer política de reconciliação seja autorizada.
 
+### Micro-checkpoint — elegibilidade preparatória para futura atualização de itens
+
+Após a classificação do resultado da correspondência por `externalItemId`, o fluxo passou a classificar internamente se o conjunto recebido pode ser considerado elegível para uma futura atualização de itens.
+
+Foi adicionada a variável:
+
+`itemUpdateEligibility`
+
+Estados definidos:
+
+- `matched_items_only`
+  - aplicado quando `incomingItemMatchState` é `matched_complete_set` ou `matched_subset`;
+  - somente itens já correspondidos por identidade externa conhecida poderão ser considerados em uma futura etapa;
+  - no caso de subset, itens ausentes continuam preservados.
+
+- `blocked_unmatched`
+  - aplicado quando `incomingItemMatchState` é `contains_unmatched`;
+  - existe pelo menos um `externalItemId` recebido sem referência conhecida;
+  - nenhuma escrita de item é autorizada neste checkpoint.
+
+- `preserve_items`
+  - aplicado aos demais estados, atualmente incluindo `items_empty`;
+  - os itens canônicos existentes permanecem preservados.
+
+Esta classificação ainda não possui efeito operacional.
+
+Neste checkpoint:
+
+- nenhum `OrderItem` é atualizado;
+- nenhum `OrderItem` é criado;
+- nenhum `OrderItem` é removido;
+- nenhuma `ExternalOrderItemReference` é criada ou alterada;
+- `blocked_unmatched` ainda não gera erro;
+- `matched_items_only` ainda não executa update;
+- `preserve_items` apenas expressa a política preparatória de preservação;
+- não existe inferência por SKU, título, posição, quantidade ou preço;
+- não existe interpretação de ausência no payload como remoção.
+
+A alteração foi realizada somente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter ./apps/api build` — aprovado.
+
+Este micro-passo apenas define a elegibilidade interna para uma futura reconciliação, sem executar qualquer escrita de item.
+
 ## 19. Próxima ação exata
 
-A correspondência somente-leitura por `externalItemId` foi protegida no commit:
+A classificação do resultado da correspondência dos itens foi protegida no commit:
 
-`925ce48` — `feat(orders): prepara correspondencia externa dos itens`
+`0eaeb52` — `feat(orders): classifica correspondencia dos itens`
 
 O próximo micro-passo foi implementado localmente:
 
-- o resultado da correspondência passou a ser classificado como:
-  - `items_empty`;
-  - `contains_unmatched`;
-  - `matched_complete_set`;
-  - `matched_subset`;
-- `items: []` ainda não significa remoção;
-- itens ausentes em payload parcial continuam preservados;
-- itens sem correspondência ainda não são rejeitados nem criados;
-- nenhuma escrita ou reconciliação foi adicionada;
+- `matched_complete_set` e `matched_subset` passam a resultar em `matched_items_only`;
+- `contains_unmatched` passa a resultar em `blocked_unmatched`;
+- os demais estados resultam em `preserve_items`;
+- a classificação ainda não controla nenhuma escrita;
+- nenhum item é criado, atualizado, removido ou rejeitado;
 - `git diff --check` foi aprovado;
 - o build da API foi aprovado.
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git esta classificação junto com o registro correspondente no `INTEGRATION_MASTER.md`.
+O próximo micro-passo autorizado será somente revisar e proteger no Git esta classificação de elegibilidade junto com o registro correspondente no `INTEGRATION_MASTER.md`.
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub será definida, separadamente, a primeira política operacional segura para esses estados.
+Somente depois desse checkpoint estar commitado e enviado ao GitHub será preparada, separadamente, a primeira utilização segura de `matched_items_only`, ainda começando por comportamento controlado e sem remoções implícitas.
 
 Ainda não implementar:
 
 - criação de item novo durante atualização;
-- atualização de `OrderItem`;
+- atualização efetiva de `OrderItem`;
 - remoção/cancelamento de item por ausência no payload;
 - rejeição automática de item desconhecido;
 - associação automática de item legado;
