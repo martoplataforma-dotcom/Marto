@@ -514,6 +514,13 @@ export class ExternalOrderIngestionService {
                       ? 'empty_unidentified'
                       : 'inconsistent';
 
+            if (
+              itemIdentityState === 'identified_complete' &&
+              normalized.items !== undefined
+            ) {
+              this.validateExternalItems(normalized.items);
+            }
+
             const externalCreatedAt =
               existingReference.externalCreatedAt === null &&
               normalized.externalCreatedAt !== undefined &&

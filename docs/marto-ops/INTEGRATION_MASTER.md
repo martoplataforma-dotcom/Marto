@@ -2487,34 +2487,88 @@ Validações realizadas:
 
 Este micro-passo é somente uma refatoração preparatória para evitar critérios diferentes entre criação e futura atualização de itens externos.
 
+### Micro-checkpoint — validação condicional de itens no update com identidade completa
+
+O fluxo de atualização de pedidos externos passou a aplicar `validateExternalItems()` somente quando os itens possuem identidade externa completa e o payload de atualização realmente contém `items`.
+
+A validação ocorre somente quando:
+
+- `itemIdentityState === 'identified_complete'`;
+- `normalized.items !== undefined`.
+
+A chamada é executada depois da proteção contra sincronização stale e antes das demais atualizações do pedido.
+
+Com isso:
+
+- payload stale continua sendo ignorado antes de qualquer validação de item;
+- `items_omitted` não executa validação de itens;
+- `legacy_unlinked` não executa validação de itens;
+- `empty_unidentified` não executa validação de itens;
+- `inconsistent` não executa validação de itens;
+- somente `identified_complete` permite que o conteúdo de `items` seja tratado como validável nesta etapa.
+
+Pedidos legados continuam protegidos: mesmo que o payload traga `items`, nenhum vínculo é inferido e os itens não impedem, por si só, a sincronização dos demais campos do pedido.
+
+Para pedidos com identidade completa, um payload de itens inválido pode interromper a atualização transacional antes das escritas, utilizando as mesmas regras estruturais já aplicadas à criação.
+
+As regras validadas são:
+
+- `externalItemId` obrigatório;
+- `externalItemId` único dentro do pedido externo;
+- título obrigatório;
+- quantidade inteira maior que zero;
+- `unitPrice` válido, finito e maior ou igual a zero.
+
+Este checkpoint ainda não:
+
+- cria `OrderItem`;
+- atualiza `OrderItem`;
+- remove `OrderItem`;
+- cria ou altera `ExternalOrderItemReference`;
+- compara conteúdo do item recebido com o item canônico;
+- executa reconciliação;
+- associa item legado;
+- executa bootstrap/backfill.
+
+A alteração foi realizada somente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter ./apps/api build` — aprovado.
+
+Este micro-passo apenas estabelece quando um payload de itens já pode ser considerado estruturalmente validável. Nenhuma escrita de item foi adicionada.
+
 ## 19. Próxima ação exata
 
-A classificação segura do estado de identidade dos itens foi protegida no commit:
+A extração da validação comum de itens externos foi protegida no commit:
 
-`70aea38` — `feat(orders): classifica identidade dos itens no update`
+`ce040c0` — `refactor(orders): extrai validacao comum de itens externos`
 
 O próximo micro-passo foi implementado localmente:
 
-- as validações comuns dos itens externos foram extraídas para `validateExternalItems()`;
-- `validateCreateInput()` continua aplicando essas mesmas regras;
-- as regras exclusivas da criação permanecem separadas;
-- o fluxo de update ainda não chama a validação comum;
+- o update passou a chamar `validateExternalItems()` somente quando `itemIdentityState` é `identified_complete`;
+- a validação só ocorre quando o payload realmente contém `items`;
+- sincronizações stale continuam saindo antes da validação;
+- pedidos legados, vazios ou inconsistentes continuam sem validação operacional dos itens;
 - nenhuma reconciliação ou escrita de item foi adicionada;
 - `git diff --check` foi aprovado;
 - o build da API foi aprovado.
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git esta refatoração junto com o registro correspondente no `INTEGRATION_MASTER.md`.
+O próximo micro-passo autorizado será somente revisar e proteger no Git esta validação condicional junto com o registro correspondente no `INTEGRATION_MASTER.md`.
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub será avaliada a aplicação segura de `validateExternalItems()` aos payloads de atualização que realmente contenham `items`.
+Somente depois desse checkpoint estar commitado e enviado ao GitHub será preparada, separadamente, a correspondência segura entre `externalItemId` recebido e `ExternalOrderItemReference` existente para pedidos com identidade completa.
 
 Ainda não implementar:
 
-- reconciliação de `OrderItem`;
 - criação de item novo durante atualização;
 - atualização de item existente;
 - associação automática de item legado;
 - remoção/cancelamento de item por ausência no payload;
 - bootstrap/backfill de pedidos legados;
+- reconciliação completa dos itens;
 - timestamps de lifecycle;
 - endpoints;
 - registro do serviço no `OrdersModule`;
