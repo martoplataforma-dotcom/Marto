@@ -2386,32 +2386,87 @@ Validações realizadas:
 
 Este checkpoint apenas prepara os dados necessários para que a próxima etapa consiga distinguir com segurança pedido legado de pedido com identidade externa de item já estabelecida.
 
+### Micro-checkpoint — classificação segura do estado de identidade dos itens
+
+Após a leitura transacional dos `OrderItem` e das `ExternalOrderItemReference`, o fluxo de atualização passou a classificar internamente o estado de identidade dos itens.
+
+A classificação ocorre somente depois da proteção contra sincronização stale e ainda não executa nenhuma reconciliação ou escrita de item.
+
+Estados definidos:
+
+- `items_omitted`
+  - o payload de atualização não trouxe `items`;
+  - os itens existentes devem permanecer preservados.
+
+- `legacy_unlinked`
+  - existem `OrderItem` canônicos;
+  - não existe nenhuma `ExternalOrderItemReference` para aquela referência externa;
+  - representa o estado legado que não pode ter vínculos inferidos automaticamente.
+
+- `identified_complete`
+  - existem `OrderItem` canônicos;
+  - a quantidade de `ExternalOrderItemReference` é igual à quantidade de itens canônicos;
+  - todas as referências externas apontam para `OrderItem` pertencentes ao mesmo `Order`;
+  - somente este estado representa cobertura completa de identidade para futura reconciliação.
+
+- `empty_unidentified`
+  - não existem `OrderItem`;
+  - não existem `ExternalOrderItemReference`;
+  - o estado fica separado do legado para não assumir comportamento automaticamente.
+
+- `inconsistent`
+  - existe identidade parcial ou estruturalmente incoerente;
+  - não deve ser tratada como identidade completa.
+
+Para validar a integridade estrutural, os IDs dos `OrderItem` do pedido são carregados em um `Set` e cada `ExternalOrderItemReference.orderItemId` precisa pertencer a esse conjunto.
+
+A classificação foi adicionada em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Este micro-passo ainda não:
+
+- cria `OrderItem`;
+- altera `OrderItem`;
+- remove `OrderItem`;
+- cria `ExternalOrderItemReference`;
+- altera `ExternalOrderItemReference`;
+- associa item legado por SKU, título, posição, quantidade ou preço;
+- executa reconciliação;
+- executa bootstrap/backfill;
+- altera o resultado atual da sincronização com base em `itemIdentityState`.
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter ./apps/api build` — aprovado.
+
+A variável `itemIdentityState` permanece apenas como classificação interna preparatória. Nenhuma decisão operacional de reconciliação utiliza essa classificação neste checkpoint.
+
 ## 19. Próxima ação exata
 
-A criação atômica de `ExternalOrderItemReference` para novos pedidos externos foi protegida no commit:
+A preparação da leitura transacional da identidade dos itens foi protegida no commit:
 
-`9e01000` — `feat(orders): cria referencias externas de item atomicamente`
+`9983ae7` — `feat(orders): prepara leitura de identidade dos itens no update`
 
-O próximo micro-passo foi preparado:
+O próximo micro-passo foi implementado localmente:
 
-- o fluxo de atualização agora lê os `OrderItem` do pedido;
-- também lê as `ExternalOrderItemReference` da referência externa;
-- nenhuma reconciliação ou escrita de item foi adicionada;
+- classificação segura do estado de identidade dos itens;
+- distinção explícita entre payload sem itens, pedido legado, identidade completa, estado vazio e estado inconsistente;
+- validação de que referências externas existentes apontam para itens do mesmo `Order`;
+- nenhuma escrita ou reconciliação de item foi adicionada;
 - `git diff --check` foi aprovado;
 - o build da API foi aprovado.
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git esta ampliação de leitura junto com o registro correspondente no `INTEGRATION_MASTER.md`.
+O próximo micro-passo autorizado será somente revisar e proteger no Git esta classificação junto com o registro correspondente no `INTEGRATION_MASTER.md`.
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub será preparada a classificação segura do estado dos itens:
-
-- itens omitidos no payload → preservar;
-- itens presentes + itens canônicos + nenhuma referência externa de item → estado legado, preservar sem inferir vínculos;
-- itens presentes + referências externas existentes → identidade disponível para futura reconciliação.
+Somente depois desse checkpoint estar commitado e enviado ao GitHub será definido, separadamente, como a futura reconciliação deverá reagir a cada estado.
 
 Ainda não implementar:
 
 - reconciliação de `OrderItem`;
 - criação de item novo durante atualização;
+- atualização de item existente;
 - associação automática de item legado;
 - remoção/cancelamento de item por ausência no payload;
 - bootstrap/backfill de pedidos legados;

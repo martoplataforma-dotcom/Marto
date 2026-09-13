@@ -480,6 +480,34 @@ export class ExternalOrderIngestionService {
               };
             }
 
+            const canonicalOrderItemIds = new Set(
+              existingReference.order.items.map((item) => item.id),
+            );
+
+            const hasOnlySameOrderItemReferences =
+              existingReference.externalItems.every((externalItem) =>
+                canonicalOrderItemIds.has(externalItem.orderItemId),
+              );
+
+            const hasCompleteItemIdentity =
+              existingReference.order.items.length > 0 &&
+              existingReference.externalItems.length ===
+                existingReference.order.items.length &&
+              hasOnlySameOrderItemReferences;
+
+            const itemIdentityState =
+              normalized.items === undefined
+                ? 'items_omitted'
+                : existingReference.order.items.length > 0 &&
+                    existingReference.externalItems.length === 0
+                  ? 'legacy_unlinked'
+                  : hasCompleteItemIdentity
+                    ? 'identified_complete'
+                    : existingReference.order.items.length === 0 &&
+                        existingReference.externalItems.length === 0
+                      ? 'empty_unidentified'
+                      : 'inconsistent';
+
             const externalCreatedAt =
               existingReference.externalCreatedAt === null &&
               normalized.externalCreatedAt !== undefined &&
