@@ -2443,24 +2443,69 @@ Validações realizadas:
 
 A variável `itemIdentityState` permanece apenas como classificação interna preparatória. Nenhuma decisão operacional de reconciliação utiliza essa classificação neste checkpoint.
 
+### Micro-checkpoint — extração da validação comum de itens externos
+
+As validações estruturais dos itens externos foram extraídas de `validateCreateInput()` para um método reutilizável:
+
+`validateExternalItems()`.
+
+O método concentra as seguintes regras já existentes:
+
+- `externalItemId` obrigatório após `trim`;
+- `externalItemId` único dentro do pedido externo;
+- título obrigatório;
+- quantidade inteira maior que zero;
+- `unitPrice` válido, finito e maior ou igual a zero.
+
+As regras exclusivas da criação permanecem em `validateCreateInput()`:
+
+- `canonicalStatus` obrigatório;
+- pelo menos um item obrigatório.
+
+`validateCreateInput()` continua chamando a validação comum dos itens, preservando o comportamento anterior da criação.
+
+Neste checkpoint, `validateExternalItems()` ainda não é chamado pelo fluxo de atualização.
+
+Não foram alterados:
+
+- `itemIdentityState`;
+- regras de `productId`;
+- criação de `OrderItem`;
+- atualização de `OrderItem`;
+- criação ou alteração de `ExternalOrderItemReference`;
+- reconciliação de itens;
+- comportamento de pedidos legados.
+
+A alteração foi realizada somente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter ./apps/api build` — aprovado.
+
+Este micro-passo é somente uma refatoração preparatória para evitar critérios diferentes entre criação e futura atualização de itens externos.
+
 ## 19. Próxima ação exata
 
-A preparação da leitura transacional da identidade dos itens foi protegida no commit:
+A classificação segura do estado de identidade dos itens foi protegida no commit:
 
-`9983ae7` — `feat(orders): prepara leitura de identidade dos itens no update`
+`70aea38` — `feat(orders): classifica identidade dos itens no update`
 
 O próximo micro-passo foi implementado localmente:
 
-- classificação segura do estado de identidade dos itens;
-- distinção explícita entre payload sem itens, pedido legado, identidade completa, estado vazio e estado inconsistente;
-- validação de que referências externas existentes apontam para itens do mesmo `Order`;
-- nenhuma escrita ou reconciliação de item foi adicionada;
+- as validações comuns dos itens externos foram extraídas para `validateExternalItems()`;
+- `validateCreateInput()` continua aplicando essas mesmas regras;
+- as regras exclusivas da criação permanecem separadas;
+- o fluxo de update ainda não chama a validação comum;
+- nenhuma reconciliação ou escrita de item foi adicionada;
 - `git diff --check` foi aprovado;
 - o build da API foi aprovado.
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git esta classificação junto com o registro correspondente no `INTEGRATION_MASTER.md`.
+O próximo micro-passo autorizado será somente revisar e proteger no Git esta refatoração junto com o registro correspondente no `INTEGRATION_MASTER.md`.
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub será definido, separadamente, como a futura reconciliação deverá reagir a cada estado.
+Somente depois desse checkpoint estar commitado e enviado ao GitHub será avaliada a aplicação segura de `validateExternalItems()` aos payloads de atualização que realmente contenham `items`.
 
 Ainda não implementar:
 

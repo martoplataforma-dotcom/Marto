@@ -49,22 +49,12 @@ export class ExternalOrderIngestionService {
     return merged;
   }
 
-  private validateCreateInput(input: NormalizedExternalOrderInput) {
-    if (!input.canonicalStatus) {
-      throw new Error(
-        'canonicalStatus is required when creating an external order.',
-      );
-    }
-
-    if (!input.items?.length) {
-      throw new Error(
-        'At least one item is required when creating an external order.',
-      );
-    }
-
+  private validateExternalItems(
+    items: NonNullable<NormalizedExternalOrderInput['items']>,
+  ) {
     const externalItemIds = new Set<string>();
 
-    input.items.forEach((item, index) => {
+    items.forEach((item, index) => {
       const externalItemId =
         typeof item.externalItemId === 'string'
           ? item.externalItemId.trim()
@@ -106,6 +96,22 @@ export class ExternalOrderIngestionService {
         );
       }
     });
+  }
+
+  private validateCreateInput(input: NormalizedExternalOrderInput) {
+    if (!input.canonicalStatus) {
+      throw new Error(
+        'canonicalStatus is required when creating an external order.',
+      );
+    }
+
+    if (!input.items?.length) {
+      throw new Error(
+        'At least one item is required when creating an external order.',
+      );
+    }
+
+    this.validateExternalItems(input.items);
   }
 
   private async createExternalOrder(input: {
