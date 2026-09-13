@@ -1423,14 +1423,15 @@ Checkpoint anterior protegido:
 Semântica implementada:
 
 - `externalCreatedAt` representa a data/hora original de criação do pedido no canal externo;
-- no fluxo de criação, o comportamento existente foi preservado;
+- no fluxo de criação, uma `Date` válida continua sendo preservada;
+- no fluxo de criação, `Invalid Date` é neutralizado antes da persistência e resulta em `externalCreatedAt = NULL`;
 - `undefined` ou `null` em atualização preservam o valor persistido;
 - se o valor persistido estiver `NULL`, uma atualização não stale com `externalCreatedAt` informado poderá preenchê-lo;
 - depois que existir um valor persistido, sincronizações posteriores não o substituem automaticamente;
 - entrada stale nunca poderá preencher, alterar ou regredir `externalCreatedAt`;
 - `externalUpdatedAt` continua sendo o watermark de proteção temporal.
 
-A implementação adicionou somente a decisão de preenchimento de `externalCreatedAt` no fluxo transacional de atualização existente.
+A implementação mantém a decisão segura de preenchimento de `externalCreatedAt` no fluxo transacional de atualização e acrescenta normalização defensiva de datas opcionais tanto na criação quanto na atualização.
 
 Não houve migration, pois o campo já existia no schema.
 
@@ -1484,6 +1485,22 @@ Teste de proteção contra entrada stale quando o campo ainda estava `NULL`:
 O build da API NestJS foi executado após a implementação e concluído sem erros.
 
 `git diff --check` foi executado após os testes e concluído sem erros.
+
+Validação automatizada complementar realizada após a lapidação da regra:
+
+- foi criado `apps/api/src/modules/orders/external-order-ingestion.service.spec.ts`;
+- 10 testes específicos do `ExternalOrderIngestionService` foram executados e aprovados;
+- criação com `externalCreatedAt` válido preserva a data;
+- criação com `Invalid Date` neutraliza o valor antes da persistência;
+- atualização não stale pode preencher `externalCreatedAt` quando o valor persistido está `NULL`;
+- `undefined`, `null` e `Invalid Date` em atualização não preenchem nem apagam o campo;
+- valor já persistido permanece imutável diante de uma data posterior diferente;
+- entrada stale não toca em `externalCreatedAt` nem em `externalUpdatedAt`;
+- `externalUpdatedAt` continua avançando normalmente em atualização não stale;
+- atualização real de `canonicalStatus` continua alterando o `Order` e criando o respectivo `OrderEvent`;
+- suíte completa da API executada com 8 suítes e 17 testes aprovados;
+- build da API NestJS concluído sem erros;
+- `git diff --check` concluído sem erros.
 
 O runner temporário utilizado nos testes foi removido e não faz parte do código oficial.
 

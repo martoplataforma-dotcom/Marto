@@ -18,6 +18,14 @@ export class ExternalOrderIngestionService {
     return normalized || undefined;
   }
 
+  private normalizeOptionalDate(value?: Date | null) {
+    if (!(value instanceof Date)) {
+      return undefined;
+    }
+
+    return Number.isFinite(value.getTime()) ? value : undefined;
+  }
+
   private isJsonObject(value: unknown): value is Record<string, unknown> {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
@@ -290,7 +298,8 @@ export class ExternalOrderIngestionService {
                   externalOrderId,
                   externalStatus: normalized.externalStatus?.trim() || null,
                   externalCreatedAt:
-                    normalized.externalCreatedAt ?? null,
+                    this.normalizeOptionalDate(normalized.externalCreatedAt) ??
+                    null,
                   externalUpdatedAt:
                     normalized.externalUpdatedAt ?? null,
                   lastSyncedAt: new Date(),
@@ -552,10 +561,8 @@ export class ExternalOrderIngestionService {
             }
 
             const externalCreatedAt =
-              existingReference.externalCreatedAt === null &&
-              normalized.externalCreatedAt !== undefined &&
-              normalized.externalCreatedAt !== null
-                ? normalized.externalCreatedAt
+              existingReference.externalCreatedAt === null
+                ? this.normalizeOptionalDate(normalized.externalCreatedAt)
                 : undefined;
 
             let metadata: Prisma.InputJsonValue | undefined;
