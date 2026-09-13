@@ -2541,32 +2541,93 @@ Validações realizadas:
 
 Este micro-passo apenas estabelece quando um payload de itens já pode ser considerado estruturalmente validável. Nenhuma escrita de item foi adicionada.
 
+### Micro-checkpoint — correspondência somente-leitura por externalItemId
+
+Para pedidos em estado `identified_complete` com `items` presentes e estruturalmente válidos, o fluxo de atualização passou a preparar uma correspondência interna entre os itens recebidos e as referências externas já existentes.
+
+A correspondência utiliza exclusivamente:
+
+`externalItemId recebido -> ExternalOrderItemReference -> OrderItem`
+
+Foi criado um `Map` indexado pelo `externalItemId` persistido em `existingReference.externalItems`.
+
+Para cada item recebido é produzido internamente:
+
+- `externalItemId`;
+- `externalOrderItemReferenceId`, quando houver correspondência;
+- `orderItemId`, quando houver correspondência.
+
+Quando o `externalItemId` recebido não possui referência externa correspondente:
+
+- `externalOrderItemReferenceId` fica `null`;
+- `orderItemId` fica `null`.
+
+Neste checkpoint, ausência de correspondência não significa automaticamente item novo e não gera nenhuma escrita.
+
+Não existe fallback de correspondência por:
+
+- SKU;
+- título;
+- posição no array;
+- quantidade;
+- preço;
+- combinação desses campos.
+
+A correspondência é preparada somente dentro do estado `identified_complete`, após `validateExternalItems()`.
+
+A variável `incomingItemMatches` ainda não controla nenhuma decisão operacional.
+
+Este checkpoint ainda não:
+
+- cria `OrderItem`;
+- atualiza `OrderItem`;
+- remove `OrderItem`;
+- cria ou altera `ExternalOrderItemReference`;
+- rejeita `externalItemId` desconhecido;
+- interpreta ausência no payload como remoção;
+- executa reconciliação;
+- associa itens legados;
+- executa bootstrap/backfill.
+
+A alteração foi realizada somente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter ./apps/api build` — aprovado.
+
+Este micro-passo apenas prepara uma correspondência determinística por identidade externa já estabelecida, sem alterar dados.
+
 ## 19. Próxima ação exata
 
-A extração da validação comum de itens externos foi protegida no commit:
+A validação condicional de itens identificados no update foi protegida no commit:
 
-`ce040c0` — `refactor(orders): extrai validacao comum de itens externos`
+`ba03076` — `feat(orders): valida itens identificados no update`
 
 O próximo micro-passo foi implementado localmente:
 
-- o update passou a chamar `validateExternalItems()` somente quando `itemIdentityState` é `identified_complete`;
-- a validação só ocorre quando o payload realmente contém `items`;
-- sincronizações stale continuam saindo antes da validação;
-- pedidos legados, vazios ou inconsistentes continuam sem validação operacional dos itens;
+- para pedidos `identified_complete`, as referências externas existentes são indexadas por `externalItemId`;
+- cada item recebido é relacionado somente pelo seu `externalItemId`;
+- correspondências encontradas expõem o `ExternalOrderItemReference` e o `OrderItem` canônico;
+- itens recebidos sem correspondência permanecem explicitamente sem vínculo;
+- nenhuma inferência por SKU, título, posição, quantidade ou preço foi adicionada;
 - nenhuma reconciliação ou escrita de item foi adicionada;
 - `git diff --check` foi aprovado;
 - o build da API foi aprovado.
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git esta validação condicional junto com o registro correspondente no `INTEGRATION_MASTER.md`.
+O próximo micro-passo autorizado será somente revisar e proteger no Git esta correspondência somente-leitura junto com o registro correspondente no `INTEGRATION_MASTER.md`.
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub será preparada, separadamente, a correspondência segura entre `externalItemId` recebido e `ExternalOrderItemReference` existente para pedidos com identidade completa.
+Somente depois desse checkpoint estar commitado e enviado ao GitHub será definida, separadamente, a política segura para itens recebidos sem correspondência e para itens já correspondidos.
 
 Ainda não implementar:
 
 - criação de item novo durante atualização;
-- atualização de item existente;
-- associação automática de item legado;
+- atualização de `OrderItem`;
 - remoção/cancelamento de item por ausência no payload;
+- rejeição automática de item desconhecido;
+- associação automática de item legado;
 - bootstrap/backfill de pedidos legados;
 - reconciliação completa dos itens;
 - timestamps de lifecycle;

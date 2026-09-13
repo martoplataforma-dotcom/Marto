@@ -519,6 +519,26 @@ export class ExternalOrderIngestionService {
               normalized.items !== undefined
             ) {
               this.validateExternalItems(normalized.items);
+
+              const externalItemReferencesByExternalItemId = new Map(
+                existingReference.externalItems.map((externalItem) => [
+                  externalItem.externalItemId,
+                  externalItem,
+                ]),
+              );
+
+              const incomingItemMatches = normalized.items.map((item) => {
+                const externalItemId = item.externalItemId.trim();
+                const externalItemReference =
+                  externalItemReferencesByExternalItemId.get(externalItemId);
+
+                return {
+                  externalItemId,
+                  externalOrderItemReferenceId:
+                    externalItemReference?.id ?? null,
+                  orderItemId: externalItemReference?.orderItemId ?? null,
+                };
+              });
             }
 
             const externalCreatedAt =
