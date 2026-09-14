@@ -561,12 +561,30 @@ export class ExternalOrderIngestionService {
                           externalItemReference.orderItemId,
                         ) ?? null;
 
+                const normalizedSku = item.sku?.trim() || null;
+                const incomingUnitPrice = new Prisma.Decimal(item.unitPrice);
+
+                const scalarItemComparison =
+                  canonicalOrderItem === null
+                    ? null
+                    : {
+                        titleMatches:
+                          canonicalOrderItem.titleSnapshot === item.title.trim(),
+                        skuMatches:
+                          canonicalOrderItem.skuSnapshot === normalizedSku,
+                        quantityMatches:
+                          canonicalOrderItem.quantity === item.quantity,
+                        unitPriceMatches:
+                          canonicalOrderItem.unitPrice.equals(incomingUnitPrice),
+                      };
+
                 return {
                   externalItemId,
                   externalOrderItemReferenceId:
                     externalItemReference?.id ?? null,
                   orderItemId: externalItemReference?.orderItemId ?? null,
                   canonicalOrderItem,
+                  scalarItemComparison,
                 };
               });
 

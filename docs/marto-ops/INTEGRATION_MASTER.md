@@ -2813,27 +2813,80 @@ Validações realizadas:
 
 Este micro-passo apenas disponibiliza, dentro de `incomingItemMatches`, o `OrderItem` canônico associado a uma identidade externa já conhecida.
 
+### Micro-checkpoint — comparação escalar somente-leitura dos itens correspondidos
+
+Após o vínculo entre a identidade externa e o `OrderItem` canônico, o fluxo passou a comparar em memória alguns campos simples do item recebido com os valores atualmente armazenados no item canônico.
+
+Foi adicionada a estrutura:
+
+`scalarItemComparison`
+
+A comparação é produzida somente quando existe `canonicalOrderItem`. Caso contrário, o resultado permanece `null`.
+
+Campos comparados neste checkpoint:
+
+- `titleMatches`
+  - compara `titleSnapshot` com `item.title.trim()`.
+
+- `skuMatches`
+  - compara `skuSnapshot` com o SKU recebido normalizado por `trim()`;
+  - SKU ausente ou vazio é normalizado para `null`, mantendo a mesma regra utilizada na criação.
+
+- `quantityMatches`
+  - compara a quantidade canônica com `item.quantity`.
+
+- `unitPriceMatches`
+  - converte o preço recebido para `Prisma.Decimal`;
+  - compara com `OrderItem.unitPrice` utilizando `Decimal.equals()`.
+
+Este checkpoint continua exclusivamente de leitura e análise.
+
+Neste micro-passo:
+
+- nenhum `OrderItem` é atualizado;
+- nenhum `OrderItem` é criado;
+- nenhum `OrderItem` é removido;
+- nenhuma `ExternalOrderItemReference` é criada ou alterada;
+- nenhuma diferença detectada produz escrita;
+- `itemUpdateEligibility` continua sem controlar qualquer escrita;
+- `productId` ainda não é comparado;
+- `variationSnapshot` ainda não é comparado;
+- item desconhecido continua sem ser criado ou rejeitado automaticamente;
+- item ausente no payload continua sem significar remoção;
+- não existe fallback de identidade por SKU, título, posição, quantidade ou preço.
+
+A alteração foi realizada somente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter ./apps/api build` — aprovado.
+
+Este micro-passo apenas detecta igualdade ou diferença de campos escalares simples em memória, sem executar reconciliação ou escrita.
+
 ## 19. Próxima ação exata
 
-A ampliação da leitura canônica dos itens foi protegida no commit:
+O vínculo somente-leitura entre identidade externa e item canônico foi protegido no commit:
 
-`d1bd04c` — `feat(orders): amplia leitura canonica dos itens`
+`a72b87d` — `feat(orders): vincula identidade externa ao item canonico`
 
 O próximo micro-passo foi implementado localmente:
 
-- foi criado `canonicalOrderItemsById`;
-- cada `ExternalOrderItemReference` conhecida pode localizar seu `OrderItem` através de `orderItemId`;
-- `incomingItemMatches` passou a carregar `canonicalOrderItem`;
-- a correspondência continua somente em memória;
-- nenhuma comparação operacional foi adicionada;
-- nenhuma escrita de item foi adicionada;
+- foi criada `scalarItemComparison`;
+- `title`, `sku`, `quantity` e `unitPrice` passam a ser comparados somente em memória;
+- a normalização segue as regras já utilizadas na criação do item;
+- `productId` e `variationSnapshot` permanecem fora desta comparação;
+- nenhuma diferença detectada produz escrita;
+- nenhuma atualização de `OrderItem` foi adicionada;
 - `itemUpdateEligibility` continua sem efeito operacional;
 - `git diff --check` foi aprovado;
 - o build da API foi aprovado.
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git este vínculo somente-leitura junto com este registro no `INTEGRATION_MASTER.md`.
+O próximo micro-passo autorizado será somente revisar e proteger no Git esta comparação escalar somente-leitura junto com este registro no `INTEGRATION_MASTER.md`.
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub será preparada, separadamente, a primeira comparação somente-leitura entre os valores recebidos de um item já correspondido e os valores atuais do `OrderItem` canônico.
+Somente depois desse checkpoint estar commitado e enviado ao GitHub será definida, separadamente, a próxima classificação somente-leitura das diferenças detectadas, ainda sem autorizar escrita em `OrderItem`.
 
 Ainda não implementar:
 
@@ -2845,7 +2898,9 @@ Ainda não implementar:
 - bootstrap/backfill de pedidos legados;
 - reconciliação completa dos itens;
 - uso operacional de `itemUpdateEligibility`;
-- escrita baseada em diferenças de item;
+- escrita baseada em `scalarItemComparison`;
+- comparação de `productId`;
+- comparação estrutural de `variationSnapshot`;
 - timestamps de lifecycle;
 - endpoints;
 - registro do serviço no `OrdersModule`;
