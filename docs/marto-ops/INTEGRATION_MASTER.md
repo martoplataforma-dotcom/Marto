@@ -2719,25 +2719,68 @@ Validações realizadas:
 
 Este micro-passo apenas define a elegibilidade interna para uma futura reconciliação, sem executar qualquer escrita de item.
 
+### Micro-checkpoint — leitura canônica ampliada para futura comparação de itens
+
+Após a proteção da classificação de elegibilidade dos itens, a leitura transacional do pedido foi ampliada para disponibilizar os campos canônicos necessários a uma futura comparação segura dos itens correspondidos.
+
+Antes deste micro-passo, `order.items` selecionava somente:
+
+- `id`.
+
+A leitura passou a incluir também:
+
+- `productId`;
+- `titleSnapshot`;
+- `skuSnapshot`;
+- `variationSnapshot`;
+- `quantity`;
+- `unitPrice`.
+
+Esta ampliação ocorre dentro da mesma leitura transacional já utilizada pelo `updateExternalOrder()`.
+
+Este checkpoint ainda é exclusivamente de leitura.
+
+Neste micro-passo:
+
+- nenhum `OrderItem` é atualizado;
+- nenhum `OrderItem` é criado;
+- nenhum `OrderItem` é removido;
+- nenhuma `ExternalOrderItemReference` é criada ou alterada;
+- `itemUpdateEligibility` continua sem controlar qualquer escrita;
+- nenhuma comparação operacional entre payload e item canônico foi adicionada;
+- nenhum campo recebido é aplicado ao item canônico;
+- não existe inferência por SKU, título, posição, quantidade ou preço;
+- ausência de item no payload continua sem significar remoção.
+
+A alteração foi realizada somente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter ./apps/api build` — aprovado.
+
+Este micro-passo apenas disponibiliza os dados canônicos necessários para uma futura comparação idempotente, sem executar reconciliação ou escrita de item.
+
 ## 19. Próxima ação exata
 
-A classificação do resultado da correspondência dos itens foi protegida no commit:
+A classificação de elegibilidade dos itens foi protegida no commit:
 
-`0eaeb52` — `feat(orders): classifica correspondencia dos itens`
+`266455d` — `feat(orders): classifica elegibilidade de atualizacao dos itens`
 
 O próximo micro-passo foi implementado localmente:
 
-- `matched_complete_set` e `matched_subset` passam a resultar em `matched_items_only`;
-- `contains_unmatched` passa a resultar em `blocked_unmatched`;
-- os demais estados resultam em `preserve_items`;
-- a classificação ainda não controla nenhuma escrita;
-- nenhum item é criado, atualizado, removido ou rejeitado;
+- a leitura transacional de `order.items` deixou de selecionar somente `id`;
+- passaram a ser lidos também `productId`, `titleSnapshot`, `skuSnapshot`, `variationSnapshot`, `quantity` e `unitPrice`;
+- nenhuma escrita de item foi adicionada;
+- `itemUpdateEligibility` continua sem efeito operacional;
 - `git diff --check` foi aprovado;
 - o build da API foi aprovado.
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git esta classificação de elegibilidade junto com o registro correspondente no `INTEGRATION_MASTER.md`.
+O próximo micro-passo autorizado será somente revisar e proteger no Git esta ampliação de leitura junto com este registro no `INTEGRATION_MASTER.md`.
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub será preparada, separadamente, a primeira utilização segura de `matched_items_only`, ainda começando por comportamento controlado e sem remoções implícitas.
+Somente depois desse checkpoint estar commitado e enviado ao GitHub será preparada, separadamente, a correspondência somente-leitura entre o `externalItemId` já identificado e os dados do `OrderItem` canônico correspondente.
 
 Ainda não implementar:
 
@@ -2748,6 +2791,7 @@ Ainda não implementar:
 - associação automática de item legado;
 - bootstrap/backfill de pedidos legados;
 - reconciliação completa dos itens;
+- uso operacional de `itemUpdateEligibility`;
 - timestamps de lifecycle;
 - endpoints;
 - registro do serviço no `OrdersModule`;

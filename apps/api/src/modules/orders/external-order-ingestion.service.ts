@@ -435,6 +435,12 @@ export class ExternalOrderIngestionService {
                       items: {
                         select: {
                           id: true,
+                          productId: true,
+                          titleSnapshot: true,
+                          skuSnapshot: true,
+                          variationSnapshot: true,
+                          quantity: true,
+                          unitPrice: true,
                         },
                       },
                     },
