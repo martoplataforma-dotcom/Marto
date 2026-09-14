@@ -542,16 +542,31 @@ export class ExternalOrderIngestionService {
                 ]),
               );
 
+              const canonicalOrderItemsById = new Map(
+                existingReference.order.items.map((orderItem) => [
+                  orderItem.id,
+                  orderItem,
+                ]),
+              );
+
               const incomingItemMatches = normalized.items.map((item) => {
                 const externalItemId = item.externalItemId.trim();
                 const externalItemReference =
                   externalItemReferencesByExternalItemId.get(externalItemId);
+
+                const canonicalOrderItem =
+                  externalItemReference === undefined
+                    ? null
+                    : canonicalOrderItemsById.get(
+                          externalItemReference.orderItemId,
+                        ) ?? null;
 
                 return {
                   externalItemId,
                   externalOrderItemReferenceId:
                     externalItemReference?.id ?? null,
                   orderItemId: externalItemReference?.orderItemId ?? null,
+                  canonicalOrderItem,
                 };
               });
 

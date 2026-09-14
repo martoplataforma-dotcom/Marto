@@ -2763,24 +2763,77 @@ Validações realizadas:
 
 Este micro-passo apenas disponibiliza os dados canônicos necessários para uma futura comparação idempotente, sem executar reconciliação ou escrita de item.
 
+### Micro-checkpoint — vínculo somente-leitura entre identidade externa e item canônico
+
+Após a ampliação da leitura dos `OrderItem`, o fluxo passou a ligar em memória cada identidade externa já conhecida ao respectivo item canônico do pedido.
+
+Foi criado o mapa:
+
+`canonicalOrderItemsById`
+
+Esse mapa utiliza:
+
+`OrderItem.id -> OrderItem`
+
+Durante a construção de `incomingItemMatches`, o fluxo agora:
+
+1. normaliza e localiza o `externalItemId`;
+2. encontra a `ExternalOrderItemReference`;
+3. utiliza o `orderItemId` dessa referência;
+4. localiza o `OrderItem` canônico correspondente;
+5. inclui esse objeto no resultado como `canonicalOrderItem`.
+
+A cadeia de identidade utilizada é:
+
+`externalItemId -> ExternalOrderItemReference -> orderItemId -> OrderItem`
+
+Este checkpoint continua exclusivamente de leitura e preparação.
+
+Neste micro-passo:
+
+- nenhum `OrderItem` é atualizado;
+- nenhum `OrderItem` é criado;
+- nenhum `OrderItem` é removido;
+- nenhuma `ExternalOrderItemReference` é criada ou alterada;
+- nenhum campo recebido é comparado operacionalmente com o item canônico;
+- nenhuma diferença entre payload e estado canônico produz escrita;
+- `itemUpdateEligibility` continua sem controlar qualquer escrita;
+- item desconhecido continua sem ser criado ou rejeitado automaticamente;
+- item ausente no payload continua sem significar remoção;
+- não existe fallback de identidade por SKU, título, posição, quantidade ou preço.
+
+A alteração foi realizada somente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter ./apps/api build` — aprovado.
+
+Este micro-passo apenas disponibiliza, dentro de `incomingItemMatches`, o `OrderItem` canônico associado a uma identidade externa já conhecida.
+
 ## 19. Próxima ação exata
 
-A classificação de elegibilidade dos itens foi protegida no commit:
+A ampliação da leitura canônica dos itens foi protegida no commit:
 
-`266455d` — `feat(orders): classifica elegibilidade de atualizacao dos itens`
+`d1bd04c` — `feat(orders): amplia leitura canonica dos itens`
 
 O próximo micro-passo foi implementado localmente:
 
-- a leitura transacional de `order.items` deixou de selecionar somente `id`;
-- passaram a ser lidos também `productId`, `titleSnapshot`, `skuSnapshot`, `variationSnapshot`, `quantity` e `unitPrice`;
+- foi criado `canonicalOrderItemsById`;
+- cada `ExternalOrderItemReference` conhecida pode localizar seu `OrderItem` através de `orderItemId`;
+- `incomingItemMatches` passou a carregar `canonicalOrderItem`;
+- a correspondência continua somente em memória;
+- nenhuma comparação operacional foi adicionada;
 - nenhuma escrita de item foi adicionada;
 - `itemUpdateEligibility` continua sem efeito operacional;
 - `git diff --check` foi aprovado;
 - o build da API foi aprovado.
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git esta ampliação de leitura junto com este registro no `INTEGRATION_MASTER.md`.
+O próximo micro-passo autorizado será somente revisar e proteger no Git este vínculo somente-leitura junto com este registro no `INTEGRATION_MASTER.md`.
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub será preparada, separadamente, a correspondência somente-leitura entre o `externalItemId` já identificado e os dados do `OrderItem` canônico correspondente.
+Somente depois desse checkpoint estar commitado e enviado ao GitHub será preparada, separadamente, a primeira comparação somente-leitura entre os valores recebidos de um item já correspondido e os valores atuais do `OrderItem` canônico.
 
 Ainda não implementar:
 
@@ -2792,6 +2845,7 @@ Ainda não implementar:
 - bootstrap/backfill de pedidos legados;
 - reconciliação completa dos itens;
 - uso operacional de `itemUpdateEligibility`;
+- escrita baseada em diferenças de item;
 - timestamps de lifecycle;
 - endpoints;
 - registro do serviço no `OrdersModule`;
