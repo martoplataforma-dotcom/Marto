@@ -578,6 +578,16 @@ export class ExternalOrderIngestionService {
                           canonicalOrderItem.unitPrice.equals(incomingUnitPrice),
                       };
 
+                const scalarItemComparisonState =
+                  scalarItemComparison === null
+                    ? 'not_comparable'
+                    : scalarItemComparison.titleMatches &&
+                        scalarItemComparison.skuMatches &&
+                        scalarItemComparison.quantityMatches &&
+                        scalarItemComparison.unitPriceMatches
+                      ? 'matches'
+                      : 'differs';
+
                 return {
                   externalItemId,
                   externalOrderItemReferenceId:
@@ -585,6 +595,7 @@ export class ExternalOrderIngestionService {
                   orderItemId: externalItemReference?.orderItemId ?? null,
                   canonicalOrderItem,
                   scalarItemComparison,
+                  scalarItemComparisonState,
                 };
               });
 
