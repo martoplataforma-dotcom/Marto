@@ -2920,27 +2920,51 @@ Este micro-passo apenas transforma o resultado das quatro comparações escalare
 
 ## 19. Próxima ação exata
 
-A comparação escalar somente-leitura dos itens foi protegida no commit:
+A classificação somente-leitura da comparação escalar dos itens foi protegida no commit:
 
-`23b4ca1` — `feat(orders): compara campos escalares dos itens`
+`02ce7da` — `feat(orders): classifica comparacao escalar dos itens`
 
-O próximo micro-passo foi implementado localmente:
+O próximo micro-passo autorizado será somente tornar o estado `differs` explicável, ainda exclusivamente em memória.
 
-- foi criada `scalarItemComparisonState`;
-- `not_comparable` representa ausência de item canônico comparável;
-- `matches` representa igualdade nos quatro campos escalares já suportados;
-- `differs` representa pelo menos uma diferença nesses campos;
-- a classificação permanece somente em memória;
-- nenhuma diferença produz escrita;
-- nenhuma atualização de `OrderItem` foi adicionada;
-- `itemUpdateEligibility` continua sem efeito operacional;
-- `productId` e `variationSnapshot` continuam fora da comparação;
-- `git diff --check` foi aprovado;
-- o build da API foi aprovado.
+Será preparada a estrutura:
 
-O próximo micro-passo autorizado será somente revisar e proteger no Git esta classificação somente-leitura junto com este registro no `INTEGRATION_MASTER.md`.
+`scalarItemDifferences`
 
-Somente depois desse checkpoint estar commitado e enviado ao GitHub será definida, separadamente, a próxima evolução de análise dos itens, ainda sem autorizar escrita em `OrderItem`.
+Semântica prevista:
+
+- quando `scalarItemComparisonState = not_comparable`:
+  - `scalarItemDifferences = null`;
+  - não existe `OrderItem` canônico comparável.
+
+- quando `scalarItemComparisonState = matches`:
+  - `scalarItemDifferences = []`;
+  - nenhum dos quatro campos escalares suportados diverge.
+
+- quando `scalarItemComparisonState = differs`:
+  - `scalarItemDifferences` deverá conter somente os nomes dos campos realmente divergentes;
+  - valores possíveis:
+    - `title`;
+    - `sku`;
+    - `quantity`;
+    - `unitPrice`;
+  - a lista deverá ser derivada exclusivamente de `scalarItemComparison` já calculado.
+
+Este próximo micro-passo continuará somente-leitura.
+
+Não deverá:
+
+- atualizar `OrderItem`;
+- criar `OrderItem`;
+- remover `OrderItem`;
+- criar ou alterar `ExternalOrderItemReference`;
+- alterar `itemUpdateEligibility`;
+- atribuir efeito operacional a `scalarItemComparisonState`;
+- comparar `productId`;
+- comparar estruturalmente `variationSnapshot`;
+- inferir identidade por SKU, título, posição, quantidade ou preço;
+- interpretar ausência no payload como remoção.
+
+Somente depois dessa identificação das diferenças estar implementada, validada, documentada e protegida no Git será definida separadamente a próxima evolução da análise dos itens.
 
 Ainda não implementar:
 
@@ -2954,6 +2978,7 @@ Ainda não implementar:
 - uso operacional de `itemUpdateEligibility`;
 - escrita baseada em `scalarItemComparison`;
 - escrita baseada em `scalarItemComparisonState`;
+- escrita baseada em `scalarItemDifferences`;
 - comparação de `productId`;
 - comparação estrutural de `variationSnapshot`;
 - timestamps de lifecycle;
