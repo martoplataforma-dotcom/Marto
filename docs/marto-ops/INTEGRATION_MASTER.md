@@ -2984,19 +2984,78 @@ Este micro-passo somente torna o estado `differs` explicável em memória, sem e
 
 ## 19. Próxima ação exata
 
-O planejamento de `scalarItemDifferences` foi protegido no commit:
+A identificação somente-leitura das diferenças escalares dos itens foi protegida no commit:
 
-`b34790a` — `docs: define scalarItemDifferences como proximo micro-passo`
+`94d2c86` — `feat(orders): identifica diferencas escalares dos itens`
 
-A identificação somente-leitura das diferenças escalares foi implementada localmente e validada.
+O próximo micro-passo autorizado será somente tornar cada divergência escalar mais explicável, ainda exclusivamente em memória.
 
-O próximo passo autorizado será somente:
+Será preparada a estrutura:
 
-- revisar o diff conjunto do código e deste registro;
-- repetir a checagem de integridade do diff após a documentação;
-- proteger este micro-checkpoint no Git.
+`scalarItemDifferenceDetails`
 
-Ainda não deverá ser definida nem implementada uma nova evolução da análise dos itens antes de este checkpoint estar protegido no Git.
+Semântica prevista:
+
+- quando não existir `OrderItem` canônico comparável:
+  - `scalarItemDifferenceDetails = null`.
+
+- quando existir item comparável e nenhum dos quatro campos escalares divergir:
+  - `scalarItemDifferenceDetails = {}`.
+
+- quando existir uma ou mais divergências:
+  - a estrutura deverá conter somente os campos realmente divergentes;
+  - cada campo divergente deverá registrar:
+    - `current`: valor atualmente presente no `OrderItem` canônico;
+    - `incoming`: valor normalizado recebido na atualização externa.
+
+Campos permitidos neste micro-passo:
+
+- `title`;
+- `sku`;
+- `quantity`;
+- `unitPrice`.
+
+Os valores deverão seguir exatamente a mesma normalização já utilizada pela comparação atual:
+
+- `title`:
+  - atual: `titleSnapshot`;
+  - recebido: `item.title.trim()`.
+
+- `sku`:
+  - atual: `skuSnapshot`;
+  - recebido: SKU normalizado já utilizado em `scalarItemComparison`.
+
+- `quantity`:
+  - atual: quantidade do `OrderItem`;
+  - recebido: `item.quantity`.
+
+- `unitPrice`:
+  - atual: `unitPrice` do `OrderItem`;
+  - recebido: `incomingUnitPrice` já convertido para `Prisma.Decimal`.
+
+A estrutura deverá representar somente diferenças já detectadas pela comparação existente.
+
+Ela não deverá criar uma segunda regra de comparação nem reinterpretar igualdade ou divergência.
+
+Este próximo micro-passo continuará exclusivamente de leitura e análise em memória.
+
+Não deverá:
+
+- atualizar `OrderItem`;
+- criar `OrderItem`;
+- remover `OrderItem`;
+- criar ou alterar `ExternalOrderItemReference`;
+- alterar `itemUpdateEligibility`;
+- atribuir efeito operacional a `scalarItemDifferences`;
+- atribuir efeito operacional a `scalarItemDifferenceDetails`;
+- persistir `scalarItemDifferenceDetails`;
+- expor `scalarItemDifferenceDetails` por endpoint;
+- comparar `productId`;
+- comparar estruturalmente `variationSnapshot`;
+- inferir identidade por SKU, título, posição, quantidade ou preço;
+- interpretar ausência no payload como remoção.
+
+Somente depois de `scalarItemDifferenceDetails` estar implementado, validado, documentado e protegido no Git será definida separadamente a próxima evolução da análise dos itens.
 
 Ainda não implementar:
 
@@ -3011,6 +3070,7 @@ Ainda não implementar:
 - escrita baseada em `scalarItemComparison`;
 - escrita baseada em `scalarItemComparisonState`;
 - escrita baseada em `scalarItemDifferences`;
+- escrita baseada em `scalarItemDifferenceDetails`;
 - comparação de `productId`;
 - comparação estrutural de `variationSnapshot`;
 - timestamps de lifecycle;
