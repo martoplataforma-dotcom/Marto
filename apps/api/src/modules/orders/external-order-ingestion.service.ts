@@ -588,6 +588,20 @@ export class ExternalOrderIngestionService {
                       ? 'matches'
                       : 'differs';
 
+                const scalarItemDifferences =
+                  scalarItemComparison === null
+                    ? null
+                    : [
+                        ...(scalarItemComparison.titleMatches ? [] : ['title']),
+                        ...(scalarItemComparison.skuMatches ? [] : ['sku']),
+                        ...(scalarItemComparison.quantityMatches
+                          ? []
+                          : ['quantity']),
+                        ...(scalarItemComparison.unitPriceMatches
+                          ? []
+                          : ['unitPrice']),
+                      ];
+
                 return {
                   externalItemId,
                   externalOrderItemReferenceId:
@@ -596,6 +610,7 @@ export class ExternalOrderIngestionService {
                   canonicalOrderItem,
                   scalarItemComparison,
                   scalarItemComparisonState,
+                  scalarItemDifferences,
                 };
               });
 

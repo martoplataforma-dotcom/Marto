@@ -2918,53 +2918,85 @@ Validações realizadas:
 
 Este micro-passo apenas transforma o resultado das quatro comparações escalares em um estado explícito de análise, ainda sem executar reconciliação ou escrita.
 
-## 19. Próxima ação exata
+### Micro-checkpoint — identificação somente-leitura das diferenças escalares
 
-A classificação somente-leitura da comparação escalar dos itens foi protegida no commit:
+Após a criação de `scalarItemComparisonState`, o fluxo passou também a identificar em memória quais dos campos escalares suportados realmente divergem.
 
-`02ce7da` — `feat(orders): classifica comparacao escalar dos itens`
-
-O próximo micro-passo autorizado será somente tornar o estado `differs` explicável, ainda exclusivamente em memória.
-
-Será preparada a estrutura:
+Foi adicionada a estrutura:
 
 `scalarItemDifferences`
 
-Semântica prevista:
+Semântica implementada:
 
-- quando `scalarItemComparisonState = not_comparable`:
+- quando `scalarItemComparison` é `null`:
   - `scalarItemDifferences = null`;
-  - não existe `OrderItem` canônico comparável.
+  - não existe `OrderItem` canônico disponível para comparação.
 
-- quando `scalarItemComparisonState = matches`:
-  - `scalarItemDifferences = []`;
-  - nenhum dos quatro campos escalares suportados diverge.
+- quando todos os quatro campos escalares comparados são iguais:
+  - `scalarItemDifferences = []`.
 
-- quando `scalarItemComparisonState = differs`:
-  - `scalarItemDifferences` deverá conter somente os nomes dos campos realmente divergentes;
-  - valores possíveis:
+- quando existe uma ou mais divergências:
+  - `scalarItemDifferences` contém somente os nomes dos campos divergentes;
+  - valores atualmente suportados:
     - `title`;
     - `sku`;
     - `quantity`;
     - `unitPrice`;
-  - a lista deverá ser derivada exclusivamente de `scalarItemComparison` já calculado.
+  - a lista é derivada exclusivamente de `scalarItemComparison` já calculado.
 
-Este próximo micro-passo continuará somente-leitura.
+A ordem atual dos nomes segue a própria comparação:
 
-Não deverá:
+1. `title`;
+2. `sku`;
+3. `quantity`;
+4. `unitPrice`.
 
-- atualizar `OrderItem`;
-- criar `OrderItem`;
-- remover `OrderItem`;
-- criar ou alterar `ExternalOrderItemReference`;
-- alterar `itemUpdateEligibility`;
-- atribuir efeito operacional a `scalarItemComparisonState`;
-- comparar `productId`;
-- comparar estruturalmente `variationSnapshot`;
-- inferir identidade por SKU, título, posição, quantidade ou preço;
-- interpretar ausência no payload como remoção.
+Este checkpoint continua exclusivamente de leitura e análise em memória.
 
-Somente depois dessa identificação das diferenças estar implementada, validada, documentada e protegida no Git será definida separadamente a próxima evolução da análise dos itens.
+Neste micro-passo:
+
+- nenhum `OrderItem` é atualizado;
+- nenhum `OrderItem` é criado;
+- nenhum `OrderItem` é removido;
+- nenhuma `ExternalOrderItemReference` é criada ou alterada;
+- `scalarItemDifferences` não produz escrita;
+- `scalarItemDifferences` não controla `itemUpdateEligibility`;
+- `itemUpdateEligibility` continua sem efeito operacional;
+- `productId` continua fora da comparação;
+- `variationSnapshot` continua fora da comparação;
+- identidade não é inferida por SKU, título, posição, quantidade ou preço;
+- item ausente no payload continua sem significar remoção.
+
+A alteração foi realizada somente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter api build` — aprovado;
+- teste específico `external-order-ingestion.service.spec.ts` — 10 de 10 testes aprovados;
+- suíte completa da API — 8 suítes e 17 de 17 testes aprovados.
+
+Os testes automatizados atuais não possuem asserção direta sobre `scalarItemDifferences`, porque essa estrutura ainda permanece interna ao processamento e não produz saída ou efeito operacional observável. As suítes executadas confirmam ausência de regressão no comportamento já protegido.
+
+Este micro-passo somente torna o estado `differs` explicável em memória, sem executar reconciliação ou escrita.
+
+## 19. Próxima ação exata
+
+O planejamento de `scalarItemDifferences` foi protegido no commit:
+
+`b34790a` — `docs: define scalarItemDifferences como proximo micro-passo`
+
+A identificação somente-leitura das diferenças escalares foi implementada localmente e validada.
+
+O próximo passo autorizado será somente:
+
+- revisar o diff conjunto do código e deste registro;
+- repetir a checagem de integridade do diff após a documentação;
+- proteger este micro-checkpoint no Git.
+
+Ainda não deverá ser definida nem implementada uma nova evolução da análise dos itens antes de este checkpoint estar protegido no Git.
 
 Ainda não implementar:
 
