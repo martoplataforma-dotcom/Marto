@@ -602,6 +602,44 @@ export class ExternalOrderIngestionService {
                           : ['unitPrice']),
                       ];
 
+                const scalarItemDifferenceDetails =
+                  scalarItemComparison === null || canonicalOrderItem === null
+                    ? null
+                    : {
+                        ...(scalarItemComparison.titleMatches
+                          ? {}
+                          : {
+                              title: {
+                                current: canonicalOrderItem.titleSnapshot,
+                                incoming: item.title.trim(),
+                              },
+                            }),
+                        ...(scalarItemComparison.skuMatches
+                          ? {}
+                          : {
+                              sku: {
+                                current: canonicalOrderItem.skuSnapshot,
+                                incoming: normalizedSku,
+                              },
+                            }),
+                        ...(scalarItemComparison.quantityMatches
+                          ? {}
+                          : {
+                              quantity: {
+                                current: canonicalOrderItem.quantity,
+                                incoming: item.quantity,
+                              },
+                            }),
+                        ...(scalarItemComparison.unitPriceMatches
+                          ? {}
+                          : {
+                              unitPrice: {
+                                current: canonicalOrderItem.unitPrice,
+                                incoming: incomingUnitPrice,
+                              },
+                            }),
+                      };
+
                 return {
                   externalItemId,
                   externalOrderItemReferenceId:
@@ -611,6 +649,7 @@ export class ExternalOrderIngestionService {
                   scalarItemComparison,
                   scalarItemComparisonState,
                   scalarItemDifferences,
+                  scalarItemDifferenceDetails,
                 };
               });
 

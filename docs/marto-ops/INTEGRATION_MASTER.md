@@ -2982,80 +2982,106 @@ Os testes automatizados atuais não possuem asserção direta sobre `scalarItemD
 
 Este micro-passo somente torna o estado `differs` explicável em memória, sem executar reconciliação ou escrita.
 
-## 19. Próxima ação exata
+### Micro-checkpoint — detalhamento somente-leitura das diferenças escalares
 
-A identificação somente-leitura das diferenças escalares dos itens foi protegida no commit:
+Após `scalarItemDifferences`, o fluxo passou também a representar em memória os valores atual e recebido de cada campo escalar que já havia sido identificado como divergente.
 
-`94d2c86` — `feat(orders): identifica diferencas escalares dos itens`
-
-O próximo micro-passo autorizado será somente tornar cada divergência escalar mais explicável, ainda exclusivamente em memória.
-
-Será preparada a estrutura:
+Foi adicionada a estrutura:
 
 `scalarItemDifferenceDetails`
 
-Semântica prevista:
+Semântica implementada:
 
-- quando não existir `OrderItem` canônico comparável:
+- quando não existe `OrderItem` canônico comparável:
   - `scalarItemDifferenceDetails = null`.
 
-- quando existir item comparável e nenhum dos quatro campos escalares divergir:
+- quando existe item comparável e nenhum dos quatro campos escalares diverge:
   - `scalarItemDifferenceDetails = {}`.
 
-- quando existir uma ou mais divergências:
-  - a estrutura deverá conter somente os campos realmente divergentes;
-  - cada campo divergente deverá registrar:
-    - `current`: valor atualmente presente no `OrderItem` canônico;
+- quando existe uma ou mais divergências:
+  - a estrutura contém somente os campos realmente divergentes;
+  - cada campo registra:
+    - `current`: valor presente no `OrderItem` canônico;
     - `incoming`: valor normalizado recebido na atualização externa.
 
-Campos permitidos neste micro-passo:
+Campos atualmente suportados:
 
 - `title`;
 - `sku`;
 - `quantity`;
 - `unitPrice`.
 
-Os valores deverão seguir exatamente a mesma normalização já utilizada pela comparação atual:
+Valores utilizados:
 
 - `title`:
-  - atual: `titleSnapshot`;
-  - recebido: `item.title.trim()`.
+  - `current`: `canonicalOrderItem.titleSnapshot`;
+  - `incoming`: `item.title.trim()`.
 
 - `sku`:
-  - atual: `skuSnapshot`;
-  - recebido: SKU normalizado já utilizado em `scalarItemComparison`.
+  - `current`: `canonicalOrderItem.skuSnapshot`;
+  - `incoming`: `normalizedSku`.
 
 - `quantity`:
-  - atual: quantidade do `OrderItem`;
-  - recebido: `item.quantity`.
+  - `current`: `canonicalOrderItem.quantity`;
+  - `incoming`: `item.quantity`.
 
 - `unitPrice`:
-  - atual: `unitPrice` do `OrderItem`;
-  - recebido: `incomingUnitPrice` já convertido para `Prisma.Decimal`.
+  - `current`: `canonicalOrderItem.unitPrice`;
+  - `incoming`: `incomingUnitPrice`.
 
-A estrutura deverá representar somente diferenças já detectadas pela comparação existente.
+`unitPrice` permanece como `Prisma.Decimal` em memória; nenhuma conversão adicional ou persistência foi adicionada.
 
-Ela não deverá criar uma segunda regra de comparação nem reinterpretar igualdade ou divergência.
+A estrutura reutiliza exclusivamente os resultados de `scalarItemComparison`.
 
-Este próximo micro-passo continuará exclusivamente de leitura e análise em memória.
+Ela não cria uma segunda regra para determinar igualdade ou divergência.
 
-Não deverá:
+Este checkpoint continua exclusivamente de leitura e análise em memória.
 
-- atualizar `OrderItem`;
-- criar `OrderItem`;
-- remover `OrderItem`;
-- criar ou alterar `ExternalOrderItemReference`;
-- alterar `itemUpdateEligibility`;
-- atribuir efeito operacional a `scalarItemDifferences`;
-- atribuir efeito operacional a `scalarItemDifferenceDetails`;
-- persistir `scalarItemDifferenceDetails`;
-- expor `scalarItemDifferenceDetails` por endpoint;
-- comparar `productId`;
-- comparar estruturalmente `variationSnapshot`;
-- inferir identidade por SKU, título, posição, quantidade ou preço;
-- interpretar ausência no payload como remoção.
+Neste micro-passo:
 
-Somente depois de `scalarItemDifferenceDetails` estar implementado, validado, documentado e protegido no Git será definida separadamente a próxima evolução da análise dos itens.
+- nenhum `OrderItem` é atualizado;
+- nenhum `OrderItem` é criado;
+- nenhum `OrderItem` é removido;
+- nenhuma `ExternalOrderItemReference` é criada ou alterada;
+- `scalarItemDifferenceDetails` não produz escrita;
+- `scalarItemDifferenceDetails` não controla `itemUpdateEligibility`;
+- `itemUpdateEligibility` continua sem efeito operacional;
+- `productId` continua fora da comparação;
+- `variationSnapshot` continua fora da comparação;
+- identidade não é inferida por SKU, título, posição, quantidade ou preço;
+- item ausente no payload continua sem significar remoção;
+- nenhuma exposição por endpoint foi adicionada.
+
+A alteração foi realizada somente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Validações realizadas:
+
+- `git diff --check` — aprovado;
+- build da API com `pnpm --filter api build` — aprovado;
+- teste específico `external-order-ingestion.service.spec.ts` — 10 de 10 testes aprovados;
+- suíte completa da API — 8 suítes e 17 de 17 testes aprovados.
+
+Os testes automatizados atuais não possuem asserção direta sobre `scalarItemDifferenceDetails`, porque essa estrutura permanece interna ao processamento e ainda não produz saída ou efeito operacional observável. As suítes executadas confirmam ausência de regressão no comportamento já protegido.
+
+Este micro-passo somente detalha em memória diferenças já detectadas, sem executar reconciliação ou escrita.
+
+## 19. Próxima ação exata
+
+O planejamento de `scalarItemDifferenceDetails` foi protegido no commit:
+
+`a26e47a` — `docs: define scalarItemDifferenceDetails como proximo micro-passo`
+
+O detalhamento somente-leitura das diferenças escalares foi implementado localmente e validado.
+
+O próximo passo autorizado será somente:
+
+- revisar o diff conjunto do código e deste registro;
+- repetir a checagem de integridade do diff após a documentação;
+- proteger este micro-checkpoint no Git.
+
+Ainda não deverá ser definida nem implementada uma nova evolução da análise dos itens antes de este checkpoint estar protegido no Git.
 
 Ainda não implementar:
 
