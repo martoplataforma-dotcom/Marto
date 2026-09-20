@@ -3069,19 +3069,57 @@ Este micro-passo somente detalha em memória diferenças já detectadas, sem exe
 
 ## 19. Próxima ação exata
 
-O planejamento de `scalarItemDifferenceDetails` foi protegido no commit:
+O detalhamento somente-leitura das diferenças escalares dos itens foi protegido no commit:
 
-`a26e47a` — `docs: define scalarItemDifferenceDetails como proximo micro-passo`
+`ba621ba` — `feat(orders): detalha diferencas escalares dos itens`
 
-O detalhamento somente-leitura das diferenças escalares foi implementado localmente e validado.
+O próximo micro-passo autorizado será somente classificar a abrangência das diferenças escalares já identificadas, ainda exclusivamente em memória.
 
-O próximo passo autorizado será somente:
+Será preparada a estrutura:
 
-- revisar o diff conjunto do código e deste registro;
-- repetir a checagem de integridade do diff após a documentação;
-- proteger este micro-checkpoint no Git.
+`scalarItemDifferenceScope`
 
-Ainda não deverá ser definida nem implementada uma nova evolução da análise dos itens antes de este checkpoint estar protegido no Git.
+Semântica prevista:
+
+- quando `scalarItemDifferences = null`:
+  - `scalarItemDifferenceScope = not_comparable`;
+  - não existe `OrderItem` canônico comparável.
+
+- quando `scalarItemDifferences = []`:
+  - `scalarItemDifferenceScope = no_differences`;
+  - nenhum dos quatro campos escalares suportados diverge.
+
+- quando `scalarItemDifferences` contiver exatamente um campo:
+  - `scalarItemDifferenceScope = single_field`.
+
+- quando `scalarItemDifferences` contiver dois ou mais campos:
+  - `scalarItemDifferenceScope = multiple_fields`.
+
+A classificação deverá ser derivada exclusivamente de `scalarItemDifferences` já calculado.
+
+Ela não deverá repetir as comparações de `title`, `sku`, `quantity` ou `unitPrice`.
+
+Ela também não deverá decidir se uma divergência pode ser aplicada ao `OrderItem`.
+
+Este próximo micro-passo continuará exclusivamente de leitura e análise em memória.
+
+Não deverá:
+
+- atualizar `OrderItem`;
+- criar `OrderItem`;
+- remover `OrderItem`;
+- criar ou alterar `ExternalOrderItemReference`;
+- alterar `itemUpdateEligibility`;
+- atribuir efeito operacional a `scalarItemDifferenceScope`;
+- usar `scalarItemDifferenceScope` para autorizar ou bloquear atualização;
+- persistir `scalarItemDifferenceScope`;
+- expor `scalarItemDifferenceScope` por endpoint;
+- comparar `productId`;
+- comparar estruturalmente `variationSnapshot`;
+- inferir identidade por SKU, título, posição, quantidade ou preço;
+- interpretar ausência no payload como remoção.
+
+Somente depois de `scalarItemDifferenceScope` estar implementado, validado, documentado e protegido no Git será definida separadamente a próxima evolução da análise dos itens.
 
 Ainda não implementar:
 
@@ -3097,6 +3135,7 @@ Ainda não implementar:
 - escrita baseada em `scalarItemComparisonState`;
 - escrita baseada em `scalarItemDifferences`;
 - escrita baseada em `scalarItemDifferenceDetails`;
+- escrita baseada em `scalarItemDifferenceScope`;
 - comparação de `productId`;
 - comparação estrutural de `variationSnapshot`;
 - timestamps de lifecycle;
