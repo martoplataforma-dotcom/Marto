@@ -3067,85 +3067,78 @@ Os testes automatizados atuais não possuem asserção direta sobre `scalarItemD
 
 Este micro-passo somente detalha em memória diferenças já detectadas, sem executar reconciliação ou escrita.
 
-## 19. Próxima ação exata
+### Micro-checkpoint — classificação somente-leitura da abrangência das diferenças escalares
 
-O detalhamento somente-leitura das diferenças escalares dos itens foi protegido no commit:
+Após `scalarItemDifferences` e `scalarItemDifferenceDetails`, o fluxo passou a classificar em memória a abrangência das diferenças escalares já identificadas.
 
-`ba621ba` — `feat(orders): detalha diferencas escalares dos itens`
-
-O próximo micro-passo autorizado será somente classificar a abrangência das diferenças escalares já identificadas, ainda exclusivamente em memória.
-
-Será preparada a estrutura:
+Foi adicionada a estrutura:
 
 `scalarItemDifferenceScope`
 
-Semântica prevista:
+Semântica implementada:
 
-- quando `scalarItemDifferences = null`:
-  - `scalarItemDifferenceScope = not_comparable`;
-  - não existe `OrderItem` canônico comparável.
+- `scalarItemDifferences = null` -> `not_comparable`;
+- `scalarItemDifferences = []` -> `no_differences`;
+- exatamente uma diferença -> `single_field`;
+- duas ou mais diferenças -> `multiple_fields`.
 
-- quando `scalarItemDifferences = []`:
-  - `scalarItemDifferenceScope = no_differences`;
-  - nenhum dos quatro campos escalares suportados diverge.
+A classificação é derivada exclusivamente de `scalarItemDifferences` já calculado e não repete as comparações de `title`, `sku`, `quantity` ou `unitPrice`.
 
-- quando `scalarItemDifferences` contiver exatamente um campo:
-  - `scalarItemDifferenceScope = single_field`.
+Este checkpoint continua exclusivamente de leitura e análise em memória.
 
-- quando `scalarItemDifferences` contiver dois ou mais campos:
-  - `scalarItemDifferenceScope = multiple_fields`.
+Neste micro-passo:
 
-A classificação deverá ser derivada exclusivamente de `scalarItemDifferences` já calculado.
+- nenhum `OrderItem` é atualizado, criado ou removido;
+- nenhuma `ExternalOrderItemReference` é criada ou alterada;
+- `scalarItemDifferenceScope` não produz escrita;
+- não controla `itemUpdateEligibility`;
+- `productId` continua fora da comparação;
+- `variationSnapshot` continua fora da comparação;
+- identidade não é inferida por SKU, título, posição, quantidade ou preço;
+- item ausente no payload continua sem significar remoção;
+- nenhuma exposição por endpoint foi adicionada.
 
-Ela não deverá repetir as comparações de `title`, `sku`, `quantity` ou `unitPrice`.
+A alteração de código foi realizada somente em:
 
-Ela também não deverá decidir se uma divergência pode ser aplicada ao `OrderItem`.
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
 
-Este próximo micro-passo continuará exclusivamente de leitura e análise em memória.
+Validações realizadas:
 
-Não deverá:
+- build da API — aprovado;
+- teste específico `external-order-ingestion.service.spec.ts` — 10/10 aprovado;
+- suíte completa da API — 8 suítes e 17/17 testes aprovados;
+- `git diff --check` — aprovado.
 
-- atualizar `OrderItem`;
-- criar `OrderItem`;
-- remover `OrderItem`;
-- criar ou alterar `ExternalOrderItemReference`;
-- alterar `itemUpdateEligibility`;
-- atribuir efeito operacional a `scalarItemDifferenceScope`;
-- usar `scalarItemDifferenceScope` para autorizar ou bloquear atualização;
-- persistir `scalarItemDifferenceScope`;
-- expor `scalarItemDifferenceScope` por endpoint;
-- comparar `productId`;
-- comparar estruturalmente `variationSnapshot`;
-- inferir identidade por SKU, título, posição, quantidade ou preço;
-- interpretar ausência no payload como remoção.
+Os testes atuais não possuem asserção direta sobre `scalarItemDifferenceScope`, pois a estrutura permanece interna e sem efeito operacional observável.
 
-Somente depois de `scalarItemDifferenceScope` estar implementado, validado, documentado e protegido no Git será definida separadamente a próxima evolução da análise dos itens.
+## 19. Próxima ação exata
+
+`scalarItemDifferenceScope` está implementado e validado localmente.
+
+O próximo passo autorizado é somente revisar e proteger este checkpoint no Git.
+
+O commit deste checkpoint deverá conter apenas:
+
+- implementação de `scalarItemDifferenceScope`;
+- documentação deste checkpoint.
+
+Somente depois deste checkpoint estar protegido no Git será definida separadamente a próxima evolução da análise dos itens.
 
 Ainda não implementar:
 
-- criação de item novo durante atualização;
-- atualização efetiva de `OrderItem`;
-- remoção/cancelamento de item por ausência no payload;
+- criação, atualização ou remoção efetiva de `OrderItem`;
 - rejeição automática de item desconhecido;
-- associação automática de item legado;
-- bootstrap/backfill de pedidos legados;
+- associação automática ou backfill de item legado;
 - reconciliação completa dos itens;
 - uso operacional de `itemUpdateEligibility`;
-- escrita baseada em `scalarItemComparison`;
-- escrita baseada em `scalarItemComparisonState`;
-- escrita baseada em `scalarItemDifferences`;
-- escrita baseada em `scalarItemDifferenceDetails`;
-- escrita baseada em `scalarItemDifferenceScope`;
+- escrita baseada nas estruturas de comparação e diferenças;
 - comparação de `productId`;
 - comparação estrutural de `variationSnapshot`;
 - timestamps de lifecycle;
 - endpoints;
 - registro do serviço no `OrdersModule`;
 - conectores de marketplace;
-- `prisma format`;
-- atualização do Prisma;
-- aplicação desta migration no banco normal `marto`.
-
+- alterações Prisma ou migrations.
 ## 20. NÃO FAZER AINDA
 
 - não integrar Mercado Livre;

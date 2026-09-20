@@ -602,6 +602,15 @@ export class ExternalOrderIngestionService {
                           : ['unitPrice']),
                       ];
 
+                const scalarItemDifferenceScope =
+                  scalarItemDifferences === null
+                    ? 'not_comparable'
+                    : scalarItemDifferences.length === 0
+                      ? 'no_differences'
+                      : scalarItemDifferences.length === 1
+                        ? 'single_field'
+                        : 'multiple_fields';
+
                 const scalarItemDifferenceDetails =
                   scalarItemComparison === null || canonicalOrderItem === null
                     ? null
@@ -649,6 +658,7 @@ export class ExternalOrderIngestionService {
                   scalarItemComparison,
                   scalarItemComparisonState,
                   scalarItemDifferences,
+                  scalarItemDifferenceScope,
                   scalarItemDifferenceDetails,
                 };
               });
