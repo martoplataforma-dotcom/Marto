@@ -3113,32 +3113,69 @@ Os testes atuais não possuem asserção direta sobre `scalarItemDifferenceScope
 
 ## 19. Próxima ação exata
 
-`scalarItemDifferenceScope` está implementado e validado localmente.
+O checkpoint `scalarItemDifferenceScope` foi implementado, validado e protegido no Git:
 
-O próximo passo autorizado é somente revisar e proteger este checkpoint no Git.
+`e70bff4` — `feat(orders): classifica abrangencia das diferencas escalares`
 
-O commit deste checkpoint deverá conter apenas:
+O próximo micro-passo será somente preparar um resumo agregado, ainda exclusivamente em memória, das comparações escalares dos itens recebidos.
 
-- implementação de `scalarItemDifferenceScope`;
-- documentação deste checkpoint.
+Estrutura prevista:
 
-Somente depois deste checkpoint estar protegido no Git será definida separadamente a próxima evolução da análise dos itens.
+`scalarItemComparisonSummary`
 
-Ainda não implementar:
+Ela deverá ser derivada exclusivamente de `incomingItemMatches` e dos valores de `scalarItemDifferenceScope` já calculados.
 
-- criação, atualização ou remoção efetiva de `OrderItem`;
-- rejeição automática de item desconhecido;
-- associação automática ou backfill de item legado;
-- reconciliação completa dos itens;
-- uso operacional de `itemUpdateEligibility`;
-- escrita baseada nas estruturas de comparação e diferenças;
-- comparação de `productId`;
-- comparação estrutural de `variationSnapshot`;
-- timestamps de lifecycle;
-- endpoints;
-- registro do serviço no `OrdersModule`;
-- conectores de marketplace;
-- alterações Prisma ou migrations.
+Não deverá repetir as comparações de `title`, `sku`, `quantity` ou `unitPrice`.
+
+Campos previstos:
+
+- `totalItems`
+  - quantidade total de itens presentes em `incomingItemMatches`.
+
+- `comparableItems`
+  - quantidade de itens cujo `scalarItemDifferenceScope` não seja `not_comparable`.
+
+- `notComparableItems`
+  - quantidade de itens com `scalarItemDifferenceScope = not_comparable`.
+
+- `noDifferences`
+  - quantidade de itens com `scalarItemDifferenceScope = no_differences`.
+
+- `singleFieldDifferences`
+  - quantidade de itens com `scalarItemDifferenceScope = single_field`.
+
+- `multipleFieldDifferences`
+  - quantidade de itens com `scalarItemDifferenceScope = multiple_fields`.
+
+Invariantes esperadas:
+
+`totalItems = notComparableItems + noDifferences + singleFieldDifferences + multipleFieldDifferences`
+
+`comparableItems = noDifferences + singleFieldDifferences + multipleFieldDifferences`
+
+Para `items: []`, todos os contadores deverão resultar em zero.
+
+Este próximo micro-passo continuará exclusivamente de leitura e análise em memória.
+
+Não deverá:
+
+- atualizar, criar ou remover `OrderItem`;
+- criar ou alterar `ExternalOrderItemReference`;
+- alterar `itemUpdateEligibility`;
+- usar o resumo para autorizar ou bloquear escrita;
+- persistir `scalarItemComparisonSummary`;
+- expor o resumo por endpoint;
+- adicionar contagem por campo individual;
+- comparar `productId`;
+- comparar estruturalmente `variationSnapshot`;
+- inferir identidade por SKU, título, posição, quantidade ou preço;
+- interpretar ausência de item no payload como remoção;
+- alterar timestamps de lifecycle;
+- registrar o serviço no `OrdersModule`;
+- criar conector de marketplace;
+- alterar Prisma ou criar migration.
+
+Somente depois de `scalarItemComparisonSummary` estar implementado, validado, documentado e protegido no Git será definida separadamente qualquer política operacional de atualização dos itens.
 ## 20. NÃO FAZER AINDA
 
 - não integrar Mercado Livre;
