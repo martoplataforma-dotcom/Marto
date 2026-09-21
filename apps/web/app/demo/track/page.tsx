@@ -2,11 +2,12 @@
 
 import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
+import { Suspense } from 'react';
 import { Card } from '@/components/marto/Card';
 import { Button } from '@/components/marto/Button';
 import { PageHeader } from '@/components/marto/PageHeader';
 
-export default function DemoTrack() {
+function DemoTrackContent() {
   const params = useSearchParams();
   const ref = params.get('ref') ?? 'demo-ref';
 
@@ -52,5 +53,13 @@ export default function DemoTrack() {
         </div>
       </Card>
     </main>
+  );
+}
+
+export default function DemoTrack() {
+  return (
+    <Suspense fallback={null}>
+      <DemoTrackContent />
+    </Suspense>
   );
 }

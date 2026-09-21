@@ -2,13 +2,13 @@
 
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useState } from 'react';
+import { Suspense, useState } from 'react';
 import { Card } from '@/components/marto/Card';
 import { Button } from '@/components/marto/Button';
 import { Textarea } from '@/components/marto/Input';
 import { PageHeader } from '@/components/marto/PageHeader';
 
-export default function DemoReview() {
+function DemoReviewContent() {
   const router = useRouter();
   const params = useSearchParams();
   const ref = params.get('ref') ?? 'demo-ref';
@@ -81,5 +81,13 @@ export default function DemoReview() {
         </div>
       </Card>
     </main>
+  );
+}
+
+export default function DemoReview() {
+  return (
+    <Suspense fallback={null}>
+      <DemoReviewContent />
+    </Suspense>
   );
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { fetchJSON } from '../../../src/lib/api';
 
@@ -138,7 +138,7 @@ function getErrorMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
-export default function CheckoutPayPage() {
+function CheckoutPayContent() {
   const router = useRouter();
   const sp = useSearchParams();
 
@@ -1017,5 +1017,14 @@ export default function CheckoutPayPage() {
         )}
       </div>
     </main>
+  );
+}
+
+
+export default function CheckoutPayPage() {
+  return (
+    <Suspense fallback={null}>
+      <CheckoutPayContent />
+    </Suspense>
   );
 }

@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { Suspense, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 
 function onlyDigits(v: string) {
@@ -33,7 +33,7 @@ function moneyFromCents(cents: number) {
 
 type PaymentMethod = 'PIX' | 'CARD';
 
-export default function CheckoutPage() {
+function CheckoutContent() {
   const params = useSearchParams();
 
   const productId = params.get('productId') ?? '';
@@ -301,5 +301,13 @@ export default function CheckoutPage() {
         </div>
       </div>
     </main>
+  );
+}
+
+export default function CheckoutPage() {
+  return (
+    <Suspense fallback={null}>
+      <CheckoutContent />
+    </Suspense>
   );
 }

@@ -2,7 +2,7 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { fetchJSON, type ApiError } from '../../../../src/lib/api';
 
@@ -128,7 +128,7 @@ function StatusPill({ status }: { status: string }) {
   );
 }
 
-export default function MerchantOrdersListPage() {
+function MerchantOrdersListContent() {
   const sp = useSearchParams();
   const debug = sp.get('debug') === '1';
 
@@ -528,5 +528,13 @@ export default function MerchantOrdersListPage() {
         )}
       </div>
     </main>
+  );
+}
+
+export default function MerchantOrdersListPage() {
+  return (
+    <Suspense fallback={null}>
+      <MerchantOrdersListContent />
+    </Suspense>
   );
 }

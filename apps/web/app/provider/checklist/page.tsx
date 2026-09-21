@@ -1,7 +1,7 @@
 'use client';
 
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { fetchJSON, type ApiError } from '../../../src/lib/api';
 import { authFetchJSON } from '../../../src/lib/auth';
 
@@ -10,7 +10,7 @@ type ServiceRequest = {
   status?: string;
 };
 
-export default function ProviderChecklistPage() {
+function ProviderChecklistContent() {
   const params = useSearchParams();
   const router = useRouter();
   const serviceRequestId = params.get('serviceRequestId');
@@ -106,5 +106,13 @@ export default function ProviderChecklistPage() {
         </div>
       )}
     </main>
+  );
+}
+
+export default function ProviderChecklistPage() {
+  return (
+    <Suspense fallback={null}>
+      <ProviderChecklistContent />
+    </Suspense>
   );
 }

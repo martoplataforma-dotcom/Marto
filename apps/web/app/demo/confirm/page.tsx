@@ -1,14 +1,14 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo, useState } from 'react';
+import { Suspense, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { getDemoItem } from '@/lib/demo-data';
 import { Card } from '@/components/marto/Card';
 import { Button } from '@/components/marto/Button';
 import { PageHeader } from '@/components/marto/PageHeader';
 
-export default function DemoConfirm() {
+function DemoConfirmContent() {
   const router = useRouter();
   const params = useSearchParams();
   const itemId = params.get('itemId') ?? '';
@@ -65,5 +65,13 @@ export default function DemoConfirm() {
         </div>
       </Card>
     </main>
+  );
+}
+
+export default function DemoConfirm() {
+  return (
+    <Suspense fallback={null}>
+      <DemoConfirmContent />
+    </Suspense>
   );
 }

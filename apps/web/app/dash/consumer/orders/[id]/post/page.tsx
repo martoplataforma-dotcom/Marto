@@ -2,7 +2,7 @@
 'use client';
 
 import Link from 'next/link';
-import { use } from 'react';
+import { Suspense, use } from 'react';
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 
@@ -97,7 +97,7 @@ type ErrorCard = {
   tone?: 'warn' | 'error';
 };
 
-export default function ConsumerOrderPostPage({ params }: Props) {
+function ConsumerOrderPostContent({ params }: Props) {
   const { id } = use(params);
   const orderId = String(id ?? '');
 
@@ -414,5 +414,13 @@ export default function ConsumerOrderPostPage({ params }: Props) {
         </div>
       </div>
     </div>
+  );
+}
+
+export default function ConsumerOrderPostPage(props: Props) {
+  return (
+    <Suspense fallback={null}>
+      <ConsumerOrderPostContent {...props} />
+    </Suspense>
   );
 }
