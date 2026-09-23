@@ -663,6 +663,43 @@ export class ExternalOrderIngestionService {
                 };
               });
 
+              const scalarItemComparisonSummary = incomingItemMatches.reduce(
+                (summary, match) => {
+                  summary.totalItems += 1;
+
+                  switch (match.scalarItemDifferenceScope) {
+                    case 'not_comparable':
+                      summary.notComparableItems += 1;
+                      break;
+
+                    case 'no_differences':
+                      summary.comparableItems += 1;
+                      summary.noDifferences += 1;
+                      break;
+
+                    case 'single_field':
+                      summary.comparableItems += 1;
+                      summary.singleFieldDifferences += 1;
+                      break;
+
+                    case 'multiple_fields':
+                      summary.comparableItems += 1;
+                      summary.multipleFieldDifferences += 1;
+                      break;
+                  }
+
+                  return summary;
+                },
+                {
+                  totalItems: 0,
+                  comparableItems: 0,
+                  notComparableItems: 0,
+                  noDifferences: 0,
+                  singleFieldDifferences: 0,
+                  multipleFieldDifferences: 0,
+                },
+              );
+
               const incomingItemMatchState =
                 incomingItemMatches.length === 0
                   ? 'items_empty'

@@ -3113,69 +3113,102 @@ Os testes atuais não possuem asserção direta sobre `scalarItemDifferenceScope
 
 ## 19. Próxima ação exata
 
-O checkpoint `scalarItemDifferenceScope` foi implementado, validado e protegido no Git:
+`scalarItemComparisonSummary` está implementado e validado localmente em:
 
-`e70bff4` — `feat(orders): classifica abrangencia das diferencas escalares`
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
 
-O próximo micro-passo será somente preparar um resumo agregado, ainda exclusivamente em memória, das comparações escalares dos itens recebidos.
+A estrutura foi adicionada imediatamente depois de `incomingItemMatches` e antes de `incomingItemMatchState`.
 
-Estrutura prevista:
+Ela é derivada exclusivamente dos valores de `scalarItemDifferenceScope` já calculados em cada item e não repete as comparações escalares de `title`, `sku`, `quantity` ou `unitPrice`.
 
-`scalarItemComparisonSummary`
+Campos implementados:
 
-Ela deverá ser derivada exclusivamente de `incomingItemMatches` e dos valores de `scalarItemDifferenceScope` já calculados.
+- `totalItems`;
+- `comparableItems`;
+- `notComparableItems`;
+- `noDifferences`;
+- `singleFieldDifferences`;
+- `multipleFieldDifferences`.
 
-Não deverá repetir as comparações de `title`, `sku`, `quantity` ou `unitPrice`.
+Semântica implementada:
 
-Campos previstos:
+- `not_comparable`
+  - incrementa `notComparableItems`;
 
-- `totalItems`
-  - quantidade total de itens presentes em `incomingItemMatches`.
+- `no_differences`
+  - incrementa `comparableItems`;
+  - incrementa `noDifferences`;
 
-- `comparableItems`
-  - quantidade de itens cujo `scalarItemDifferenceScope` não seja `not_comparable`.
+- `single_field`
+  - incrementa `comparableItems`;
+  - incrementa `singleFieldDifferences`;
 
-- `notComparableItems`
-  - quantidade de itens com `scalarItemDifferenceScope = not_comparable`.
+- `multiple_fields`
+  - incrementa `comparableItems`;
+  - incrementa `multipleFieldDifferences`.
 
-- `noDifferences`
-  - quantidade de itens com `scalarItemDifferenceScope = no_differences`.
+Para `incomingItemMatches = []`, todos os contadores permanecem em zero.
 
-- `singleFieldDifferences`
-  - quantidade de itens com `scalarItemDifferenceScope = single_field`.
-
-- `multipleFieldDifferences`
-  - quantidade de itens com `scalarItemDifferenceScope = multiple_fields`.
-
-Invariantes esperadas:
+As invariantes permanecem:
 
 `totalItems = notComparableItems + noDifferences + singleFieldDifferences + multipleFieldDifferences`
 
 `comparableItems = noDifferences + singleFieldDifferences + multipleFieldDifferences`
 
-Para `items: []`, todos os contadores deverão resultar em zero.
+O resumo continua exclusivamente em memória.
 
-Este próximo micro-passo continuará exclusivamente de leitura e análise em memória.
+Não há persistência, endpoint, alteração de `OrderItem`, alteração de `ExternalOrderItemReference`, alteração de `itemUpdateEligibility` ou efeito operacional baseado nesse resumo.
 
-Não deverá:
+Validações executadas localmente:
 
-- atualizar, criar ou remover `OrderItem`;
-- criar ou alterar `ExternalOrderItemReference`;
-- alterar `itemUpdateEligibility`;
-- usar o resumo para autorizar ou bloquear escrita;
-- persistir `scalarItemComparisonSummary`;
-- expor o resumo por endpoint;
-- adicionar contagem por campo individual;
-- comparar `productId`;
-- comparar estruturalmente `variationSnapshot`;
-- inferir identidade por SKU, título, posição, quantidade ou preço;
-- interpretar ausência de item no payload como remoção;
-- alterar timestamps de lifecycle;
-- registrar o serviço no `OrdersModule`;
-- criar conector de marketplace;
-- alterar Prisma ou criar migration.
+- `pnpm --filter api build`
+  - aprovado;
 
-Somente depois de `scalarItemComparisonSummary` estar implementado, validado, documentado e protegido no Git será definida separadamente qualquer política operacional de atualização dos itens.
+- `pnpm --filter api test -- external-order-ingestion.service.spec.ts`
+  - 1 suíte aprovada;
+  - 10 de 10 testes aprovados;
+
+- `pnpm --filter api test`
+  - 8 de 8 suítes aprovadas;
+  - 17 de 17 testes aprovados;
+
+- `git diff --check -- apps/api/src/modules/orders/external-order-ingestion.service.ts`
+  - aprovado;
+
+- diff do serviço
+  - somente 37 linhas adicionadas;
+  - nenhum código existente removido ou alterado.
+
+Os testes atuais não possuem asserção direta sobre `scalarItemComparisonSummary`, porque a estrutura permanece interna ao fluxo e ainda não produz efeito operacional observável.
+
+O próximo passo autorizado é somente revisar e proteger este checkpoint no Git.
+
+O commit deste checkpoint deverá conter apenas:
+
+- implementação de `scalarItemComparisonSummary`;
+- documentação deste checkpoint.
+
+Ainda não implementar:
+
+- criação, atualização ou remoção efetiva de `OrderItem`;
+- criação ou alteração de `ExternalOrderItemReference`;
+- rejeição automática de item desconhecido;
+- associação automática ou backfill de item legado;
+- reconciliação completa dos itens;
+- uso operacional de `itemUpdateEligibility`;
+- escrita baseada em `scalarItemComparisonSummary`;
+- escrita baseada nas demais estruturas de comparação e diferenças;
+- comparação de `productId`;
+- comparação estrutural de `variationSnapshot`;
+- inferência de identidade por SKU, título, posição, quantidade ou preço;
+- interpretação de ausência de item no payload como remoção;
+- timestamps de lifecycle;
+- endpoints;
+- registro do serviço no `OrdersModule`;
+- conectores de marketplace;
+- alterações Prisma ou migrations.
+
+Somente depois deste checkpoint estar protegido no Git será definida separadamente a próxima evolução da análise dos itens.
 ## 20. NÃO FAZER AINDA
 
 - não integrar Mercado Livre;
