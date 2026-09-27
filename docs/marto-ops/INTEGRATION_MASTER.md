@@ -3260,13 +3260,13 @@ Checkpoint protegido no Git:
 
 `6994ac2` — `feat(orders): resume diferencas escalares por campo`
 
-## 19. Próxima ação exata
+### Micro-checkpoint — classificação da prontidão para futura reconciliação
 
-`scalarItemReconciliationReadiness` está implementado e validado localmente em:
+Após `itemUpdateEligibility` e os resumos escalares, o fluxo passou a classificar em memória a situação atual da análise dos itens para uma futura reconciliação.
 
-`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+Foi adicionada a estrutura:
 
-A estrutura foi adicionada imediatamente depois de `itemUpdateEligibility`.
+`scalarItemReconciliationReadiness`
 
 Ela reutiliza exclusivamente:
 
@@ -3277,23 +3277,11 @@ Nenhuma comparação de item é repetida.
 
 Estados implementados:
 
-- `preserve_items`
-  - quando `itemUpdateEligibility = preserve_items`;
-
-- `blocked_unmatched`
-  - quando `itemUpdateEligibility = blocked_unmatched`;
-
-- `blocked_not_comparable`
-  - quando a elegibilidade não está bloqueada por item desconhecido e `scalarItemComparisonSummary.notComparableItems > 0`;
-
-- `no_scalar_changes`
-  - quando não existem itens não comparáveis;
-  - `singleFieldDifferences = 0`;
-  - `multipleFieldDifferences = 0`;
-
-- `scalar_changes_detected`
-  - quando não existem itens não comparáveis;
-  - existe pelo menos uma ocorrência em `singleFieldDifferences` ou `multipleFieldDifferences`.
+- `preserve_items`;
+- `blocked_unmatched`;
+- `blocked_not_comparable`;
+- `no_scalar_changes`;
+- `scalar_changes_detected`.
 
 Precedência implementada:
 
@@ -3305,88 +3293,128 @@ Precedência implementada:
 
 `blocked_not_comparable` permanece como classificação defensiva.
 
-Com as invariantes atuais de identidade completa, esse estado não é esperado quando todos os itens recebidos estão corretamente correspondidos.
+`scalar_changes_detected` não autoriza atualização de `OrderItem`.
 
-`scalar_changes_detected` significa somente que existem diferenças escalares detectadas em itens com correspondência conhecida.
+`no_scalar_changes` não significa reconciliação completa do pedido, porque ainda existem dimensões fora da comparação, incluindo:
 
-Ele não autoriza atualização de `OrderItem`.
+- `productId`;
+- `variationSnapshot`.
 
-`no_scalar_changes` também não significa reconciliação completa do pedido, pois:
-
-- `productId` continua fora da comparação;
-- `variationSnapshot` continua fora da comparação;
-- outras dimensões de reconciliação ainda não foram implementadas.
-
-A estrutura continua exclusivamente em memória.
+Este checkpoint continua exclusivamente de leitura, classificação e análise em memória.
 
 Neste micro-passo:
 
 - nenhum `OrderItem` foi atualizado, criado ou removido;
 - nenhuma `ExternalOrderItemReference` foi criada ou alterada;
 - `itemUpdateEligibility` não foi modificado;
-- `scalarItemReconciliationReadiness` não produz escrita;
-- nenhum estado de readiness executa atualização;
-- item desconhecido não é rejeitado automaticamente;
-- nenhum backfill de item legado é executado;
-- identidade não é inferida por SKU, título, posição, quantidade ou preço;
-- item ausente no payload continua sem significar remoção;
-- `productId` continua fora da comparação;
-- `variationSnapshot` continua fora da comparação;
-- nenhuma persistência foi adicionada;
-- nenhum endpoint foi adicionado;
-- nenhum timestamp de lifecycle foi alterado;
-- o serviço não foi registrado no `OrdersModule`;
-- nenhum conector de marketplace foi criado;
-- nenhuma alteração Prisma ou migration foi realizada.
+- nenhum estado de readiness executa escrita;
+- item desconhecido não foi rejeitado automaticamente;
+- nenhum backfill de item legado foi executado;
+- identidade não foi inferida por SKU, título, posição, quantidade ou preço;
+- item ausente no payload continuou sem significar remoção;
+- `productId` permaneceu fora da comparação;
+- `variationSnapshot` permaneceu fora da comparação;
+- nenhuma persistência, endpoint, alteração Prisma ou migration foi criada.
 
-Validações executadas localmente:
+Validações realizadas:
 
-- `pnpm --filter api build`
-  - aprovado;
+- build da API — aprovado;
+- teste específico `external-order-ingestion.service.spec.ts` — 10/10 aprovado;
+- suíte completa da API — 8 suítes e 17/17 testes aprovados;
+- `git diff --check` — aprovado;
+- alteração do serviço limitada a 12 linhas adicionadas.
 
-- `pnpm --filter api test -- external-order-ingestion.service.spec.ts`
-  - 1 suíte aprovada;
-  - 10 de 10 testes aprovados;
+Os testes atuais não possuem asserção direta sobre `scalarItemReconciliationReadiness`, porque a estrutura permanece interna e sem efeito operacional observável.
 
-- `pnpm --filter api test`
-  - 8 de 8 suítes aprovadas;
-  - 17 de 17 testes aprovados;
+Checkpoint protegido no Git:
 
-- `git diff --check -- apps/api/src/modules/orders/external-order-ingestion.service.ts`
-  - aprovado;
+`7b69157` — `feat(orders): classifica prontidao para reconciliacao dos itens`
 
-- diff do serviço
-  - somente 12 linhas adicionadas;
-  - nenhum código existente removido ou alterado.
+## 19. Próxima ação exata
 
-Os testes atuais não possuem asserção direta sobre `scalarItemReconciliationReadiness`, porque a estrutura permanece interna ao fluxo e ainda não produz efeito operacional observável.
+O checkpoint `scalarItemReconciliationReadiness` está implementado, validado e protegido no Git.
 
-O próximo passo autorizado é somente revisar e proteger este checkpoint no Git.
+O próximo micro-passo proposto continua exclusivamente de leitura e análise em memória.
 
-O commit deste checkpoint deverá conter apenas:
+Estrutura prevista:
 
-- implementação de `scalarItemReconciliationReadiness`;
-- documentação deste checkpoint.
+`productIdComparisonState`
 
-Ainda não implementar:
+Objetivo:
 
-- criação, atualização ou remoção efetiva de `OrderItem`;
-- criação ou alteração de `ExternalOrderItemReference`;
-- rejeição automática de item desconhecido;
-- associação automática ou backfill de item legado;
-- reconciliação efetiva dos itens;
-- uso de `scalarItemReconciliationReadiness` para executar escrita;
-- comparação de `productId`;
-- comparação estrutural de `variationSnapshot`;
-- inferência de identidade por SKU, título, posição, quantidade ou preço;
-- interpretação de ausência de item no payload como remoção;
-- timestamps de lifecycle;
-- endpoints;
-- registro do serviço no `OrdersModule`;
-- conectores de marketplace;
-- alterações Prisma ou migrations.
+representar de forma explícita e conservadora o estado da comparação entre o `productId` recebido no item externo e o `productId` atualmente associado ao `OrderItem` canônico correspondente.
 
-Somente depois deste checkpoint estar protegido no Git será definida separadamente a próxima evolução.
+O contrato atual do item externo permite:
+
+`productId?: string | null`
+
+Por isso, ausência do campo e `null` não deverão ser interpretados automaticamente como ordem para remover um vínculo canônico existente.
+
+Estados previstos:
+
+- `not_comparable`
+  - quando não existe `canonicalOrderItem`;
+  - portanto, não existe item canônico seguro para comparação.
+
+- `not_provided`
+  - quando `item.productId` é `undefined`;
+  - quando `item.productId` é `null`;
+  - significa somente que a atualização externa não forneceu um `productId` utilizável para comparação;
+  - não significa remoção do `productId` canônico.
+
+- `invalid`
+  - quando `item.productId` foi fornecido, mas após `trim()` resulta em string vazia;
+  - distingue valor malformado de campo ausente;
+  - não significa remoção do `productId` canônico;
+  - não autoriza escrita;
+  - não rejeita automaticamente a sincronização neste micro-passo.
+
+- `matches`
+  - quando existe `canonicalOrderItem`;
+  - um `productId` não nulo foi fornecido;
+  - o valor recebido, após `trim()`, é igual a `canonicalOrderItem.productId`.
+
+- `differs`
+  - quando existe `canonicalOrderItem`;
+  - um `productId` não nulo foi fornecido;
+  - o valor recebido, após `trim()`, é diferente de `canonicalOrderItem.productId`.
+
+Regra conservadora:
+
+- `undefined` não remove vínculo;
+- `null` não remove vínculo;
+- ausência do campo não significa remoção;
+- este micro-passo não deverá alterar `OrderItem.productId`.
+
+Validação do valor recebido:
+
+- quando `item.productId` for diferente de `undefined` e `null`, o valor deverá ser normalizado com `trim()`;
+- quando o valor normalizado resultar em string vazia, `productIdComparisonState = invalid`;
+- `invalid` representa valor fornecido, porém inválido para comparação;
+- `invalid` não deverá apagar ou alterar o `productId` canônico;
+- `invalid` não deverá lançar erro nem rejeitar automaticamente a sincronização neste micro-passo.
+
+`productIdComparisonState` não deverá:
+
+- atualizar `OrderItem.productId`;
+- criar associação automática entre produto e item;
+- criar ou alterar `ExternalOrderItemReference`;
+- alterar `itemUpdateEligibility`;
+- alterar `scalarItemReconciliationReadiness`;
+- autorizar escrita;
+- rejeitar automaticamente item desconhecido;
+- executar backfill de item legado;
+- inferir identidade por SKU, título, posição, quantidade ou preço;
+- interpretar ausência do item no payload como remoção;
+- comparar estruturalmente `variationSnapshot`;
+- persistir `productIdComparisonState`;
+- expor a estrutura por endpoint;
+- alterar timestamps de lifecycle;
+- registrar o serviço no `OrdersModule`;
+- criar conectores de marketplace;
+- alterar Prisma ou criar migration.
+
+Antes de qualquer implementação, esta definição deverá ser revisada e protegida separadamente no Git.
 ## 20. NÃO FAZER AINDA
 
 - não integrar Mercado Livre;
