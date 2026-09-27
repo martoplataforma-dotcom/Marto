@@ -3262,55 +3262,40 @@ Checkpoint protegido no Git:
 
 ## 19. Próxima ação exata
 
-O checkpoint `scalarItemDifferenceFieldSummary` está implementado, validado e protegido no Git.
+`scalarItemReconciliationReadiness` está implementado e validado localmente em:
 
-O próximo micro-passo proposto continua exclusivamente de leitura, classificação e análise em memória.
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
 
-Estrutura prevista:
+A estrutura foi adicionada imediatamente depois de `itemUpdateEligibility`.
 
-`scalarItemReconciliationReadiness`
-
-Objetivo:
-
-classificar explicitamente a situação atual da análise dos itens para uma futura reconciliação, reutilizando somente sinais já calculados.
-
-A classificação deverá utilizar:
+Ela reutiliza exclusivamente:
 
 - `itemUpdateEligibility`;
 - `scalarItemComparisonSummary`.
 
-Ela não deverá repetir comparação de campos nem executar qualquer escrita.
+Nenhuma comparação de item é repetida.
 
-Estados previstos:
+Estados implementados:
 
 - `preserve_items`
   - quando `itemUpdateEligibility = preserve_items`;
-  - expressa somente que o fluxo atual deve preservar os itens.
 
 - `blocked_unmatched`
   - quando `itemUpdateEligibility = blocked_unmatched`;
-  - indica presença de item recebido sem correspondência externa segura.
 
 - `blocked_not_comparable`
-  - quando a elegibilidade não estiver bloqueada por item desconhecido, mas `scalarItemComparisonSummary.notComparableItems > 0`;
-  - é uma classificação defensiva;
-  - com as invariantes atuais de identidade completa, esse estado não é esperado quando todos os itens recebidos estão corretamente correspondidos;
-  - sua existência não deverá relaxar nenhuma regra de identidade.
+  - quando a elegibilidade não está bloqueada por item desconhecido e `scalarItemComparisonSummary.notComparableItems > 0`;
 
 - `no_scalar_changes`
-  - quando `itemUpdateEligibility = matched_items_only`;
-  - `scalarItemComparisonSummary.notComparableItems = 0`;
-  - `scalarItemComparisonSummary.singleFieldDifferences = 0`;
-  - `scalarItemComparisonSummary.multipleFieldDifferences = 0`;
-  - significa somente que nenhuma diferença escalar suportada foi detectada.
+  - quando não existem itens não comparáveis;
+  - `singleFieldDifferences = 0`;
+  - `multipleFieldDifferences = 0`;
 
 - `scalar_changes_detected`
-  - quando `itemUpdateEligibility = matched_items_only`;
-  - `scalarItemComparisonSummary.notComparableItems = 0`;
-  - existe pelo menos um item em `singleFieldDifferences` ou `multipleFieldDifferences`;
-  - significa somente que existem diferenças escalares detectadas em itens com correspondência conhecida.
+  - quando não existem itens não comparáveis;
+  - existe pelo menos uma ocorrência em `singleFieldDifferences` ou `multipleFieldDifferences`.
 
-Precedência da classificação:
+Precedência implementada:
 
 1. `preserve_items`;
 2. `blocked_unmatched`;
@@ -3318,30 +3303,90 @@ Precedência da classificação:
 4. `no_scalar_changes`;
 5. `scalar_changes_detected`.
 
-`scalar_changes_detected` não significa autorização para atualizar `OrderItem`.
+`blocked_not_comparable` permanece como classificação defensiva.
 
-`no_scalar_changes` também não significa que o pedido inteiro está reconciliado, pois `productId`, `variationSnapshot` e outras dimensões continuam fora desta comparação.
+Com as invariantes atuais de identidade completa, esse estado não é esperado quando todos os itens recebidos estão corretamente correspondidos.
 
-Este micro-passo não deverá:
+`scalar_changes_detected` significa somente que existem diferenças escalares detectadas em itens com correspondência conhecida.
 
-- atualizar, criar ou remover `OrderItem`;
-- criar ou alterar `ExternalOrderItemReference`;
-- modificar `itemUpdateEligibility`;
-- usar `scalarItemReconciliationReadiness` para executar escrita;
-- rejeitar automaticamente item desconhecido;
-- associar ou fazer backfill automático de item legado;
-- inferir identidade por SKU, título, posição, quantidade ou preço;
-- interpretar ausência de item no payload como remoção;
-- adicionar comparação de `productId`;
-- adicionar comparação estrutural de `variationSnapshot`;
-- persistir `scalarItemReconciliationReadiness`;
-- expor a classificação por endpoint;
-- alterar timestamps de lifecycle;
-- registrar o serviço no `OrdersModule`;
-- criar conectores de marketplace;
-- alterar Prisma ou criar migration.
+Ele não autoriza atualização de `OrderItem`.
 
-Antes de qualquer implementação, esta definição deverá ser revisada e protegida separadamente no Git.
+`no_scalar_changes` também não significa reconciliação completa do pedido, pois:
+
+- `productId` continua fora da comparação;
+- `variationSnapshot` continua fora da comparação;
+- outras dimensões de reconciliação ainda não foram implementadas.
+
+A estrutura continua exclusivamente em memória.
+
+Neste micro-passo:
+
+- nenhum `OrderItem` foi atualizado, criado ou removido;
+- nenhuma `ExternalOrderItemReference` foi criada ou alterada;
+- `itemUpdateEligibility` não foi modificado;
+- `scalarItemReconciliationReadiness` não produz escrita;
+- nenhum estado de readiness executa atualização;
+- item desconhecido não é rejeitado automaticamente;
+- nenhum backfill de item legado é executado;
+- identidade não é inferida por SKU, título, posição, quantidade ou preço;
+- item ausente no payload continua sem significar remoção;
+- `productId` continua fora da comparação;
+- `variationSnapshot` continua fora da comparação;
+- nenhuma persistência foi adicionada;
+- nenhum endpoint foi adicionado;
+- nenhum timestamp de lifecycle foi alterado;
+- o serviço não foi registrado no `OrdersModule`;
+- nenhum conector de marketplace foi criado;
+- nenhuma alteração Prisma ou migration foi realizada.
+
+Validações executadas localmente:
+
+- `pnpm --filter api build`
+  - aprovado;
+
+- `pnpm --filter api test -- external-order-ingestion.service.spec.ts`
+  - 1 suíte aprovada;
+  - 10 de 10 testes aprovados;
+
+- `pnpm --filter api test`
+  - 8 de 8 suítes aprovadas;
+  - 17 de 17 testes aprovados;
+
+- `git diff --check -- apps/api/src/modules/orders/external-order-ingestion.service.ts`
+  - aprovado;
+
+- diff do serviço
+  - somente 12 linhas adicionadas;
+  - nenhum código existente removido ou alterado.
+
+Os testes atuais não possuem asserção direta sobre `scalarItemReconciliationReadiness`, porque a estrutura permanece interna ao fluxo e ainda não produz efeito operacional observável.
+
+O próximo passo autorizado é somente revisar e proteger este checkpoint no Git.
+
+O commit deste checkpoint deverá conter apenas:
+
+- implementação de `scalarItemReconciliationReadiness`;
+- documentação deste checkpoint.
+
+Ainda não implementar:
+
+- criação, atualização ou remoção efetiva de `OrderItem`;
+- criação ou alteração de `ExternalOrderItemReference`;
+- rejeição automática de item desconhecido;
+- associação automática ou backfill de item legado;
+- reconciliação efetiva dos itens;
+- uso de `scalarItemReconciliationReadiness` para executar escrita;
+- comparação de `productId`;
+- comparação estrutural de `variationSnapshot`;
+- inferência de identidade por SKU, título, posição, quantidade ou preço;
+- interpretação de ausência de item no payload como remoção;
+- timestamps de lifecycle;
+- endpoints;
+- registro do serviço no `OrdersModule`;
+- conectores de marketplace;
+- alterações Prisma ou migrations.
+
+Somente depois deste checkpoint estar protegido no Git será definida separadamente a próxima evolução.
 ## 20. NÃO FAZER AINDA
 
 - não integrar Mercado Livre;

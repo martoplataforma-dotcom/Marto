@@ -745,6 +745,18 @@ export class ExternalOrderIngestionService {
                   : incomingItemMatchState === 'contains_unmatched'
                     ? 'blocked_unmatched'
                     : 'preserve_items';
+
+              const scalarItemReconciliationReadiness =
+                itemUpdateEligibility === 'preserve_items'
+                  ? 'preserve_items'
+                  : itemUpdateEligibility === 'blocked_unmatched'
+                    ? 'blocked_unmatched'
+                    : scalarItemComparisonSummary.notComparableItems > 0
+                      ? 'blocked_not_comparable'
+                      : scalarItemComparisonSummary.singleFieldDifferences === 0 &&
+                          scalarItemComparisonSummary.multipleFieldDifferences === 0
+                        ? 'no_scalar_changes'
+                        : 'scalar_changes_detected';
             }
 
             const externalCreatedAt =
