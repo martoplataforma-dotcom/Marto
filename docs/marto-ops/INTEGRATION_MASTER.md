@@ -3189,32 +3189,24 @@ Checkpoint protegido no Git:
 
 ## 19. Próxima ação exata
 
-O checkpoint `scalarItemComparisonSummary` está implementado, validado e protegido no Git.
+`scalarItemDifferenceFieldSummary` está implementado e validado localmente em:
 
-O próximo micro-passo proposto continua exclusivamente de leitura e análise em memória.
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
 
-Estrutura prevista:
+A estrutura foi adicionada depois de `scalarItemComparisonSummary` e antes de `incomingItemMatchState`.
 
-`scalarItemDifferenceFieldSummary`
+Ela é derivada exclusivamente de `scalarItemDifferences` já calculado em cada item de `incomingItemMatches`.
 
-Objetivo:
+Nenhuma comparação de valores é repetida.
 
-resumir em quais campos escalares estão concentradas as diferenças já identificadas entre os itens externos recebidos e os `OrderItem` canônicos correspondentes.
-
-A estrutura deverá ser derivada exclusivamente de `scalarItemDifferences` já calculado em cada item de `incomingItemMatches`.
-
-Ela não deverá repetir nenhuma comparação de valores.
-
-Campos previstos:
+Campos implementados:
 
 - `title`;
 - `sku`;
 - `quantity`;
 - `unitPrice`.
 
-Cada campo deverá conter a quantidade de itens comparáveis em que aquela diferença específica foi encontrada.
-
-Semântica prevista:
+Semântica implementada:
 
 - `scalarItemDifferences = null`
   - não incrementa nenhum contador;
@@ -3234,31 +3226,82 @@ Semântica prevista:
 - quando contém `unitPrice`
   - incrementa `unitPrice`.
 
-Um mesmo item poderá incrementar mais de um contador quando possuir diferenças em múltiplos campos.
+Um mesmo item pode incrementar mais de um contador quando possui diferenças em múltiplos campos.
 
-Para `incomingItemMatches = []`, todos os contadores deverão resultar em zero.
+Para `incomingItemMatches = []`, todos os contadores permanecem em zero.
 
-A soma dos quatro contadores representa a quantidade total de ocorrências de diferenças escalares, e não necessariamente a quantidade de itens divergentes, pois um mesmo item pode contribuir para mais de um campo.
+A soma dos quatro contadores representa a quantidade total de ocorrências de diferenças escalares e não necessariamente a quantidade de itens divergentes.
 
-Este micro-passo não deverá:
+A estrutura continua exclusivamente em memória.
 
-- atualizar, criar ou remover `OrderItem`;
-- criar ou alterar `ExternalOrderItemReference`;
-- alterar `itemUpdateEligibility`;
-- usar o resumo para autorizar ou bloquear escrita;
-- persistir `scalarItemDifferenceFieldSummary`;
-- expor a estrutura por endpoint;
-- refazer comparação de `title`, `sku`, `quantity` ou `unitPrice`;
-- adicionar comparação de `productId`;
-- adicionar comparação estrutural de `variationSnapshot`;
-- inferir identidade por SKU, título, posição, quantidade ou preço;
-- interpretar ausência de item no payload como remoção;
-- alterar timestamps de lifecycle;
-- registrar o serviço no `OrdersModule`;
-- criar conectores de marketplace;
-- alterar Prisma ou criar migration.
+Neste micro-passo:
 
-Antes de qualquer implementação, esta definição deverá ser revisada e protegida separadamente no Git.
+- nenhum `OrderItem` foi atualizado, criado ou removido;
+- nenhuma `ExternalOrderItemReference` foi criada ou alterada;
+- `itemUpdateEligibility` não foi alterado;
+- `scalarItemDifferenceFieldSummary` não produz escrita;
+- nenhuma decisão operacional é tomada com base no resumo;
+- nenhuma comparação adicional de `title`, `sku`, `quantity` ou `unitPrice` foi criada;
+- `productId` continua fora da comparação;
+- `variationSnapshot` continua fora da comparação;
+- identidade não é inferida por SKU, título, posição, quantidade ou preço;
+- item ausente no payload continua sem significar remoção;
+- nenhuma exposição por endpoint foi adicionada;
+- nenhum timestamp de lifecycle foi alterado;
+- o serviço não foi registrado no `OrdersModule`;
+- nenhum conector de marketplace foi criado;
+- nenhuma alteração Prisma ou migration foi realizada.
+
+Validações executadas localmente:
+
+- `pnpm --filter api build`
+  - aprovado;
+
+- `pnpm --filter api test -- external-order-ingestion.service.spec.ts`
+  - 1 suíte aprovada;
+  - 10 de 10 testes aprovados;
+
+- `pnpm --filter api test`
+  - 8 de 8 suítes aprovadas;
+  - 17 de 17 testes aprovados;
+
+- `git diff --check -- apps/api/src/modules/orders/external-order-ingestion.service.ts`
+  - aprovado;
+
+- diff do serviço
+  - somente 28 linhas adicionadas;
+  - nenhum código existente removido ou alterado.
+
+Os testes atuais não possuem asserção direta sobre `scalarItemDifferenceFieldSummary`, porque a estrutura permanece interna ao fluxo e ainda não produz efeito operacional observável.
+
+O próximo passo autorizado é somente revisar e proteger este checkpoint no Git.
+
+O commit deste checkpoint deverá conter apenas:
+
+- implementação de `scalarItemDifferenceFieldSummary`;
+- documentação deste checkpoint.
+
+Ainda não implementar:
+
+- criação, atualização ou remoção efetiva de `OrderItem`;
+- criação ou alteração de `ExternalOrderItemReference`;
+- rejeição automática de item desconhecido;
+- associação automática ou backfill de item legado;
+- reconciliação completa dos itens;
+- uso operacional de `itemUpdateEligibility`;
+- escrita baseada em `scalarItemDifferenceFieldSummary`;
+- escrita baseada nas demais estruturas de comparação;
+- comparação de `productId`;
+- comparação estrutural de `variationSnapshot`;
+- inferência de identidade por SKU, título, posição, quantidade ou preço;
+- interpretação de ausência de item no payload como remoção;
+- timestamps de lifecycle;
+- endpoints;
+- registro do serviço no `OrdersModule`;
+- conectores de marketplace;
+- alterações Prisma ou migrations.
+
+Somente depois deste checkpoint estar protegido no Git será definida separadamente a próxima evolução da análise dos itens.
 ## 20. NÃO FAZER AINDA
 
 - não integrar Mercado Livre;

@@ -700,6 +700,34 @@ export class ExternalOrderIngestionService {
                 },
               );
 
+              const scalarItemDifferenceFieldSummary = incomingItemMatches.reduce(
+                (summary, match) => {
+                  if (match.scalarItemDifferences?.includes('title')) {
+                    summary.title += 1;
+                  }
+
+                  if (match.scalarItemDifferences?.includes('sku')) {
+                    summary.sku += 1;
+                  }
+
+                  if (match.scalarItemDifferences?.includes('quantity')) {
+                    summary.quantity += 1;
+                  }
+
+                  if (match.scalarItemDifferences?.includes('unitPrice')) {
+                    summary.unitPrice += 1;
+                  }
+
+                  return summary;
+                },
+                {
+                  title: 0,
+                  sku: 0,
+                  quantity: 0,
+                  unitPrice: 0,
+                },
+              );
+
               const incomingItemMatchState =
                 incomingItemMatches.length === 0
                   ? 'items_empty'
