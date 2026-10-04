@@ -3332,89 +3332,133 @@ Checkpoint protegido no Git:
 
 ## 19. Próxima ação exata
 
-O checkpoint `scalarItemReconciliationReadiness` está implementado, validado e protegido no Git.
+O checkpoint documental que definiu `productIdComparisonState` foi protegido no Git em:
 
-O próximo micro-passo proposto continua exclusivamente de leitura e análise em memória.
+`81253bf` — `docs: define comparação de productId dos itens externos`
 
-Estrutura prevista:
+A implementação de `productIdComparisonState` está concluída e validada localmente em:
 
-`productIdComparisonState`
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
 
-Objetivo:
+A estrutura foi adicionada dentro de `incomingItemMatches`, reutilizando o `canonicalOrderItem` já identificado pela associação segura:
 
-representar de forma explícita e conservadora o estado da comparação entre o `productId` recebido no item externo e o `productId` atualmente associado ao `OrderItem` canônico correspondente.
+`externalItemId -> ExternalOrderItemReference -> orderItemId -> OrderItem`
 
-O contrato atual do item externo permite:
+Nenhuma nova consulta ao banco foi necessária.
 
-`productId?: string | null`
+Foi adicionada a normalização:
 
-Por isso, ausência do campo e `null` não deverão ser interpretados automaticamente como ordem para remover um vínculo canônico existente.
+`normalizedProductId`
 
-Estados previstos:
+Regra implementada:
+
+- `item.productId === undefined` -> `normalizedProductId = null`;
+- `item.productId === null` -> `normalizedProductId = null`;
+- caso contrário -> `item.productId.trim()`.
+
+Estados implementados em `productIdComparisonState`:
 
 - `not_comparable`
-  - quando não existe `canonicalOrderItem`;
-  - portanto, não existe item canônico seguro para comparação.
+  - quando `canonicalOrderItem === null`;
+  - possui precedência sobre os demais estados.
 
 - `not_provided`
   - quando `item.productId` é `undefined`;
   - quando `item.productId` é `null`;
-  - significa somente que a atualização externa não forneceu um `productId` utilizável para comparação;
-  - não significa remoção do `productId` canônico.
+  - não significa remoção do vínculo canônico.
 
 - `invalid`
-  - quando `item.productId` foi fornecido, mas após `trim()` resulta em string vazia;
-  - distingue valor malformado de campo ausente;
-  - não significa remoção do `productId` canônico;
-  - não autoriza escrita;
-  - não rejeita automaticamente a sincronização neste micro-passo.
+  - quando `productId` foi fornecido, mas após `trim()` resulta em string vazia;
+  - não significa remoção do vínculo canônico;
+  - não lança erro;
+  - não rejeita automaticamente a sincronização.
 
 - `matches`
-  - quando existe `canonicalOrderItem`;
-  - um `productId` não nulo foi fornecido;
-  - o valor recebido, após `trim()`, é igual a `canonicalOrderItem.productId`.
+  - quando existe item canônico;
+  - existe `productId` válido recebido;
+  - `canonicalOrderItem.productId === normalizedProductId`.
 
 - `differs`
-  - quando existe `canonicalOrderItem`;
-  - um `productId` não nulo foi fornecido;
-  - o valor recebido, após `trim()`, é diferente de `canonicalOrderItem.productId`.
+  - quando existe item canônico;
+  - existe `productId` válido recebido;
+  - `canonicalOrderItem.productId !== normalizedProductId`.
 
-Regra conservadora:
+`productIdComparisonState` foi incluído somente no objeto interno retornado por cada entrada de `incomingItemMatches`.
 
-- `undefined` não remove vínculo;
-- `null` não remove vínculo;
-- ausência do campo não significa remoção;
-- este micro-passo não deverá alterar `OrderItem.productId`.
+Neste micro-passo:
 
-Validação do valor recebido:
+- nenhum `OrderItem` foi atualizado, criado ou removido;
+- `OrderItem.productId` não foi alterado;
+- nenhuma associação automática entre produto e item foi criada;
+- nenhuma `ExternalOrderItemReference` foi criada ou alterada;
+- `itemUpdateEligibility` não foi alterado;
+- `scalarItemReconciliationReadiness` não foi alterado;
+- `productIdComparisonState` não autoriza escrita;
+- diferença de `productId` não executa relink automático;
+- `productId` inválido não apaga vínculo canônico;
+- ausência de `productId` não significa remoção;
+- item desconhecido não é rejeitado automaticamente;
+- nenhum backfill de item legado é executado;
+- identidade não é inferida por SKU, título, posição, quantidade ou preço;
+- ausência de item no payload continua sem significar remoção;
+- `variationSnapshot` continua fora da comparação;
+- nenhuma persistência adicional foi criada;
+- nenhum endpoint foi adicionado;
+- nenhum timestamp de lifecycle foi alterado;
+- o serviço não foi registrado no `OrdersModule`;
+- nenhum conector de marketplace foi criado;
+- nenhuma alteração Prisma ou migration foi realizada.
 
-- quando `item.productId` for diferente de `undefined` e `null`, o valor deverá ser normalizado com `trim()`;
-- quando o valor normalizado resultar em string vazia, `productIdComparisonState = invalid`;
-- `invalid` representa valor fornecido, porém inválido para comparação;
-- `invalid` não deverá apagar ou alterar o `productId` canônico;
-- `invalid` não deverá lançar erro nem rejeitar automaticamente a sincronização neste micro-passo.
+Validações executadas localmente:
 
-`productIdComparisonState` não deverá:
+- `git diff --check -- apps/api/src/modules/orders/external-order-ingestion.service.ts`
+  - aprovado;
 
-- atualizar `OrderItem.productId`;
-- criar associação automática entre produto e item;
-- criar ou alterar `ExternalOrderItemReference`;
-- alterar `itemUpdateEligibility`;
-- alterar `scalarItemReconciliationReadiness`;
-- autorizar escrita;
-- rejeitar automaticamente item desconhecido;
-- executar backfill de item legado;
-- inferir identidade por SKU, título, posição, quantidade ou preço;
-- interpretar ausência do item no payload como remoção;
-- comparar estruturalmente `variationSnapshot`;
-- persistir `productIdComparisonState`;
-- expor a estrutura por endpoint;
-- alterar timestamps de lifecycle;
-- registrar o serviço no `OrdersModule`;
-- criar conectores de marketplace;
-- alterar Prisma ou criar migration.
+- `pnpm --filter api build`
+  - aprovado;
 
-Antes de qualquer implementação, esta definição deverá ser revisada e protegida separadamente no Git.
+- `pnpm --filter api test -- external-order-ingestion.service.spec.ts`
+  - 1 suíte aprovada;
+  - 10 de 10 testes aprovados;
+
+- `pnpm --filter api test`
+  - 8 de 8 suítes aprovadas;
+  - 17 de 17 testes aprovados;
+
+- diff do serviço
+  - somente 16 linhas adicionadas;
+  - nenhum código existente removido.
+
+Os testes atuais não possuem asserção direta sobre `productIdComparisonState`, porque a estrutura permanece interna ao fluxo e ainda não produz efeito operacional observável.
+
+O próximo passo autorizado é somente revisar e proteger este checkpoint no Git.
+
+O commit deste checkpoint deverá conter apenas:
+
+- implementação de `productIdComparisonState`;
+- documentação deste checkpoint.
+
+Ainda não implementar:
+
+- atualização efetiva de `OrderItem.productId`;
+- associação ou relink automático de produto;
+- criação, atualização ou remoção efetiva de `OrderItem`;
+- criação ou alteração de `ExternalOrderItemReference`;
+- reconciliação efetiva dos itens;
+- uso de `productIdComparisonState` para executar escrita;
+- uso de `scalarItemReconciliationReadiness` para executar escrita;
+- comparação estrutural de `variationSnapshot`;
+- rejeição automática de item desconhecido;
+- associação automática ou backfill de item legado;
+- inferência de identidade por SKU, título, posição, quantidade ou preço;
+- interpretação de ausência de item no payload como remoção;
+- timestamps de lifecycle;
+- endpoints;
+- registro do serviço no `OrdersModule`;
+- conectores de marketplace;
+- alterações Prisma ou migrations.
+
+Somente depois deste checkpoint estar protegido no Git será definida separadamente a próxima evolução.
 ## 20. NÃO FAZER AINDA
 
 - não integrar Mercado Livre;

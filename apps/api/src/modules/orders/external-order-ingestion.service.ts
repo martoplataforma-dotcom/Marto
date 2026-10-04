@@ -563,6 +563,21 @@ export class ExternalOrderIngestionService {
 
                 const normalizedSku = item.sku?.trim() || null;
                 const incomingUnitPrice = new Prisma.Decimal(item.unitPrice);
+                const normalizedProductId =
+                  item.productId === undefined || item.productId === null
+                    ? null
+                    : item.productId.trim();
+
+                const productIdComparisonState =
+                  canonicalOrderItem === null
+                    ? 'not_comparable'
+                    : item.productId === undefined || item.productId === null
+                      ? 'not_provided'
+                      : normalizedProductId === ''
+                        ? 'invalid'
+                        : canonicalOrderItem.productId === normalizedProductId
+                          ? 'matches'
+                          : 'differs';
 
                 const scalarItemComparison =
                   canonicalOrderItem === null
@@ -655,6 +670,7 @@ export class ExternalOrderIngestionService {
                     externalItemReference?.id ?? null,
                   orderItemId: externalItemReference?.orderItemId ?? null,
                   canonicalOrderItem,
+                  productIdComparisonState,
                   scalarItemComparison,
                   scalarItemComparisonState,
                   scalarItemDifferences,
