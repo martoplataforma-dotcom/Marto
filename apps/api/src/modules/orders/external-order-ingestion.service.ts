@@ -30,6 +30,50 @@ export class ExternalOrderIngestionService {
     return typeof value === 'object' && value !== null && !Array.isArray(value);
   }
 
+  private areJsonValuesStructurallyEqual(
+    left: unknown,
+    right: unknown,
+  ): boolean {
+    if (left === right) {
+      return true;
+    }
+
+    if (Array.isArray(left) || Array.isArray(right)) {
+      if (
+        !Array.isArray(left) ||
+        !Array.isArray(right) ||
+        left.length !== right.length
+      ) {
+        return false;
+      }
+
+      return left.every((value, index) =>
+        this.areJsonValuesStructurallyEqual(value, right[index]),
+      );
+    }
+
+    if (this.isJsonObject(left) || this.isJsonObject(right)) {
+      if (!this.isJsonObject(left) || !this.isJsonObject(right)) {
+        return false;
+      }
+
+      const leftKeys = Object.keys(left);
+      const rightKeys = Object.keys(right);
+
+      if (leftKeys.length !== rightKeys.length) {
+        return false;
+      }
+
+      return leftKeys.every(
+        (key) =>
+          Object.prototype.hasOwnProperty.call(right, key) &&
+          this.areJsonValuesStructurallyEqual(left[key], right[key]),
+      );
+    }
+
+    return false;
+  }
+
   private mergeJsonObjects(
     existing: Record<string, unknown>,
     incoming: Record<string, unknown>,
@@ -579,6 +623,18 @@ export class ExternalOrderIngestionService {
                           ? 'matches'
                           : 'differs';
 
+                const variationComparisonState =
+                  canonicalOrderItem === null
+                    ? 'not_comparable'
+                    : item.variation === undefined
+                      ? 'not_provided'
+                      : this.areJsonValuesStructurallyEqual(
+                            canonicalOrderItem.variationSnapshot,
+                            item.variation,
+                          )
+                        ? 'matches'
+                        : 'differs';
+
                 const scalarItemComparison =
                   canonicalOrderItem === null
                     ? null
@@ -671,6 +727,7 @@ export class ExternalOrderIngestionService {
                   orderItemId: externalItemReference?.orderItemId ?? null,
                   canonicalOrderItem,
                   productIdComparisonState,
+                  variationComparisonState,
                   scalarItemComparison,
                   scalarItemComparisonState,
                   scalarItemDifferences,

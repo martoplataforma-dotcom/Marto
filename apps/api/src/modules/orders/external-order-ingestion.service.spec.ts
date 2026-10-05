@@ -1006,4 +1006,122 @@ describe('ExternalOrderIngestionService', () => {
       }),
     );
   });
+
+  describe('areJsonValuesStructurallyEqual', () => {
+    const service = new ExternalOrderIngestionService(
+      {} as unknown as PrismaService,
+    );
+
+    const compare = (left: unknown, right: unknown) =>
+      (
+        service as unknown as {
+          areJsonValuesStructurallyEqual: (
+            left: unknown,
+            right: unknown,
+          ) => boolean;
+        }
+      ).areJsonValuesStructurallyEqual(left, right);
+
+    it('treats objects with the same keys in different orders as equal', () => {
+      expect(
+        compare(
+          {
+            cor: 'preto',
+            braco: 'corda',
+          },
+          {
+            braco: 'corda',
+            cor: 'preto',
+          },
+        ),
+      ).toBe(true);
+    });
+
+    it('treats objects with different values as different', () => {
+      expect(
+        compare(
+          {
+            cor: 'preto',
+          },
+          {
+            cor: 'branco',
+          },
+        ),
+      ).toBe(false);
+    });
+
+    it('treats arrays with the same values in the same order as equal', () => {
+      expect(compare(['preto', 'corda'], ['preto', 'corda'])).toBe(true);
+    });
+
+    it('treats arrays with the same values in a different order as different', () => {
+      expect(compare(['preto', 'corda'], ['corda', 'preto'])).toBe(false);
+    });
+
+    it('compares nested objects and arrays recursively', () => {
+      expect(
+        compare(
+          {
+            acabamento: {
+              cor: 'preto',
+              opcoes: ['fosco', { braco: 'corda' }],
+            },
+          },
+          {
+            acabamento: {
+              opcoes: ['fosco', { braco: 'corda' }],
+              cor: 'preto',
+            },
+          },
+        ),
+      ).toBe(true);
+    });
+
+    it('treats null as equal only to null', () => {
+      expect(compare(null, null)).toBe(true);
+    });
+
+    it('treats null and a non-null value as different', () => {
+      expect(compare(null, {})).toBe(false);
+      expect(compare(null, 'preto')).toBe(false);
+    });
+
+    it('distinguishes a missing object key from a key explicitly set to null', () => {
+      expect(
+        compare(
+          {
+            cor: 'preto',
+          },
+          {
+            cor: 'preto',
+            braco: null,
+          },
+        ),
+      ).toBe(false);
+    });
+
+    it('treats objects with the same keys and values as equal', () => {
+      expect(
+        compare(
+          {
+            cor: 'preto',
+            braco: null,
+          },
+          {
+            cor: 'preto',
+            braco: null,
+          },
+        ),
+      ).toBe(true);
+    });
+
+    it('compares primitive values by value', () => {
+      expect(compare('preto', 'preto')).toBe(true);
+      expect(compare('preto', 'branco')).toBe(false);
+      expect(compare(2, 2)).toBe(true);
+      expect(compare(2, 3)).toBe(false);
+      expect(compare(true, true)).toBe(true);
+      expect(compare(true, false)).toBe(false);
+    });
+  });
 });

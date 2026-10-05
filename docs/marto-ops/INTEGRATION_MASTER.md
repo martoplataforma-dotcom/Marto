@@ -3382,113 +3382,133 @@ Os testes atuais ainda não possuem asserção direta sobre `productIdComparison
 
 ## 19. Próxima ação exata
 
-O próximo micro-passo proposto continua exclusivamente de leitura, comparação e análise em memória.
+O checkpoint documental que definiu `variationComparisonState` foi protegido no Git em:
 
-Estrutura prevista:
+`d6bbbb0` — `docs: define comparação estrutural de variation dos itens`
+
+A implementação de `variationComparisonState` está concluída e validada localmente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Também foram adicionados testes focados em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.spec.ts`
+
+Foi adicionado o helper privado:
+
+`areJsonValuesStructurallyEqual`
+
+Objetivo do helper:
+
+comparar valores JSON estruturalmente, sem depender da ordem textual das propriedades de objetos e sem mutar os valores comparados.
+
+Regras implementadas:
+
+- valores primitivos iguais pelo próprio valor retornam igualdade;
+- `null` somente é igual a `null`;
+- arrays:
+  - precisam possuir o mesmo tamanho;
+  - preservam relevância da ordem;
+  - são comparados recursivamente posição por posição;
+- objetos:
+  - precisam possuir o mesmo conjunto de chaves;
+  - ignoram a ordem original das propriedades;
+  - são comparados recursivamente por chave;
+  - chave ausente é diferente de chave presente com valor `null`;
+- tipos estruturais incompatíveis resultam em diferença.
+
+A implementação não:
+
+- ordena ou reescreve os objetos;
+- muta o valor recebido;
+- muta o `variationSnapshot` canônico;
+- converte ausência de propriedade em `null`.
+
+Dentro de `incomingItemMatches` foi adicionada a estrutura:
 
 `variationComparisonState`
 
-Objetivo:
-
-representar de forma explícita o estado da comparação estrutural entre `item.variation` recebido no item externo e `canonicalOrderItem.variationSnapshot`.
-
-O contrato atual possui:
-
-`variation?: Prisma.InputJsonValue`
-
-O `OrderItem` canônico possui:
-
-`variationSnapshot Json?`
-
-Por isso, ausência de `item.variation` não deverá ser interpretada como ordem para apagar um `variationSnapshot` canônico existente.
-
-Estados previstos:
+Estados implementados:
 
 - `not_comparable`
-  - quando não existe `canonicalOrderItem`;
-  - portanto, não existe item canônico seguro para comparação;
+  - quando `canonicalOrderItem === null`;
   - possui precedência sobre os demais estados.
 
 - `not_provided`
   - quando `item.variation === undefined`;
-  - significa somente que a atualização externa não forneceu uma variação para comparação;
-  - não significa remoção de `variationSnapshot`.
+  - ausência não significa remoção de `variationSnapshot`.
 
 - `matches`
-  - quando existe `canonicalOrderItem`;
-  - `item.variation` foi fornecido;
-  - o valor recebido é estruturalmente igual a `canonicalOrderItem.variationSnapshot`.
+  - quando `item.variation` foi fornecido;
+  - existe item canônico correspondente;
+  - a comparação estrutural retorna igualdade.
 
 - `differs`
-  - quando existe `canonicalOrderItem`;
-  - `item.variation` foi fornecido;
-  - o valor recebido é estruturalmente diferente de `canonicalOrderItem.variationSnapshot`.
+  - quando `item.variation` foi fornecido;
+  - existe item canônico correspondente;
+  - a comparação estrutural retorna diferença.
 
-A comparação deverá ser estrutural, e não textual.
+`variationComparisonState` foi incluído somente no objeto interno retornado por cada entrada de `incomingItemMatches`.
 
-Regras previstas para igualdade estrutural:
+Neste micro-passo:
 
-- valores primitivos devem ser comparados pelo próprio valor;
-- `null` somente é igual a `null`;
-- arrays devem:
-  - possuir o mesmo tamanho;
-  - preservar relevância da ordem;
-  - ser comparados recursivamente posição por posição;
-- objetos devem:
-  - possuir o mesmo conjunto de chaves;
-  - ignorar a ordem em que as propriedades aparecem;
-  - comparar recursivamente o valor associado a cada chave;
-  - objeto sem determinada chave é diferente de objeto que possui essa chave com valor `null`;
-  - ausência de propriedade interna não deverá ser convertida automaticamente em `null`.
+- nenhum `OrderItem` foi atualizado, criado ou removido;
+- `OrderItem.variationSnapshot` não foi alterado;
+- nenhuma `ExternalOrderItemReference` foi criada ou alterada;
+- `productIdComparisonState` não foi alterado;
+- `itemUpdateEligibility` não foi alterado;
+- `scalarItemReconciliationReadiness` não foi alterado;
+- `variationComparisonState` não autoriza escrita;
+- diferença estrutural não executa atualização automática;
+- ausência de `variation` não significa remoção;
+- item desconhecido não é rejeitado automaticamente;
+- nenhum backfill de item legado é executado;
+- identidade não é inferida por SKU, título, posição, quantidade ou preço;
+- ausência de item no payload continua sem significar remoção;
+- nenhuma persistência adicional foi criada;
+- nenhum endpoint foi adicionado;
+- nenhum timestamp de lifecycle foi alterado;
+- o serviço não foi registrado no `OrdersModule`;
+- nenhum conector de marketplace foi criado;
+- nenhuma alteração Prisma ou migration foi realizada.
 
-Exemplo de objetos que deverão ser considerados equivalentes:
+Foram adicionados 10 testes focados para `areJsonValuesStructurallyEqual`.
 
-`{"cor":"preto","braco":"corda"}`
+Casos cobertos diretamente:
 
-e:
+1. objetos com mesmas chaves e ordem diferente;
+2. objetos com valores diferentes;
+3. arrays iguais na mesma ordem;
+4. arrays com os mesmos valores em ordem diferente;
+5. objetos e arrays aninhados;
+6. `null` comparado com `null`;
+7. `null` comparado com valor não nulo;
+8. chave ausente versus chave presente com `null`;
+9. objetos com mesmas chaves e valores;
+10. primitivas iguais e diferentes.
 
-`{"braco":"corda","cor":"preto"}`
+Validações executadas localmente:
 
-A ordem das propriedades de um objeto JSON não deverá produzir diferença artificial.
+- `git diff --check` no serviço
+  - aprovado;
 
-Já a ordem dos elementos de um array continuará semanticamente relevante.
+- `git diff --check` no arquivo de testes
+  - aprovado;
 
-Regra conservadora:
+- `pnpm --filter api build`
+  - aprovado;
 
-- `undefined` não remove `variationSnapshot`;
-- ausência do campo não significa remoção;
-- diferença estrutural não autoriza atualização;
-- este micro-passo não deverá alterar `OrderItem.variationSnapshot`.
+- `pnpm --filter api test -- external-order-ingestion.service.spec.ts`
+  - 1 suíte aprovada;
+  - 20 de 20 testes aprovados;
+  - 10 testes anteriores preservados;
+  - 10 testes estruturais novos aprovados;
 
-A comparação estrutural deverá ser determinística e não deverá:
+- `pnpm --filter api test`
+  - 8 de 8 suítes aprovadas;
+  - 27 de 27 testes aprovados.
 
-- mutar o objeto recebido;
-- mutar o `variationSnapshot` canônico;
-- depender da ordem original das chaves de objetos;
-- converter automaticamente ausência em `null`;
-- interpretar ausência como remoção.
-
-`variationComparisonState` não deverá:
-
-- atualizar `OrderItem.variationSnapshot`;
-- criar, atualizar ou remover `OrderItem`;
-- criar ou alterar `ExternalOrderItemReference`;
-- alterar `productIdComparisonState`;
-- alterar `itemUpdateEligibility`;
-- alterar `scalarItemReconciliationReadiness`;
-- autorizar escrita;
-- rejeitar automaticamente item desconhecido;
-- executar backfill de item legado;
-- inferir identidade por SKU, título, posição, quantidade ou preço;
-- interpretar ausência de item no payload como remoção;
-- persistir `variationComparisonState`;
-- expor a estrutura por endpoint;
-- alterar timestamps de lifecycle;
-- registrar o serviço no `OrdersModule`;
-- criar conectores de marketplace;
-- alterar Prisma ou criar migration.
-
-Depois de `variationComparisonState`, estarão cobertas para comparação as dimensões atualmente identificadas de item:
+Com `variationComparisonState`, passam a estar cobertas para comparação as dimensões atualmente identificadas de item:
 
 - título;
 - SKU;
@@ -3497,11 +3517,38 @@ Depois de `variationComparisonState`, estarão cobertas para comparação as dim
 - `productId`;
 - `variationSnapshot`.
 
-Isso ainda não autorizará escrita automática.
+Isso ainda não significa reconciliação efetiva e não autoriza escrita automática.
 
-O passo posterior deverá ser definido separadamente e deverá consolidar essas informações em um plano seguro de reconciliação antes de qualquer atualização efetiva de `OrderItem`.
+O próximo passo autorizado é somente revisar e proteger este checkpoint no Git.
 
-Antes de qualquer implementação, esta definição deverá ser revisada e protegida separadamente no Git.
+O commit deste checkpoint deverá conter apenas:
+
+- implementação de `areJsonValuesStructurallyEqual`;
+- implementação de `variationComparisonState`;
+- testes focados da igualdade estrutural;
+- documentação deste checkpoint.
+
+Ainda não implementar:
+
+- atualização efetiva de `OrderItem.variationSnapshot`;
+- atualização efetiva de `OrderItem.productId`;
+- atualização efetiva dos campos escalares de `OrderItem`;
+- criação, remoção ou reconciliação efetiva de itens;
+- uso de `variationComparisonState` para executar escrita;
+- uso de `productIdComparisonState` para executar escrita;
+- uso de `scalarItemReconciliationReadiness` para executar escrita;
+- criação ou alteração de `ExternalOrderItemReference`;
+- rejeição automática de item desconhecido;
+- associação automática ou backfill de item legado;
+- inferência de identidade por SKU, título, posição, quantidade ou preço;
+- interpretação de ausência de item no payload como remoção;
+- timestamps de lifecycle;
+- endpoints;
+- registro do serviço no `OrdersModule`;
+- conectores de marketplace;
+- alterações Prisma ou migrations.
+
+Somente depois deste checkpoint estar protegido no Git será definido separadamente o plano consolidado de reconciliação dos itens.
 ## 20. NÃO FAZER AINDA
 
 - não integrar Mercado Livre;
