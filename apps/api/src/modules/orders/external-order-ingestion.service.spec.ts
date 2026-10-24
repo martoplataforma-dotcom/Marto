@@ -1250,4 +1250,170 @@ describe('ExternalOrderIngestionService', () => {
       ).toBe('no_changes');
     });
   });
+
+  describe('summarizeItemReconciliationPlans', () => {
+    const service = new ExternalOrderIngestionService(
+      {} as unknown as PrismaService,
+    );
+
+    type ItemReconciliationPlanState =
+      | 'blocked_not_comparable'
+      | 'blocked_invalid_product_id'
+      | 'blocked_product_relink_required'
+      | 'snapshot_changes_detected'
+      | 'no_changes';
+
+    const summarize = (states: ItemReconciliationPlanState[]) =>
+      (
+        service as unknown as {
+          summarizeItemReconciliationPlans: (
+            matches: ReadonlyArray<{
+              itemReconciliationPlanState: ItemReconciliationPlanState;
+            }>,
+          ) => {
+            totalItems: number;
+            noChanges: number;
+            snapshotChangesDetected: number;
+            blockedNotComparable: number;
+            blockedInvalidProductId: number;
+            blockedProductRelinkRequired: number;
+            blockedItems: number;
+          };
+        }
+      ).summarizeItemReconciliationPlans(
+        states.map((itemReconciliationPlanState) => ({
+          itemReconciliationPlanState,
+        })),
+      );
+
+    it('summarizes mixed reconciliation plan states', () => {
+      expect(
+        summarize([
+          'no_changes',
+          'no_changes',
+          'snapshot_changes_detected',
+          'blocked_not_comparable',
+          'blocked_invalid_product_id',
+          'blocked_product_relink_required',
+        ]),
+      ).toEqual({
+        totalItems: 6,
+        noChanges: 2,
+        snapshotChangesDetected: 1,
+        blockedNotComparable: 1,
+        blockedInvalidProductId: 1,
+        blockedProductRelinkRequired: 1,
+        blockedItems: 3,
+      });
+    });
+
+    it('returns a zeroed summary for an empty set', () => {
+      expect(summarize([])).toEqual({
+        totalItems: 0,
+        noChanges: 0,
+        snapshotChangesDetected: 0,
+        blockedNotComparable: 0,
+        blockedInvalidProductId: 0,
+        blockedProductRelinkRequired: 0,
+        blockedItems: 0,
+      });
+    });
+  });
+
+  describe('getItemReconciliationSetState', () => {
+    const service = new ExternalOrderIngestionService(
+      {} as unknown as PrismaService,
+    );
+
+    const getSetState = (input: {
+      itemUpdateEligibility:
+        | 'matched_items_only'
+        | 'blocked_unmatched'
+        | 'preserve_items';
+      itemReconciliationPlanSummary: {
+        blockedItems: number;
+        snapshotChangesDetected: number;
+      };
+    }) =>
+      (
+        service as unknown as {
+          getItemReconciliationSetState: (input: {
+            itemUpdateEligibility:
+              | 'matched_items_only'
+              | 'blocked_unmatched'
+              | 'preserve_items';
+            itemReconciliationPlanSummary: {
+              blockedItems: number;
+              snapshotChangesDetected: number;
+            };
+          }) =>
+            | 'preserve_items'
+            | 'blocked_unmatched'
+            | 'blocked_item_reconciliation'
+            | 'snapshot_changes_detected'
+            | 'no_changes';
+        }
+      ).getItemReconciliationSetState(input);
+
+    it('gives preserve_items precedence over reconciliation details', () => {
+      expect(
+        getSetState({
+          itemUpdateEligibility: 'preserve_items',
+          itemReconciliationPlanSummary: {
+            blockedItems: 2,
+            snapshotChangesDetected: 3,
+          },
+        }),
+      ).toBe('preserve_items');
+    });
+
+    it('gives blocked_unmatched precedence over reconciliation details', () => {
+      expect(
+        getSetState({
+          itemUpdateEligibility: 'blocked_unmatched',
+          itemReconciliationPlanSummary: {
+            blockedItems: 2,
+            snapshotChangesDetected: 3,
+          },
+        }),
+      ).toBe('blocked_unmatched');
+    });
+
+    it('gives blocked item reconciliation precedence over snapshot changes', () => {
+      expect(
+        getSetState({
+          itemUpdateEligibility: 'matched_items_only',
+          itemReconciliationPlanSummary: {
+            blockedItems: 1,
+            snapshotChangesDetected: 2,
+          },
+        }),
+      ).toBe('blocked_item_reconciliation');
+    });
+
+    it('detects snapshot changes when matched items have no blockers', () => {
+      expect(
+        getSetState({
+          itemUpdateEligibility: 'matched_items_only',
+          itemReconciliationPlanSummary: {
+            blockedItems: 0,
+            snapshotChangesDetected: 2,
+          },
+        }),
+      ).toBe('snapshot_changes_detected');
+    });
+
+    it('reports no changes when matched items have no blockers or changes', () => {
+      expect(
+        getSetState({
+          itemUpdateEligibility: 'matched_items_only',
+          itemReconciliationPlanSummary: {
+            blockedItems: 0,
+            snapshotChangesDetected: 0,
+          },
+        }),
+      ).toBe('no_changes');
+    });
+  });
+
 });

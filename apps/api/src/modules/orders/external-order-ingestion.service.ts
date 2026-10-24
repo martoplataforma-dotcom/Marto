@@ -88,7 +88,12 @@ export class ExternalOrderIngestionService {
       | 'matches'
       | 'differs';
     scalarItemComparisonState: 'not_comparable' | 'matches' | 'differs';
-  }) {
+  }):
+    | 'blocked_not_comparable'
+    | 'blocked_invalid_product_id'
+    | 'blocked_product_relink_required'
+    | 'snapshot_changes_detected'
+    | 'no_changes' {
     if (!input.hasCanonicalOrderItem) {
       return 'blocked_not_comparable';
     }
@@ -105,6 +110,88 @@ export class ExternalOrderIngestionService {
       input.scalarItemComparisonState === 'differs' ||
       input.variationComparisonState === 'differs'
     ) {
+      return 'snapshot_changes_detected';
+    }
+
+    return 'no_changes';
+  }
+
+  private summarizeItemReconciliationPlans(
+    matches: ReadonlyArray<{
+      itemReconciliationPlanState:
+        | 'blocked_not_comparable'
+        | 'blocked_invalid_product_id'
+        | 'blocked_product_relink_required'
+        | 'snapshot_changes_detected'
+        | 'no_changes';
+    }>,
+  ) {
+    return matches.reduce(
+      (summary, match) => {
+        summary.totalItems += 1;
+
+        switch (match.itemReconciliationPlanState) {
+          case 'no_changes':
+            summary.noChanges += 1;
+            break;
+
+          case 'snapshot_changes_detected':
+            summary.snapshotChangesDetected += 1;
+            break;
+
+          case 'blocked_not_comparable':
+            summary.blockedNotComparable += 1;
+            summary.blockedItems += 1;
+            break;
+
+          case 'blocked_invalid_product_id':
+            summary.blockedInvalidProductId += 1;
+            summary.blockedItems += 1;
+            break;
+
+          case 'blocked_product_relink_required':
+            summary.blockedProductRelinkRequired += 1;
+            summary.blockedItems += 1;
+            break;
+        }
+
+        return summary;
+      },
+      {
+        totalItems: 0,
+        noChanges: 0,
+        snapshotChangesDetected: 0,
+        blockedNotComparable: 0,
+        blockedInvalidProductId: 0,
+        blockedProductRelinkRequired: 0,
+        blockedItems: 0,
+      },
+    );
+  }
+
+  private getItemReconciliationSetState(input: {
+    itemUpdateEligibility:
+      | 'matched_items_only'
+      | 'blocked_unmatched'
+      | 'preserve_items';
+    itemReconciliationPlanSummary: {
+      blockedItems: number;
+      snapshotChangesDetected: number;
+    };
+  }) {
+    if (input.itemUpdateEligibility === 'preserve_items') {
+      return 'preserve_items';
+    }
+
+    if (input.itemUpdateEligibility === 'blocked_unmatched') {
+      return 'blocked_unmatched';
+    }
+
+    if (input.itemReconciliationPlanSummary.blockedItems > 0) {
+      return 'blocked_item_reconciliation';
+    }
+
+    if (input.itemReconciliationPlanSummary.snapshotChangesDetected > 0) {
       return 'snapshot_changes_detected';
     }
 
@@ -782,6 +869,9 @@ export class ExternalOrderIngestionService {
                 };
               });
 
+              const itemReconciliationPlanSummary =
+                this.summarizeItemReconciliationPlans(incomingItemMatches);
+
               const scalarItemComparisonSummary = incomingItemMatches.reduce(
                 (summary, match) => {
                   summary.totalItems += 1;
@@ -864,6 +954,12 @@ export class ExternalOrderIngestionService {
                   : incomingItemMatchState === 'contains_unmatched'
                     ? 'blocked_unmatched'
                     : 'preserve_items';
+
+              const itemReconciliationSetState =
+                this.getItemReconciliationSetState({
+                  itemUpdateEligibility,
+                  itemReconciliationPlanSummary,
+                });
 
               const scalarItemReconciliationReadiness =
                 itemUpdateEligibility === 'preserve_items'
