@@ -3891,6 +3891,257 @@ Ainda não implementar:
 - alterações Prisma;
 - migrations.
 
+### Agregação do conjunto de reconciliação — definição antes da implementação
+
+O checkpoint anterior implementou e validou:
+
+`itemReconciliationPlanState`
+
+Esse estado responde individualmente o que cada item recebido representa.
+
+O próximo passo deverá agregar esses estados para produzir uma visão do conjunto recebido, ainda:
+
+- somente em memória;
+- somente analítica;
+- sem atualizar `OrderItem`;
+- sem criar ou remover itens;
+- sem alterar `ExternalOrderItemReference`;
+- sem executar relink de produto;
+- sem interpretar ausência de item como remoção.
+
+A agregação não deverá substituir:
+
+- `itemIdentityState`;
+- `incomingItemMatchState`;
+- `itemUpdateEligibility`;
+- `scalarItemReconciliationReadiness`;
+- `itemReconciliationPlanState`.
+
+Cada estrutura continuará respondendo uma pergunta diferente.
+
+#### `itemReconciliationPlanSummary`
+
+Deverá ser criado um resumo quantitativo dos estados individuais.
+
+Estrutura conceitual proposta:
+
+`itemReconciliationPlanSummary`
+
+Campos:
+
+- `totalItems`
+  - quantidade total de itens recebidos e analisados.
+
+- `noChanges`
+  - quantidade de itens com `itemReconciliationPlanState === 'no_changes'`.
+
+- `snapshotChangesDetected`
+  - quantidade de itens com `itemReconciliationPlanState === 'snapshot_changes_detected'`.
+
+- `blockedNotComparable`
+  - quantidade de itens com `itemReconciliationPlanState === 'blocked_not_comparable'`.
+
+- `blockedInvalidProductId`
+  - quantidade de itens com `itemReconciliationPlanState === 'blocked_invalid_product_id'`.
+
+- `blockedProductRelinkRequired`
+  - quantidade de itens com `itemReconciliationPlanState === 'blocked_product_relink_required'`.
+
+- `blockedItems`
+  - soma de todos os estados individuais bloqueados.
+
+`blockedItems` deverá ser derivado exclusivamente de:
+
+- `blocked_not_comparable`;
+- `blocked_invalid_product_id`;
+- `blocked_product_relink_required`.
+
+O resumo não deverá:
+
+- alterar nenhum estado individual;
+- decidir escrita;
+- persistir dados;
+- ocultar o motivo específico de um bloqueio.
+
+#### `itemReconciliationSetState`
+
+Além do resumo quantitativo, deverá existir uma classificação agregada do conjunto.
+
+Nome conceitual proposto:
+
+`itemReconciliationSetState`
+
+A precedência deverá ser:
+
+##### 1. `preserve_items`
+
+Aplicar quando:
+
+`itemUpdateEligibility === 'preserve_items'`
+
+Significado:
+
+- o conjunto recebido não deve entrar em reconciliação;
+- os itens canônicos devem ser preservados;
+- nenhuma ausência deve ser interpretada como remoção.
+
+##### 2. `blocked_unmatched`
+
+Aplicar quando:
+
+`itemUpdateEligibility === 'blocked_unmatched'`
+
+Significado:
+
+- o payload contém pelo menos um item sem correspondência segura;
+- nenhuma identidade deverá ser inferida;
+- a reconciliação do conjunto permanece bloqueada.
+
+Esse estado deverá ter precedência sobre qualquer mudança detectada nos itens que conseguiram ser identificados.
+
+##### 3. `blocked_item_reconciliation`
+
+Aplicar quando:
+
+- `itemUpdateEligibility === 'matched_items_only'`;
+- e `itemReconciliationPlanSummary.blockedItems > 0`.
+
+Significado:
+
+- os itens recebidos foram associados por identidade segura;
+- porém pelo menos um item possui bloqueio individual de reconciliação.
+
+Exemplos de causas:
+
+- `productId` inválido;
+- divergência de `productId` que exige política específica de relink.
+
+`blocked_not_comparable` continua existindo no resumo individual como estado defensivo e diagnóstico.
+
+Porém, no fluxo consistente atual, quando um item recebido não possui correspondência segura por `externalItemId`, ele produz `orderItemId === null` e o conjunto é classificado antes como:
+
+`blocked_unmatched`
+
+Por isso, `blocked_not_comparable` não deverá ser tratado como causa normal de `blocked_item_reconciliation` enquanto as invariantes atuais de identidade e unicidade forem preservadas.
+
+Se houver simultaneamente:
+
+- itens sem mudança;
+- itens com mudanças candidatas de snapshot;
+- e pelo menos um item bloqueado;
+
+o estado do conjunto deverá continuar sendo:
+
+`blocked_item_reconciliation`
+
+Um bloqueio não deverá ser escondido por mudanças aparentemente seguras em outros itens.
+
+##### 4. `snapshot_changes_detected`
+
+Aplicar quando:
+
+- `itemUpdateEligibility === 'matched_items_only'`;
+- `itemReconciliationPlanSummary.blockedItems === 0`;
+- e `itemReconciliationPlanSummary.snapshotChangesDetected > 0`.
+
+Significado:
+
+- não há bloqueio individual;
+- existe pelo menos uma mudança candidata de snapshot entre os itens recebidos.
+
+Esse estado ainda não autoriza escrita.
+
+##### 5. `no_changes`
+
+Aplicar quando:
+
+- `itemUpdateEligibility === 'matched_items_only'`;
+- não existe item bloqueado;
+- não existe `snapshot_changes_detected`.
+
+Significado:
+
+- os itens recebidos e comparáveis não possuem mudanças candidatas;
+- nenhuma escrita é necessária.
+
+#### Relação com `matched_subset`
+
+`incomingItemMatchState === 'matched_subset'` deverá continuar sendo semanticamente preservado.
+
+Um conjunto parcial poderá resultar em:
+
+- `no_changes`;
+- `snapshot_changes_detected`;
+- `blocked_item_reconciliation`;
+
+desde que os itens efetivamente recebidos estejam associados por identidade segura.
+
+Isso não deverá significar que o conjunto canônico inteiro foi recebido.
+
+Itens canônicos ausentes do payload deverão continuar preservados.
+
+Ausência no payload não deverá significar:
+
+- remoção;
+- cancelamento;
+- redução de quantidade;
+- desvinculação;
+- criação de evento;
+- necessidade automática de correção.
+
+#### Relação com `scalarItemReconciliationReadiness`
+
+`scalarItemReconciliationReadiness` deverá continuar existindo como leitura específica das diferenças escalares.
+
+A nova agregação não deverá substituí-lo.
+
+A diferença é:
+
+- `scalarItemReconciliationReadiness`
+  - observa somente o escopo escalar;
+
+- `itemReconciliationSetState`
+  - consolida a intenção geral do conjunto considerando:
+    - correspondência dos itens;
+    - bloqueios de `productId`;
+    - diferenças de `variation`;
+    - diferenças escalares.
+
+#### Regras conservadoras
+
+A agregação deverá ser determinística.
+
+Ela não deverá:
+
+- executar `update` em `OrderItem`;
+- atualizar snapshots;
+- alterar `productId`;
+- executar relink;
+- criar ou remover `OrderItem`;
+- criar ou alterar `ExternalOrderItemReference`;
+- inferir identidade;
+- executar backfill;
+- transformar ausência de item em remoção;
+- persistir `itemReconciliationPlanSummary`;
+- persistir `itemReconciliationSetState`;
+- criar endpoint;
+- criar evento;
+- criar conector;
+- alterar Prisma;
+- criar migration.
+
+#### Etapa posterior
+
+Somente depois dessa agregação estar implementada, testada e protegida no Git deverá ser definida separadamente qualquer política de escrita efetiva.
+
+A existência de:
+
+`snapshot_changes_detected`
+
+não deverá, por si só, autorizar atualização de `OrderItem`.
+
+A política de escrita deverá ser um checkpoint posterior e explícito.
+
 ## 20. NÃO FAZER AINDA
 
 - não integrar Mercado Livre;
