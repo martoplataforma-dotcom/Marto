@@ -3548,7 +3548,220 @@ Ainda não implementar:
 - conectores de marketplace;
 - alterações Prisma ou migrations.
 
-Somente depois deste checkpoint estar protegido no Git será definido separadamente o plano consolidado de reconciliação dos itens.
+O checkpoint acima foi protegido no Git em `aaf3040`. A partir dele, inicia-se abaixo a definição separada do plano consolidado de reconciliação dos itens.
+
+### Plano consolidado de reconciliação dos itens — definição antes da implementação
+
+Depois dos checkpoints já protegidos para:
+
+- comparação dos campos escalares;
+- `productIdComparisonState`;
+- `variationComparisonState`;
+
+o próximo passo deverá consolidar essas informações em uma decisão por item.
+
+Essa nova estrutura continuará:
+
+- somente em memória;
+- somente analítica;
+- sem atualizar `OrderItem`;
+- sem alterar `ExternalOrderItemReference`;
+- sem criar ou remover itens;
+- sem executar relink de produto;
+- sem interpretar ausência de item como remoção.
+
+Nome conceitual proposto:
+
+`itemReconciliationPlanState`
+
+A estrutura deverá respeitar a identidade já resolvida por:
+
+`externalItemId -> ExternalOrderItemReference -> orderItemId -> OrderItem`
+
+Nenhuma identidade deverá ser inferida por:
+
+- SKU;
+- título;
+- posição;
+- quantidade;
+- preço;
+- `productId`;
+- `variation`.
+
+#### Precedência proposta
+
+A classificação deverá usar a seguinte precedência conservadora.
+
+##### 1. `blocked_not_comparable`
+
+Aplicar quando não existe `canonicalOrderItem`.
+
+Significado:
+
+- não existe item canônico seguro para comparar;
+- nenhuma atualização pode ser considerada segura;
+- nenhuma tentativa de associação automática deverá ocorrer.
+
+##### 2. `blocked_invalid_product_id`
+
+Aplicar quando:
+
+`productIdComparisonState === 'invalid'`
+
+Significado:
+
+- o campo foi fornecido;
+- depois de normalização o valor é inválido;
+- isso não autoriza remoção do vínculo existente;
+- isso não autoriza relink;
+- nenhuma atualização automática relacionada ao produto deverá ocorrer.
+
+##### 3. `blocked_product_relink_required`
+
+Aplicar quando:
+
+`productIdComparisonState === 'differs'`
+
+Significado:
+
+- existe item canônico correspondente;
+- existe `productId` externo válido;
+- o `productId` recebido é diferente do vínculo canônico atual.
+
+Essa situação não deverá ser tratada como atualização comum de snapshot.
+
+Especialmente:
+
+- diferença de `productId` não deverá ser misturada com diferença de título, SKU, quantidade, preço ou variação;
+- nenhum relink automático deverá ocorrer;
+- a divergência deverá permanecer bloqueada para uma política específica futura de vínculo entre `OrderItem` e `Product`.
+
+Se houver simultaneamente:
+
+- diferença escalar;
+- diferença de `variation`;
+- e diferença de `productId`;
+
+a precedência deverá continuar sendo:
+
+`blocked_product_relink_required`
+
+Isso evita que uma possível troca de produto seja escondida dentro de uma atualização aparentemente comum de item.
+
+##### 4. `snapshot_changes_detected`
+
+Aplicar somente quando:
+
+- existe `canonicalOrderItem`;
+- `productIdComparisonState` é `matches` ou `not_provided`;
+- e pelo menos uma das condições abaixo é verdadeira:
+  - existe diferença nos campos escalares;
+  - `variationComparisonState === 'differs'`.
+
+Os campos de snapshot atualmente considerados são:
+
+- `titleSnapshot`;
+- `skuSnapshot`;
+- `quantity`;
+- `unitPrice`;
+- `variationSnapshot`.
+
+Esse estado significa somente:
+
+há mudanças candidatas nos dados do item.
+
+Ele ainda não autoriza escrita.
+
+Não deverá:
+
+- executar `update` em `OrderItem`;
+- persistir `variationSnapshot`;
+- alterar `productId`;
+- atualizar referências externas;
+- criar eventos;
+- disparar automações.
+
+##### 5. `no_changes`
+
+Aplicar quando:
+
+- existe `canonicalOrderItem`;
+- todos os campos escalares comparáveis são iguais;
+- `productIdComparisonState` é `matches` ou `not_provided`;
+- `variationComparisonState` é `matches` ou `not_provided`.
+
+Significado:
+
+- nenhuma alteração candidata foi detectada para o item recebido;
+- nenhuma escrita é necessária.
+
+#### Campos opcionais e preservação
+
+O contrato atual de `NormalizedExternalOrderItem` define:
+
+- `productId?: string | null`;
+- `sku?: string | null`;
+- `variation?: Prisma.InputJsonValue`.
+
+Portanto:
+
+- ausência de `productId` não significa remover `OrderItem.productId`;
+- `productId: null` também não significa remover o vínculo canônico;
+- ausência de `variation` não significa remover `variationSnapshot`;
+- ausência de item no payload não significa remover o `OrderItem` correspondente.
+
+#### Conjunto parcial de itens
+
+`incomingItemMatchState === 'matched_subset'` deverá continuar sendo permitido para análise dos itens efetivamente recebidos.
+
+Os itens canônicos não presentes no payload deverão ser preservados.
+
+Um payload parcial não deverá ser convertido automaticamente em:
+
+- remoção de item;
+- cancelamento de item;
+- redução do conjunto canônico;
+- desvinculação de referência externa.
+
+#### Relação com estruturas existentes
+
+`itemReconciliationPlanState` não deverá substituir:
+
+- `itemIdentityState`;
+- `incomingItemMatchState`;
+- `itemUpdateEligibility`;
+- `scalarItemReconciliationReadiness`;
+- `productIdComparisonState`;
+- `variationComparisonState`.
+
+A nova camada deverá apenas consolidar as informações já produzidas por essas estruturas em uma intenção segura por item.
+
+#### Etapa posterior
+
+Depois da classificação individual estar definida e validada, poderá ser criada separadamente uma agregação do conjunto de itens para distinguir, por exemplo:
+
+- conjunto sem mudanças;
+- conjunto com mudanças candidatas de snapshot;
+- conjunto contendo bloqueios;
+- conjunto preservado por ausência ou falta de identidade segura.
+
+Essa agregação também deverá ser inicialmente somente de leitura e em memória.
+
+Ainda não implementar nesta etapa:
+
+- atualização efetiva de snapshots;
+- atualização ou troca de `productId`;
+- criação de novos `OrderItem`;
+- remoção de `OrderItem`;
+- reconciliação automática de item desconhecido;
+- backfill de referências;
+- inferência de identidade;
+- persistência de estados analíticos;
+- endpoints;
+- conectores;
+- alterações Prisma;
+- migrations.
+
 ## 20. NÃO FAZER AINDA
 
 - não integrar Mercado Livre;
