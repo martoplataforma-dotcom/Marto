@@ -3762,6 +3762,135 @@ Ainda não implementar nesta etapa:
 - alterações Prisma;
 - migrations.
 
+### Implementação de `itemReconciliationPlanState`
+
+A definição do plano consolidado de reconciliação dos itens foi protegida anteriormente no Git em:
+
+`1283c5c` — `docs: define plano consolidado de reconciliacao dos itens`
+
+A primeira implementação de `itemReconciliationPlanState` foi concluída localmente em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+Foi adicionado o helper privado:
+
+`getItemReconciliationPlanState`
+
+O helper recebe somente informações já calculadas em memória:
+
+- existência ou não de `canonicalOrderItem`;
+- `productIdComparisonState`;
+- `variationComparisonState`;
+- `scalarItemComparisonState`.
+
+Ele não consulta o banco e não executa persistência.
+
+A precedência implementada é:
+
+1. `blocked_not_comparable`
+   - quando não existe `canonicalOrderItem`.
+
+2. `blocked_invalid_product_id`
+   - quando `productIdComparisonState === 'invalid'`.
+
+3. `blocked_product_relink_required`
+   - quando `productIdComparisonState === 'differs'`.
+
+4. `snapshot_changes_detected`
+   - quando existe item canônico;
+   - o `productId` não está bloqueado;
+   - e existe diferença escalar ou diferença de `variation`.
+
+5. `no_changes`
+   - quando nenhuma das condições anteriores é atendida.
+
+Essa precedência garante especialmente que:
+
+- ausência de item canônico bloqueia a reconciliação;
+- `productId` inválido vence sobre diferenças de snapshot;
+- divergência de `productId` vence sobre diferenças escalares ou de `variation`;
+- uma possível troca de produto não é escondida dentro de uma atualização comum de snapshot.
+
+Dentro de `incomingItemMatches`, cada item recebido passa a carregar também:
+
+`itemReconciliationPlanState`
+
+Esse estado continua exclusivamente interno e analítico.
+
+Neste checkpoint:
+
+- nenhum `OrderItem` foi atualizado;
+- nenhum `OrderItem` foi criado;
+- nenhum `OrderItem` foi removido;
+- nenhum `OrderItem.productId` foi alterado;
+- nenhum `variationSnapshot` foi persistido;
+- nenhuma diferença escalar foi persistida;
+- nenhuma `ExternalOrderItemReference` foi criada ou alterada;
+- nenhum relink automático de produto foi executado;
+- nenhuma identidade foi inferida por SKU, título, posição, quantidade, preço, `productId` ou `variation`;
+- ausência de item no payload continua sem significar remoção;
+- `itemUpdateEligibility` não foi alterado;
+- `scalarItemReconciliationReadiness` não foi alterado;
+- nenhum endpoint foi criado;
+- nenhum evento adicional foi criado;
+- nenhum conector foi criado;
+- nenhuma alteração Prisma ou migration foi realizada.
+
+Foram adicionados 7 testes focados para `getItemReconciliationPlanState`.
+
+Casos cobertos diretamente:
+
+1. ausência de item canônico resulta em `blocked_not_comparable`;
+2. `productId` inválido possui precedência sobre diferenças de snapshot;
+3. divergência de `productId` possui precedência sobre diferenças de snapshot;
+4. diferença escalar com identidade de produto segura resulta em `snapshot_changes_detected`;
+5. diferença de `variation` com identidade de produto segura resulta em `snapshot_changes_detected`;
+6. valores fornecidos e iguais resultam em `no_changes`;
+7. ausência de `productId` e `variation`, sem diferença escalar, resulta em `no_changes`.
+
+Validações executadas localmente:
+
+- `git diff --check`
+  - aprovado para o serviço e o arquivo de testes;
+
+- `pnpm --filter api build`
+  - aprovado;
+
+- `pnpm --filter api test -- external-order-ingestion.service.spec.ts`
+  - 1 suíte aprovada;
+  - 27 de 27 testes aprovados;
+  - 7 testes novos de `getItemReconciliationPlanState` aprovados;
+
+- `pnpm --filter api test`
+  - 8 de 8 suítes aprovadas;
+  - 34 de 34 testes aprovados.
+
+A implementação atual ainda não constitui reconciliação efetiva.
+
+Ela apenas transforma as comparações já existentes em uma intenção segura por item.
+
+A etapa seguinte prevista é avaliar uma agregação do conjunto de `itemReconciliationPlanState` para distinguir, ainda somente em memória:
+
+- conjunto sem mudanças;
+- conjunto com mudanças candidatas;
+- conjunto contendo bloqueios;
+- conjunto que deve ser preservado.
+
+Ainda não implementar:
+
+- escrita efetiva dos snapshots;
+- atualização de `productId`;
+- relink de produto;
+- criação ou remoção de itens;
+- reconciliação automática de item desconhecido;
+- backfill;
+- inferência de identidade;
+- persistência dos estados analíticos;
+- endpoints;
+- conectores;
+- alterações Prisma;
+- migrations.
+
 ## 20. NÃO FAZER AINDA
 
 - não integrar Mercado Livre;

@@ -1124,4 +1124,130 @@ describe('ExternalOrderIngestionService', () => {
       expect(compare(true, false)).toBe(false);
     });
   });
+
+  describe('getItemReconciliationPlanState', () => {
+    const service = new ExternalOrderIngestionService(
+      {} as unknown as PrismaService,
+    );
+
+    const getPlanState = (input: {
+      hasCanonicalOrderItem: boolean;
+      productIdComparisonState:
+        | 'not_comparable'
+        | 'not_provided'
+        | 'invalid'
+        | 'matches'
+        | 'differs';
+      variationComparisonState:
+        | 'not_comparable'
+        | 'not_provided'
+        | 'matches'
+        | 'differs';
+      scalarItemComparisonState: 'not_comparable' | 'matches' | 'differs';
+    }) =>
+      (
+        service as unknown as {
+          getItemReconciliationPlanState: (input: {
+            hasCanonicalOrderItem: boolean;
+            productIdComparisonState:
+              | 'not_comparable'
+              | 'not_provided'
+              | 'invalid'
+              | 'matches'
+              | 'differs';
+            variationComparisonState:
+              | 'not_comparable'
+              | 'not_provided'
+              | 'matches'
+              | 'differs';
+            scalarItemComparisonState:
+              | 'not_comparable'
+              | 'matches'
+              | 'differs';
+          }) =>
+            | 'blocked_not_comparable'
+            | 'blocked_invalid_product_id'
+            | 'blocked_product_relink_required'
+            | 'snapshot_changes_detected'
+            | 'no_changes';
+        }
+      ).getItemReconciliationPlanState(input);
+
+    it('blocks when there is no canonical order item', () => {
+      expect(
+        getPlanState({
+          hasCanonicalOrderItem: false,
+          productIdComparisonState: 'not_comparable',
+          variationComparisonState: 'not_comparable',
+          scalarItemComparisonState: 'not_comparable',
+        }),
+      ).toBe('blocked_not_comparable');
+    });
+
+    it('gives invalid productId precedence over snapshot differences', () => {
+      expect(
+        getPlanState({
+          hasCanonicalOrderItem: true,
+          productIdComparisonState: 'invalid',
+          variationComparisonState: 'differs',
+          scalarItemComparisonState: 'differs',
+        }),
+      ).toBe('blocked_invalid_product_id');
+    });
+
+    it('gives product relink precedence over snapshot differences', () => {
+      expect(
+        getPlanState({
+          hasCanonicalOrderItem: true,
+          productIdComparisonState: 'differs',
+          variationComparisonState: 'differs',
+          scalarItemComparisonState: 'differs',
+        }),
+      ).toBe('blocked_product_relink_required');
+    });
+
+    it('detects scalar snapshot changes when product identity is safe', () => {
+      expect(
+        getPlanState({
+          hasCanonicalOrderItem: true,
+          productIdComparisonState: 'matches',
+          variationComparisonState: 'matches',
+          scalarItemComparisonState: 'differs',
+        }),
+      ).toBe('snapshot_changes_detected');
+    });
+
+    it('detects variation snapshot changes when product identity is safe', () => {
+      expect(
+        getPlanState({
+          hasCanonicalOrderItem: true,
+          productIdComparisonState: 'not_provided',
+          variationComparisonState: 'differs',
+          scalarItemComparisonState: 'matches',
+        }),
+      ).toBe('snapshot_changes_detected');
+    });
+
+    it('reports no changes when all provided values match', () => {
+      expect(
+        getPlanState({
+          hasCanonicalOrderItem: true,
+          productIdComparisonState: 'matches',
+          variationComparisonState: 'matches',
+          scalarItemComparisonState: 'matches',
+        }),
+      ).toBe('no_changes');
+    });
+
+    it('preserves missing productId and variation as no changes', () => {
+      expect(
+        getPlanState({
+          hasCanonicalOrderItem: true,
+          productIdComparisonState: 'not_provided',
+          variationComparisonState: 'not_provided',
+          scalarItemComparisonState: 'matches',
+        }),
+      ).toBe('no_changes');
+    });
+  });
 });

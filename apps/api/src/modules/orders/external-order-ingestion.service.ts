@@ -74,6 +74,43 @@ export class ExternalOrderIngestionService {
     return false;
   }
 
+  private getItemReconciliationPlanState(input: {
+    hasCanonicalOrderItem: boolean;
+    productIdComparisonState:
+      | 'not_comparable'
+      | 'not_provided'
+      | 'invalid'
+      | 'matches'
+      | 'differs';
+    variationComparisonState:
+      | 'not_comparable'
+      | 'not_provided'
+      | 'matches'
+      | 'differs';
+    scalarItemComparisonState: 'not_comparable' | 'matches' | 'differs';
+  }) {
+    if (!input.hasCanonicalOrderItem) {
+      return 'blocked_not_comparable';
+    }
+
+    if (input.productIdComparisonState === 'invalid') {
+      return 'blocked_invalid_product_id';
+    }
+
+    if (input.productIdComparisonState === 'differs') {
+      return 'blocked_product_relink_required';
+    }
+
+    if (
+      input.scalarItemComparisonState === 'differs' ||
+      input.variationComparisonState === 'differs'
+    ) {
+      return 'snapshot_changes_detected';
+    }
+
+    return 'no_changes';
+  }
+
   private mergeJsonObjects(
     existing: Record<string, unknown>,
     incoming: Record<string, unknown>,
@@ -659,6 +696,14 @@ export class ExternalOrderIngestionService {
                       ? 'matches'
                       : 'differs';
 
+                const itemReconciliationPlanState =
+                  this.getItemReconciliationPlanState({
+                    hasCanonicalOrderItem: canonicalOrderItem !== null,
+                    productIdComparisonState,
+                    variationComparisonState,
+                    scalarItemComparisonState,
+                  });
+
                 const scalarItemDifferences =
                   scalarItemComparison === null
                     ? null
@@ -730,6 +775,7 @@ export class ExternalOrderIngestionService {
                   variationComparisonState,
                   scalarItemComparison,
                   scalarItemComparisonState,
+                  itemReconciliationPlanState,
                   scalarItemDifferences,
                   scalarItemDifferenceScope,
                   scalarItemDifferenceDetails,
