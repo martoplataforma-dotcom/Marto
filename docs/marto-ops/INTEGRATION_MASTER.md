@@ -4142,6 +4142,256 @@ não deverá, por si só, autorizar atualização de `OrderItem`.
 
 A política de escrita deverá ser um checkpoint posterior e explícito.
 
+### Política de escrita efetiva de OrderItem — definição antes da implementação
+
+Com a agregação de `itemReconciliationPlanState` já implementada e protegida, fica definida a política que deverá controlar uma futura escrita dos snapshots de `OrderItem`.
+
+Este checkpoint continua apenas documental.
+
+Nenhuma escrita de item será implementada nesta etapa.
+
+#### Princípio geral
+
+A sincronização externa somente poderá alterar um `OrderItem` já existente quando:
+
+- a sincronização não estiver classificada como stale;
+- o pedido possuir identidade externa de itens estruturalmente confiável;
+- o item recebido estiver ligado ao item canônico exclusivamente por:
+
+`externalItemId -> ExternalOrderItemReference -> orderItemId -> OrderItem`
+
+- `itemUpdateEligibility === 'matched_items_only'`;
+- `itemReconciliationSetState === 'snapshot_changes_detected'`;
+- não existir qualquer bloqueio individual no conjunto recebido.
+
+A existência isolada de uma diferença não autoriza escrita.
+
+#### Estados do conjunto e efeito futuro
+
+`preserve_items`
+
+- não executar escrita de `OrderItem`;
+- preservar integralmente os itens canônicos.
+
+`blocked_unmatched`
+
+- não executar escrita de nenhum item do conjunto recebido;
+- não inferir identidade;
+- não criar automaticamente novo `OrderItem`.
+
+`blocked_item_reconciliation`
+
+- não executar escrita de nenhum item do conjunto recebido;
+- mesmo que outros itens possuam mudanças aparentemente seguras, a existência de pelo menos um bloqueio impede a reconciliação daquele conjunto.
+
+`no_changes`
+
+- não executar escrita de `OrderItem`.
+
+`snapshot_changes_detected`
+
+- representa o único estado agregado candidato a futura atualização de snapshots;
+- ainda deverá respeitar as regras individuais de cada campo;
+- somente os itens efetivamente recebidos e identificados poderão ser considerados.
+
+#### Política por campo
+
+##### `titleSnapshot`
+
+`title` é obrigatório no contrato normalizado.
+
+Quando o item estiver elegível e o valor recebido após `trim()` for diferente do snapshot atual:
+
+- poderá atualizar `titleSnapshot`.
+
+Valor igual:
+
+- não deverá gerar escrita.
+
+##### `quantity`
+
+`quantity` é obrigatório e já passa pela validação estrutural comum.
+
+Quando o item estiver elegível e a quantidade recebida for diferente da persistida:
+
+- poderá atualizar `quantity`.
+
+Valor igual:
+
+- não deverá gerar escrita.
+
+##### `unitPrice`
+
+`unitPrice` é obrigatório e já passa pela validação estrutural comum.
+
+A comparação deverá continuar utilizando `Prisma.Decimal`.
+
+Quando o item estiver elegível e o valor recebido for diferente do persistido:
+
+- poderá atualizar `unitPrice`.
+
+Valor equivalente:
+
+- não deverá gerar escrita.
+
+##### `variationSnapshot`
+
+`variation` permanece opcional.
+
+Semântica:
+
+- `variation === undefined` -> não informado nesta sincronização;
+- preservar `variationSnapshot`;
+- não considerar ausência como remoção.
+
+Quando `variation` for fornecida:
+
+- comparar estruturalmente utilizando a regra já implementada;
+- valor estruturalmente igual -> nenhuma escrita;
+- valor estruturalmente diferente -> poderá atualizar `variationSnapshot`, desde que todo o conjunto esteja elegível.
+
+##### `skuSnapshot`
+
+O contrato atual permite:
+
+`sku?: string | null`
+
+A futura atualização deverá adotar semântica conservadora:
+
+- `sku === undefined` -> SKU não informado nesta sincronização -> preservar;
+- `sku === null` -> SKU não informado nesta sincronização -> preservar;
+- string vazia após `trim()` -> SKU não informado nesta sincronização -> preservar;
+- somente string não vazia deverá participar da comparação de atualização.
+
+Para uma string não vazia:
+
+- valor igual ao `skuSnapshot` atual -> nenhuma escrita;
+- valor diferente -> mudança candidata de snapshot.
+
+Este contrato não possuirá, neste estágio, comando implícito para apagar um SKU existente.
+
+Caso no futuro seja necessário permitir limpeza explícita de SKU, isso deverá possuir semântica própria e deliberada no contrato, sem reutilizar ausência, `null` ou string vazia como comando destrutivo.
+
+#### Pré-condição técnica para SKU
+
+A comparação atualmente existente normaliza:
+
+`item.sku?.trim() || null`
+
+Essa expressão torna indistinguíveis:
+
+- `undefined`;
+- `null`;
+- string vazia;
+- string contendo apenas espaços.
+
+No fluxo de atualização, isso pode fazer a ausência de SKU parecer uma divergência em relação a um `skuSnapshot` já persistido.
+
+Portanto, antes de habilitar qualquer escrita efetiva de `OrderItem`, a comparação de SKU deverá ser ajustada para preservar a distinção entre:
+
+- SKU efetivamente fornecido;
+- SKU não informado.
+
+A política de escrita não deverá ser implementada enquanto essa pré-condição não estiver protegida por testes.
+
+#### `productId`
+
+`productId` não faz parte dos snapshots atualizáveis automaticamente.
+
+Semântica já protegida:
+
+- `undefined` -> preservar relação atual;
+- `null` -> preservar relação atual;
+- valor igual -> nenhuma alteração;
+- valor inválido -> bloquear reconciliação;
+- valor diferente -> bloquear reconciliação e exigir política específica de relink.
+
+A sincronização normal nunca deverá executar automaticamente:
+
+- troca de `OrderItem.productId`;
+- relink para outro `Product`;
+- desvinculação do produto atual.
+
+#### Conjunto parcial
+
+`matched_subset` continua permitido.
+
+Quando somente parte dos itens canônicos estiver presente no payload:
+
+- analisar somente os itens recebidos;
+- atualizar futuramente somente os itens recebidos que estiverem elegíveis;
+- preservar integralmente os itens canônicos ausentes.
+
+Ausência de item no payload não significa:
+
+- remoção;
+- cancelamento;
+- redução da quantidade daquele item;
+- desvinculação;
+- criação de evento;
+- necessidade automática de correção.
+
+#### Atomicidade do conjunto recebido
+
+Se qualquer item recebido produzir bloqueio que resulte em:
+
+`blocked_item_reconciliation`
+
+nenhum `OrderItem` daquele conjunto recebido deverá ser atualizado.
+
+Não deverá existir reconciliação parcial em que:
+
+- um item bloqueado permaneça intacto;
+- enquanto outro item do mesmo payload seja atualizado.
+
+O bloqueio do conjunto deverá vencer sobre mudanças candidatas de snapshot.
+
+Essa regra reduz o risco de persistir um estado parcialmente reconciliado quando o mesmo payload contém uma divergência de identidade ou de produto ainda não resolvida.
+
+#### Idempotência
+
+A futura implementação deverá construir atualização somente para campos realmente diferentes e autorizados.
+
+Uma nova sincronização com os mesmos valores já persistidos deverá:
+
+- não executar atualização desnecessária de `OrderItem`;
+- não criar `OrderItem`;
+- não remover `OrderItem`;
+- não alterar `ExternalOrderItemReference`;
+- não gerar evento adicional.
+
+#### Eventos e lifecycle
+
+Mudanças de snapshot de item, por si só, não deverão neste estágio:
+
+- criar `OrderEvent`;
+- alterar timestamps de lifecycle;
+- alterar `Order.status`;
+- disparar automações operacionais.
+
+Qualquer uma dessas consequências deverá possuir regra própria e explícita em checkpoint posterior.
+
+#### Fora do escopo
+
+Esta política não autoriza ainda:
+
+- execução de `tx.orderItem.update`;
+- criação de novo `OrderItem` durante atualização;
+- remoção de `OrderItem`;
+- cancelamento de item;
+- alteração de `productId`;
+- relink de produto;
+- criação ou alteração de `ExternalOrderItemReference`;
+- bootstrap/backfill de pedidos legados;
+- associação por SKU, título, posição, quantidade, preço, `productId` ou `variation`;
+- persistência dos estados analíticos de reconciliação;
+- endpoints;
+- conectores;
+- alterações Prisma;
+- migrations.
+
+O próximo passo técnico, antes de qualquer escrita de `OrderItem`, deverá ser corrigir e testar a semântica de comparação de `sku` no fluxo de atualização.
+
 ## 20. NÃO FAZER AINDA
 
 - não integrar Mercado Livre;
