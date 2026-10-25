@@ -4575,3 +4575,226 @@ Ainda não fazer:
 - remoção automática de itens;
 - relink automático de `productId`;
 - bootstrap/backfill automático de itens legados.
+
+### Micro-checkpoint — definição da criação segura de item externo novo em pedido existente
+
+O checkpoint anterior foi implementado, validado e protegido no Git em:
+
+`a77cd68` — `feat(orders): aplica escrita segura de snapshots de itens`
+
+Nesse estado:
+
+- `externalItemId` já conhecido pode localizar e atualizar com segurança o mesmo `OrderItem`;
+- snapshots autorizados podem ser atualizados de forma conservadora;
+- `productId` não sofre relink automático;
+- itens desconhecidos continuam classificados como conjunto bloqueado;
+- nenhum novo `OrderItem` é criado durante update.
+
+O próximo comportamento a ser preparado é a criação segura de um item externo realmente novo em um pedido já existente.
+
+Este checkpoint é somente de definição.
+
+Nenhuma criação de item será implementada ainda.
+
+#### Pré-condição estrutural
+
+Um `externalItemId` desconhecido somente poderá futuramente ser considerado candidato a item novo quando o estado do pedido existente, antes de aplicar o payload, for:
+
+`itemIdentityState === 'identified_complete'`
+
+Isso significa que:
+
+- o pedido já possui `OrderItem` canônicos;
+- todos os itens canônicos existentes possuem identidade externa vinculada;
+- todas as `ExternalOrderItemReference` existentes apontam para itens daquele mesmo pedido;
+- não existe lacuna de identidade anterior a ser inferida.
+
+Os seguintes estados não poderão criar automaticamente um novo item:
+
+- `legacy_unlinked`;
+- `inconsistent`;
+- `empty_unidentified`;
+- qualquer estado em que a identidade anterior dos itens não seja confiável.
+
+Em pedido legado sem referências de item, um `externalItemId` desconhecido não poderá ser interpretado como item novo.
+
+#### Identidade
+
+A única identidade permitida continuará sendo:
+
+`externalItemId -> ExternalOrderItemReference -> OrderItem`
+
+Não será permitido inferir que um item recebido é novo ou corresponde a item existente utilizando:
+
+- título;
+- SKU;
+- posição no array;
+- quantidade;
+- preço;
+- `productId`;
+- `variation`;
+- combinação desses campos.
+
+#### Validação do item candidato
+
+O item candidato continuará passando pelas validações estruturais comuns:
+
+- `externalItemId` obrigatório e não vazio;
+- `externalItemId` único dentro do payload;
+- título obrigatório após normalização;
+- `quantity` inteira e maior que zero;
+- `unitPrice` válido, finito e não negativo.
+
+#### productId do item novo
+
+Para item externo novo:
+
+- `productId === undefined` -> criar futuramente com `productId = null`;
+- `productId === null` -> criar futuramente com `productId = null`;
+- string vazia após `trim()` -> item não elegível para criação;
+- valor informado -> deverá existir e pertencer ao mesmo `Merchant` do `SalesChannel`;
+- produto inexistente ou de outro Merchant -> bloquear as escritas de item daquele conjunto;
+- nunca criar `Product` fictício;
+- nunca executar relink automático.
+
+#### Snapshots iniciais
+
+Quando a criação for futuramente autorizada, o novo `OrderItem` deverá nascer com:
+
+- `titleSnapshot` normalizado;
+- `skuSnapshot` normalizado ou `null` quando não informado;
+- `variationSnapshot` conforme valor recebido, quando fornecido;
+- `quantity`;
+- `unitPrice`;
+- `productId` validado ou `null`.
+
+#### Criação atômica da identidade
+
+Um novo item externo nunca poderá ser persistido apenas como `OrderItem`.
+
+A futura escrita deverá criar, dentro da mesma transação:
+
+`OrderItem + ExternalOrderItemReference`
+
+A referência deverá utilizar:
+
+- o `OrderItem.id` recém-criado;
+- a `ExternalOrderReference.id` do pedido já existente;
+- o `externalItemId` recebido.
+
+Se a criação da referência falhar, a criação do `OrderItem` também deverá sofrer rollback.
+
+Não poderá existir `OrderItem` externo novo sem identidade de linha associada.
+
+#### Payload parcial
+
+A existência de item novo em um payload não transforma o payload em snapshot completo do pedido.
+
+Itens canônicos existentes omitidos continuam preservados.
+
+Ausência continua sem significar:
+
+- remoção;
+- cancelamento;
+- redução de conjunto;
+- desvinculação;
+- correção automática.
+
+#### Conjunto misto
+
+Um mesmo payload poderá futuramente conter:
+
+- itens externos já conhecidos sem mudanças;
+- itens conhecidos com mudanças autorizadas de snapshot;
+- itens externos novos candidatos à criação.
+
+As escritas de item daquele payload deverão ser tratadas como um único conjunto atômico.
+
+Antes de executar qualquer escrita de item:
+
+- todos os itens recebidos deverão ser classificados;
+- todos os candidatos novos deverão ser validados;
+- todos os bloqueios deverão ser conhecidos.
+
+Se existir bloqueio de reconciliação no conjunto:
+
+- não atualizar snapshots de itens conhecidos daquele payload;
+- não criar novos `OrderItem`;
+- não criar novas `ExternalOrderItemReference`.
+
+Campos independentes do pedido e da referência externa continuarão seguindo suas regras próprias já definidas.
+
+#### Idempotência
+
+Depois que um item externo novo for criado e sua `ExternalOrderItemReference` persistida:
+
+- uma nova sincronização com o mesmo `externalItemId` deverá localizá-lo como item conhecido;
+- não deverá criar outro `OrderItem`;
+- não deverá criar outra referência;
+- valores iguais não deverão gerar update desnecessário.
+
+As constraints existentes continuam sendo proteção adicional:
+
+- `(externalOrderReferenceId, externalItemId)` único;
+- `(externalOrderReferenceId, orderItemId)` único.
+
+#### Concorrência
+
+A futura criação de item durante update introduzirá risco de duas sincronizações concorrentes tentarem criar a mesma referência externa.
+
+O update atualmente trata retry transacional para:
+
+`P2034`
+
+Antes de habilitar criação de `ExternalOrderItemReference` nesse fluxo, deverá ser avaliada e protegida também a colisão de unicidade:
+
+`P2002`
+
+A política deverá preservar:
+
+- nenhuma duplicação de `OrderItem`;
+- nenhuma duplicação de `ExternalOrderItemReference`;
+- nenhuma escrita parcial;
+- revalidação transacional após retry.
+
+#### Remoção continua fora do escopo
+
+A criação de item novo não autorizará:
+
+- remover item ausente;
+- cancelar item ausente;
+- reduzir automaticamente o conjunto canônico;
+- apagar `ExternalOrderItemReference`;
+- relink de `productId`;
+- bootstrap/backfill de pedido legado.
+
+Remoção ou cancelamento somente poderá existir futuramente mediante sinal explícito, inequívoco e confiável da origem.
+
+#### Próxima ação exata
+
+Depois desta definição estar revisada e protegida no Git, a próxima microetapa deverá ser somente a criação de testes focados para esse comportamento.
+
+Os primeiros testes deverão proteger, no mínimo:
+
+1. item desconhecido em pedido `identified_complete` como candidato seguro a novo item;
+2. criação futura de `OrderItem + ExternalOrderItemReference` em conjunto;
+3. `productId` ausente resultando em `productId = null`;
+4. `productId` válido pertencente ao mesmo Merchant;
+5. `productId` inválido ou de outro Merchant bloqueando as escritas de item;
+6. pedido legado sem identidade completa não criando item desconhecido;
+7. payload parcial preservando itens existentes omitidos;
+8. conjunto misto com item conhecido e item novo mantendo atomicidade;
+9. repetição do mesmo `externalItemId` sem duplicação;
+10. proteção de concorrência envolvendo `P2002/P2034`.
+
+Ainda não implementar nesta etapa:
+
+- `tx.orderItem.create()` no fluxo de update;
+- `tx.externalOrderItemReference.create()` no fluxo de update;
+- mudança da classificação `blocked_unmatched`;
+- remoção ou cancelamento de item;
+- relink de `productId`;
+- bootstrap/backfill;
+- endpoints;
+- conectores Mercado Livre ou Shopee;
+- alteração da `main`.
