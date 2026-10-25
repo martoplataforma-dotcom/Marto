@@ -74,6 +74,23 @@ export class ExternalOrderIngestionService {
     return false;
   }
 
+  private getSkuComparisonState(
+    currentSku: string | null,
+    incomingSku?: string | null,
+  ): 'not_provided' | 'matches' | 'differs' {
+    if (incomingSku === undefined || incomingSku === null) {
+      return 'not_provided';
+    }
+
+    const normalizedIncomingSku = incomingSku.trim();
+
+    if (normalizedIncomingSku === '') {
+      return 'not_provided';
+    }
+
+    return currentSku === normalizedIncomingSku ? 'matches' : 'differs';
+  }
+
   private getItemReconciliationPlanState(input: {
     hasCanonicalOrderItem: boolean;
     productIdComparisonState:
@@ -730,6 +747,13 @@ export class ExternalOrderIngestionService {
                         ) ?? null;
 
                 const normalizedSku = item.sku?.trim() || null;
+                const skuComparisonState =
+                  canonicalOrderItem === null
+                    ? 'not_comparable'
+                    : this.getSkuComparisonState(
+                        canonicalOrderItem.skuSnapshot,
+                        item.sku,
+                      );
                 const incomingUnitPrice = new Prisma.Decimal(item.unitPrice);
                 const normalizedProductId =
                   item.productId === undefined || item.productId === null
@@ -766,7 +790,7 @@ export class ExternalOrderIngestionService {
                         titleMatches:
                           canonicalOrderItem.titleSnapshot === item.title.trim(),
                         skuMatches:
-                          canonicalOrderItem.skuSnapshot === normalizedSku,
+                          skuComparisonState !== 'differs',
                         quantityMatches:
                           canonicalOrderItem.quantity === item.quantity,
                         unitPriceMatches:

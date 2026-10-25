@@ -1125,6 +1125,51 @@ describe('ExternalOrderIngestionService', () => {
     });
   });
 
+  describe('getSkuComparisonState', () => {
+    const service = new ExternalOrderIngestionService(
+      {} as unknown as PrismaService,
+    );
+
+    type SkuComparisonState = 'not_provided' | 'matches' | 'differs';
+
+    const compare = (
+      currentSku: string | null,
+      incomingSku?: string | null,
+    ): SkuComparisonState =>
+      (
+        service as unknown as {
+          getSkuComparisonState: (
+            currentSku: string | null,
+            incomingSku?: string | null,
+          ) => SkuComparisonState;
+        }
+      ).getSkuComparisonState(currentSku, incomingSku);
+
+    it('treats an omitted incoming SKU as not provided', () => {
+      expect(compare('SKU-1')).toBe('not_provided');
+    });
+
+    it('treats a null incoming SKU as not provided', () => {
+      expect(compare('SKU-1', null)).toBe('not_provided');
+    });
+
+    it('treats an empty incoming SKU as not provided', () => {
+      expect(compare('SKU-1', '')).toBe('not_provided');
+    });
+
+    it('treats a whitespace-only incoming SKU as not provided', () => {
+      expect(compare('SKU-1', '   ')).toBe('not_provided');
+    });
+
+    it('trims a provided SKU before matching', () => {
+      expect(compare('SKU-1', '  SKU-1  ')).toBe('matches');
+    });
+
+    it('detects a different non-empty SKU', () => {
+      expect(compare('SKU-1', '  SKU-2  ')).toBe('differs');
+    });
+  });
+
   describe('getItemReconciliationPlanState', () => {
     const service = new ExternalOrderIngestionService(
       {} as unknown as PrismaService,
