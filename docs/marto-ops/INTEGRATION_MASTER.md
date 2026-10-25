@@ -4413,3 +4413,165 @@ Ao retomar este trabalho:
 3. conferir `Próxima ação exata`;
 4. conferir o último commit da branch;
 5. continuar somente daí.
+
+### Micro-checkpoint — escrita efetiva segura de snapshots de OrderItem
+
+A pré-condição técnica da política de escrita referente ao SKU foi concluída e protegida no Git em:
+
+`06df6b1` — `fix(orders): preserva sku ausente na reconciliacao`
+
+A partir desse checkpoint:
+
+- `sku === undefined` preserva o snapshot existente;
+- `sku === null` preserva o snapshot existente;
+- string vazia preserva o snapshot existente;
+- string contendo apenas espaços preserva o snapshot existente;
+- somente SKU não vazio efetivamente fornecido participa da comparação e de eventual atualização.
+
+Com essa pré-condição protegida, foi implementada localmente a primeira escrita efetiva e conservadora de snapshots de `OrderItem` em:
+
+`apps/api/src/modules/orders/external-order-ingestion.service.ts`
+
+A escrita somente ocorre quando:
+
+- a atualização não foi descartada como stale;
+- o pedido possui identidade externa completa e confiável dos itens;
+- o item recebido foi identificado exclusivamente pelo caminho:
+  `externalItemId -> ExternalOrderItemReference -> orderItemId -> OrderItem`;
+- `itemUpdateEligibility === 'matched_items_only'`;
+- `itemReconciliationSetState === 'snapshot_changes_detected'`;
+- não existe bloqueio individual de reconciliação no conjunto recebido.
+
+Campos autorizados nesta primeira escrita:
+
+- `titleSnapshot`;
+- `skuSnapshot`;
+- `variationSnapshot`;
+- `quantity`;
+- `unitPrice`.
+
+Regras preservadas por campo:
+
+- `titleSnapshot`
+  - atualiza somente quando o título normalizado é diferente;
+
+- `skuSnapshot`
+  - somente SKU não vazio fornecido pode atualizar;
+  - ausência, `null`, vazio ou whitespace preservam o valor atual;
+
+- `variationSnapshot`
+  - `variation === undefined` preserva o snapshot;
+  - valor fornecido somente atualiza quando estruturalmente diferente;
+
+- `quantity`
+  - atualiza somente quando diferente;
+
+- `unitPrice`
+  - continua sendo comparado por `Prisma.Decimal`;
+  - atualiza somente quando diferente.
+
+`productId` continua explicitamente fora da escrita automática.
+
+A sincronização normal continua sem executar:
+
+- alteração de `OrderItem.productId`;
+- relink para outro `Product`;
+- desvinculação de produto;
+- criação de novo `OrderItem` durante update;
+- remoção de `OrderItem`;
+- cancelamento de item;
+- criação ou alteração de `ExternalOrderItemReference`;
+- inferência de identidade por SKU, título, posição, quantidade, preço, `productId` ou `variation`;
+- bootstrap ou backfill de pedidos legados;
+- interpretação de ausência de item no payload como remoção.
+
+A atomicidade do conjunto recebido foi preservada:
+
+- se qualquer item recebido exigir `productId` diferente ou produzir outro bloqueio de reconciliação, nenhum item daquele conjunto é atualizado;
+- payload contendo item sem correspondência segura continua bloqueado;
+- não existe atualização parcial de um item seguro enquanto outro item do mesmo payload permanece bloqueado.
+
+`matched_subset` continua permitido:
+
+- somente os itens efetivamente recebidos e identificados podem ser atualizados;
+- itens canônicos ausentes do payload são preservados integralmente.
+
+A implementação também preserva idempotência:
+
+- somente campos realmente diferentes são adicionados ao `OrderItemUpdateInput`;
+- se nenhum campo autorizado estiver diferente, `tx.orderItem.update()` não é executado.
+
+Mudanças de snapshot continuam sem:
+
+- criar `OrderEvent`;
+- alterar `Order.status`;
+- alterar timestamps de lifecycle;
+- disparar automações operacionais.
+
+Foram adicionados 6 testes focados para a escrita de snapshots.
+
+Casos cobertos:
+
+1. atualizar somente snapshots realmente alterados em item identificado;
+2. preservar SKU e variation omitidos enquanto outro snapshot é atualizado;
+3. bloquear todo o conjunto quando um item exige relink de `productId`;
+4. não atualizar itens quando o payload contém item sem correspondência;
+5. em `matched_subset`, atualizar somente o item recebido;
+6. não executar update quando todos os valores recebidos são equivalentes aos persistidos.
+
+Resultado inicial antes da implementação:
+
+- 46 testes focados executados;
+- 43 aprovados;
+- 3 falharam exatamente por ausência de `tx.orderItem.update()`.
+
+Resultado após a implementação:
+
+- teste focado:
+  - 1 suíte aprovada;
+  - 46 de 46 testes aprovados;
+
+- `git diff --check`:
+  - aprovado;
+
+- `pnpm --filter api build`:
+  - aprovado;
+
+- suíte completa da API:
+  - 8 de 8 suítes aprovadas;
+  - 53 de 53 testes aprovados.
+
+Estado local validado antes deste registro:
+
+- branch: `feat/marto-ops-integration`;
+- HEAD protegido anterior: `06df6b1`;
+- arquivos de código alterados:
+  - `apps/api/src/modules/orders/external-order-ingestion.service.ts`;
+  - `apps/api/src/modules/orders/external-order-ingestion.service.spec.ts`;
+- `docs/marto-ia/` permanece untracked e não foi alterado;
+- nenhum commit ou push desta implementação havia sido realizado.
+
+Este checkpoint não autoriza ainda novas etapas de integração.
+
+Próxima ação exata:
+
+1. revisar o diff final de serviço, testes e deste MASTER;
+2. confirmar que nenhuma alteração fora do escopo foi incluída;
+3. proteger esta microetapa em um commit próprio na branch `feat/marto-ops-integration`;
+4. executar push da mesma branch somente após a revisão;
+5. somente depois definir separadamente o próximo checkpoint técnico.
+
+Ainda não fazer:
+
+- integração Mercado Livre;
+- integração Shopee;
+- registro de conectores reais;
+- telas operacionais;
+- migração de Cotações;
+- migração de Pós-venda;
+- alteração da `main`;
+- remoção ou substituição do HTML;
+- criação automática de novos itens em update;
+- remoção automática de itens;
+- relink automático de `productId`;
+- bootstrap/backfill automático de itens legados.

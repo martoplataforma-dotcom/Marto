@@ -882,6 +882,12 @@ export class ExternalOrderIngestionService {
                     externalItemReference?.id ?? null,
                   orderItemId: externalItemReference?.orderItemId ?? null,
                   canonicalOrderItem,
+                  incomingTitle: item.title.trim(),
+                  normalizedSku,
+                  incomingVariation: item.variation,
+                  incomingQuantity: item.quantity,
+                  incomingUnitPrice,
+                  skuComparisonState,
                   productIdComparisonState,
                   variationComparisonState,
                   scalarItemComparison,
@@ -996,6 +1002,58 @@ export class ExternalOrderIngestionService {
                           scalarItemComparisonSummary.multipleFieldDifferences === 0
                         ? 'no_scalar_changes'
                         : 'scalar_changes_detected';
+
+              if (
+                itemReconciliationSetState === 'snapshot_changes_detected'
+              ) {
+                for (const match of incomingItemMatches) {
+                  if (
+                    match.orderItemId === null ||
+                    match.canonicalOrderItem === null ||
+                    match.scalarItemComparison === null
+                  ) {
+                    continue;
+                  }
+
+                  const orderItemUpdateData: Prisma.OrderItemUpdateInput = {};
+
+                  if (!match.scalarItemComparison.titleMatches) {
+                    orderItemUpdateData.titleSnapshot = match.incomingTitle;
+                  }
+
+                  if (
+                    match.skuComparisonState === 'differs' &&
+                    match.normalizedSku !== null
+                  ) {
+                    orderItemUpdateData.skuSnapshot = match.normalizedSku;
+                  }
+
+                  if (
+                    match.variationComparisonState === 'differs' &&
+                    match.incomingVariation !== undefined
+                  ) {
+                    orderItemUpdateData.variationSnapshot =
+                      match.incomingVariation;
+                  }
+
+                  if (!match.scalarItemComparison.quantityMatches) {
+                    orderItemUpdateData.quantity = match.incomingQuantity;
+                  }
+
+                  if (!match.scalarItemComparison.unitPriceMatches) {
+                    orderItemUpdateData.unitPrice = match.incomingUnitPrice;
+                  }
+
+                  if (Object.keys(orderItemUpdateData).length > 0) {
+                    await tx.orderItem.update({
+                      where: {
+                        id: match.orderItemId,
+                      },
+                      data: orderItemUpdateData,
+                    });
+                  }
+                }
+              }
             }
 
             const externalCreatedAt =
