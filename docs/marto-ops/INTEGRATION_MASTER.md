@@ -5062,3 +5062,575 @@ Esta etapa não autoriza:
 3. proteger esta microetapa em commit próprio na branch `feat/marto-ops-integration`;
 4. executar push somente após revisão;
 5. somente então definir o próximo checkpoint técnico.
+
+### Micro-checkpoint — contrato observável do resultado da ingestão externa
+
+A criação segura de item externo novo em pedido existente foi implementada, validada e protegida no Git em:
+
+`3490f68` — `feat(orders): cria itens externos novos com seguranca`
+
+Nesse estado:
+
+- snapshots de itens conhecidos podem ser atualizados com segurança;
+- itens externos realmente novos podem ser criados;
+- `OrderItem + ExternalOrderItemReference` são persistidos atomicamente;
+- `productId` novo é validado pelo Merchant;
+- pedido legado sem identidade confiável permanece protegido;
+- payload parcial não remove itens omitidos;
+- `P2034` e `P2002` possuem retry;
+- retry após `P2002` relê a identidade atual e evita duplicação.
+
+O próximo problema arquitetural é a observabilidade do resultado da ingestão.
+
+Hoje o fluxo pode preservar ou bloquear a reconciliação dos itens e, ainda assim, o retorno externo do serviço continuar contendo apenas uma ação ampla como:
+
+`action: 'update'`
+
+Isso não é suficiente para um futuro adapter de canal distinguir:
+
+- pedido totalmente reconciliado;
+- pedido atualizado somente em campos independentes;
+- itens preservados;
+- itens não avaliados;
+- reconciliação de itens bloqueada;
+- snapshots realmente atualizados;
+- novos itens realmente criados.
+
+Antes de registrar `ExternalOrderIngestionService` no `OrdersModule` ou conectá-lo a Mercado Livre, Shopee ou outro canal, o resultado do caso de uso deverá tornar essas decisões observáveis.
+
+Este checkpoint é somente de definição.
+
+Nenhum código será alterado ainda.
+
+#### Contrato conceitual mínimo
+
+Para remover ambiguidade antes da implementação, o resultado de itens deverá possuir conceitualmente uma estrutura equivalente a:
+
+`itemReconciliation`
+
+com os campos:
+
+- `mode`;
+- `reason`;
+- `itemIdentityState`;
+- `decisionState`;
+- `receivedItems`;
+- `matchedExistingItems`;
+- `newItemCandidates`;
+- `updatedExistingItems`;
+- `createdNewItems`;
+- `blockedItems`.
+
+A nomenclatura TypeScript definitiva poderá ser ajustada durante a implementação somente se preservar exatamente esta semântica.
+
+##### `mode`
+
+Estados:
+
+- `initial_creation`
+  - utilizado quando `action === 'create'`;
+  - representa a criação inicial dos itens junto com o novo pedido;
+  - não deve fingir que houve comparação com itens canônicos anteriores.
+
+- `update_reconciliation`
+  - utilizado quando um pedido existente teve seus itens efetivamente analisados pela lógica de reconciliação.
+
+- `not_evaluated`
+  - utilizado quando a reconciliação de itens deliberadamente não foi executada.
+
+##### `reason`
+
+Quando `mode !== 'not_evaluated'`:
+
+`reason = null`
+
+Quando `mode === 'not_evaluated'`, o motivo deverá ser explícito.
+
+Motivos mínimos inicialmente definidos:
+
+- `stale_update`;
+- `items_omitted`;
+- `unsafe_item_identity`.
+
+Não utilizar string genérica como:
+
+`unknown`
+
+para esconder um caso já conhecido pelo fluxo.
+
+##### `itemIdentityState`
+
+Quando o pedido existente passou pela classificação de identidade, reutilizar o estado já produzido:
+
+- `items_omitted`;
+- `legacy_unlinked`;
+- `identified_complete`;
+- `empty_unidentified`;
+- `inconsistent`.
+
+Para criação inicial, onde não existe conjunto canônico anterior para reconciliar:
+
+`itemIdentityState = null`
+
+##### `decisionState`
+
+Representa a decisão de reconciliação antes de considerar os contadores de efeito.
+
+Quando `mode === 'update_reconciliation'`, reutilizar a decisão já calculada pelo fluxo.
+
+Estados atualmente relevantes:
+
+- `preserve_items`;
+- `blocked_item_reconciliation`;
+- `no_changes`;
+- `snapshot_changes_detected`;
+- `new_items_detected`.
+
+Quando não houve reconciliação:
+
+`decisionState = null`
+
+Quando `mode === 'initial_creation'`:
+
+`decisionState = null`
+
+A criação inicial não deverá inventar um estado de update apenas para preencher o retorno.
+
+##### Contadores de efeito
+
+Os contadores deverão representar somente o resultado final da tentativa transacional que concluiu com sucesso.
+
+`receivedItems`
+
+- quantidade de itens presentes no payload;
+- para `items` omitido, zero;
+- atualização stale poderá informar a quantidade recebida, mas isso não significa que os itens foram avaliados.
+
+`matchedExistingItems`
+
+- itens recebidos ligados com segurança a `OrderItem` já existente.
+
+`newItemCandidates`
+
+- itens externos desconhecidos classificados como candidatos seguros a criação durante update.
+
+`updatedExistingItems`
+
+- quantidade de `OrderItem` existentes que efetivamente receberam `tx.orderItem.update()` na transação concluída.
+
+`createdNewItems`
+
+- quantidade de `OrderItem` efetivamente criados pela ingestão concluída;
+- em `initial_creation`, corresponde aos itens criados junto com o novo pedido;
+- em update, corresponde apenas aos novos itens externos realmente criados.
+
+`blockedItems`
+
+- quantidade de itens bloqueados segundo a análise efetivamente executada.
+
+Uma escrita executada em tentativa posteriormente revertida por `P2002` ou `P2034` não poderá aparecer nesses contadores finais.
+
+#### Exemplos semânticos obrigatórios
+
+Pedido novo com três itens:
+
+- `action = create`;
+- `mode = initial_creation`;
+- `reason = null`;
+- `decisionState = null`;
+- `receivedItems = 3`;
+- `createdNewItems = 3`;
+- `updatedExistingItems = 0`.
+
+Update stale contendo dois itens:
+
+- `action = ignored_stale`;
+- `mode = not_evaluated`;
+- `reason = stale_update`;
+- `receivedItems = 2`;
+- `updatedExistingItems = 0`;
+- `createdNewItems = 0`.
+
+Update sem campo `items`:
+
+- `action = update`;
+- `mode = not_evaluated`;
+- `reason = items_omitted`;
+- `receivedItems = 0`;
+- `updatedExistingItems = 0`;
+- `createdNewItems = 0`.
+
+Pedido legado recebendo itens:
+
+- `action = update`;
+- `mode = not_evaluated`;
+- `reason = unsafe_item_identity`;
+- `itemIdentityState = legacy_unlinked`;
+- nenhuma criação automática;
+- nenhum update de item.
+
+Item conhecido sem alteração:
+
+- `mode = update_reconciliation`;
+- `decisionState = no_changes`;
+- `matchedExistingItems = 1`;
+- `updatedExistingItems = 0`;
+- `createdNewItems = 0`.
+
+Conjunto misto válido contendo um item conhecido alterado e um item externo novo:
+
+- `mode = update_reconciliation`;
+- `matchedExistingItems = 1`;
+- `newItemCandidates = 1`;
+- `updatedExistingItems = 1`;
+- `createdNewItems = 1`.
+
+Conjunto bloqueado:
+
+- `mode = update_reconciliation`;
+- `decisionState = blocked_item_reconciliation`;
+- `blockedItems > 0`;
+- `updatedExistingItems = 0`;
+- `createdNewItems = 0`.
+
+#### Princípio
+
+O resultado da ingestão deverá continuar possuindo a ação principal:
+
+- `create`;
+- `update`;
+- `ignored_stale`.
+
+Além dela, deverá existir futuramente um resultado estruturado específico para os itens.
+
+Nome conceitual:
+
+`itemReconciliation`
+
+Esse resultado será informação do caso de uso.
+
+Ele não deverá representar uma nova entidade persistida.
+
+#### Separação entre decisão e efeito
+
+O resultado deverá distinguir:
+
+1. o que foi analisado;
+2. qual decisão de reconciliação foi tomada;
+3. quais escritas efetivamente ocorreram.
+
+Isso evita tratar:
+
+`mudança detectada`
+
+como sinônimo de:
+
+`mudança persistida`.
+
+Também evita tratar:
+
+`action: update`
+
+como sinônimo de:
+
+`todos os itens foram reconciliados`.
+
+#### Estado de identidade
+
+Quando aplicável, o resultado deverá preservar a classificação já existente:
+
+`itemIdentityState`
+
+Estados já conhecidos:
+
+- `items_omitted`;
+- `legacy_unlinked`;
+- `identified_complete`;
+- `empty_unidentified`;
+- `inconsistent`.
+
+Essa informação permitirá saber por que os itens puderam ou não entrar em reconciliação.
+
+#### Estado agregado da reconciliação
+
+Quando os itens forem efetivamente avaliados, o resultado deverá expor a decisão agregada derivada das regras já existentes.
+
+Estados relevantes atualmente:
+
+- `preserve_items`;
+- `blocked_item_reconciliation`;
+- `no_changes`;
+- `snapshot_changes_detected`;
+- `new_items_detected`.
+
+Não deverá ser criada uma segunda regra de negócio paralela apenas para construir o retorno.
+
+O resultado deverá reutilizar as decisões já tomadas pelo próprio fluxo.
+
+#### Casos não avaliados
+
+Existem situações em que a reconciliação de itens não deve ser executada.
+
+O resultado deverá representar isso explicitamente.
+
+Exemplos:
+
+- atualização stale;
+- `items` omitido;
+- identidade anterior não confiável;
+- pedido legado sem identidade externa completa.
+
+O caller não deverá precisar inferir esse estado pela ausência de writes no banco.
+
+#### Contadores mínimos
+
+Quando aplicáveis, deverão ser disponibilizados contadores derivados do processamento.
+
+Conjunto mínimo proposto:
+
+- `receivedItems`
+  - quantidade de itens presentes no payload recebido;
+
+- `matchedExistingItems`
+  - quantidade de itens recebidos identificados como `OrderItem` já existente;
+
+- `newItemCandidates`
+  - quantidade de `externalItemId` desconhecidos classificados com segurança como candidatos novos;
+
+- `updatedExistingItems`
+  - quantidade de `OrderItem` existentes que efetivamente receberam `update`;
+
+- `createdNewItems`
+  - quantidade de novos `OrderItem` efetivamente criados;
+
+- `blockedItems`
+  - quantidade de itens cuja reconciliação ficou bloqueada.
+
+Os contadores deverão refletir fatos do processamento atual.
+
+Não deverão estimar nem inferir escritas que não ocorreram.
+
+#### Motivos de bloqueio
+
+Quando a reconciliação estiver bloqueada, o resultado deverá preservar informação suficiente para diagnóstico.
+
+No mínimo deverão permanecer distinguíveis:
+
+- item não comparável com segurança;
+- `productId` inválido;
+- divergência de `productId` exigindo política específica de relink;
+- `productId` de candidato novo inexistente ou pertencente a outro Merchant;
+- identidade do pedido inadequada para criação ou reconciliação segura.
+
+O objetivo não é expor todo o objeto interno `incomingItemMatches`.
+
+O resultado deverá fornecer diagnóstico útil sem acoplar callers à implementação interna do algoritmo.
+
+#### Pedido criado
+
+Quando:
+
+`action === 'create'`
+
+o resultado deverá ser coerente com o fato de que os itens iniciais foram criados junto com o pedido.
+
+Deverá ser possível distinguir:
+
+- quantidade recebida;
+- quantidade criada;
+- ausência de reconciliação de item existente.
+
+Não deverá fingir que a criação inicial passou pelo mesmo processo de comparação de um update.
+
+#### Update stale
+
+Quando:
+
+`action === 'ignored_stale'`
+
+nenhuma reconciliação de item deverá ser apresentada como executada.
+
+O resultado deverá informar explicitamente que os itens não foram avaliados por causa da proteção contra atualização stale.
+
+#### Itens omitidos
+
+Quando `items` não estiver presente no payload:
+
+- os itens canônicos continuam preservados;
+- nenhuma reconciliação deverá ser apresentada como executada;
+- o resultado deverá permitir distinguir esse caso de um payload com `items: []`.
+
+Ausência do campo continua sem significar remoção.
+
+#### Pedido legado ou identidade insegura
+
+Quando a identidade anterior dos itens não for segura:
+
+- não inferir correspondência;
+- não criar novo item automaticamente;
+- não executar backfill;
+- informar no resultado que a reconciliação de itens não foi executada por causa do estado de identidade.
+
+Isso permitirá futuramente gerar:
+
+- log;
+- alerta;
+- fila de revisão;
+- métrica;
+- tarefa operacional;
+
+sem enfraquecer as regras de identidade.
+
+Essas consequências ainda não serão implementadas nesta etapa.
+
+#### Conjunto bloqueado
+
+Quando um conjunto possuir bloqueio:
+
+- `updatedExistingItems` deverá permanecer zero para aquele conjunto;
+- `createdNewItems` deverá permanecer zero;
+- o resultado deverá deixar claro que nenhuma escrita de item foi aplicada.
+
+Campos independentes do pedido e da `ExternalOrderReference` poderão continuar seguindo suas regras atuais.
+
+#### Conjunto misto
+
+Quando um payload válido possuir simultaneamente:
+
+- item conhecido alterado;
+- item novo;
+- item conhecido sem alteração;
+
+o resultado deverá permitir observar separadamente:
+
+- quantidade identificada;
+- quantidade atualizada;
+- quantidade criada;
+- quantidade sem necessidade de escrita.
+
+Não deverão ser criadas escritas artificiais apenas para gerar contadores.
+
+#### Idempotência observável
+
+Uma nova sincronização contendo os mesmos valores já persistidos deverá resultar em informação compatível com:
+
+- nenhum novo item criado;
+- nenhum item existente atualizado;
+- nenhuma referência duplicada;
+- nenhuma escrita desnecessária.
+
+A observabilidade deverá refletir a idempotência já protegida pelo fluxo.
+
+#### Concorrência
+
+Quando ocorrer retry por `P2002` ou `P2034`, o resultado final deverá representar somente o estado da tentativa que efetivamente concluiu a transação.
+
+Uma tentativa revertida não poderá inflar:
+
+- `createdNewItems`;
+- `updatedExistingItems`;
+- outros contadores de efeito.
+
+Especialmente no caso já testado de colisão `P2002`:
+
+- a primeira tentativa pode chegar até uma escrita que será revertida;
+- a segunda tentativa relê o banco;
+- se o item já existir por ação concorrente, o resultado final não deverá declarar uma nova criação feita por esta ingestão.
+
+#### Sem persistência adicional
+
+Neste estágio, `itemReconciliation` deverá futuramente ser apenas parte do retorno em memória.
+
+Não criar ainda:
+
+- tabela de auditoria;
+- coluna adicional;
+- JSON persistido;
+- evento operacional;
+- log estruturado definitivo;
+- métrica;
+- fila.
+
+Persistência de diagnóstico poderá ser definida separadamente no futuro.
+
+#### Limite de aplicação
+
+Depois que esse contrato de resultado estiver implementado e testado, o próximo passo arquitetural poderá ser registrar:
+
+`ExternalOrderIngestionService`
+
+em:
+
+`OrdersModule`
+
+como provider/export utilizável por adapters internos.
+
+Até lá:
+
+- não criar endpoint público de ingestão;
+- não adicionar rota ao `OrdersController`;
+- não chamar o serviço diretamente a partir de controller genérico;
+- não integrar Mercado Livre;
+- não integrar Shopee.
+
+#### Responsabilidade futura dos adapters
+
+Adapters de marketplaces deverão futuramente:
+
+1. receber dados específicos do canal;
+2. autenticar/validar a origem conforme a integração;
+3. normalizar para `NormalizedExternalOrderInput`;
+4. chamar `ExternalOrderIngestionService`;
+5. interpretar o resultado estruturado da ingestão.
+
+Adapters não deverão escrever diretamente em:
+
+- `Order`;
+- `OrderItem`;
+- `ExternalOrderReference`;
+- `ExternalOrderItemReference`.
+
+As regras canônicas deverão permanecer concentradas no caso de uso de ingestão.
+
+#### Testes mínimos antes da implementação
+
+A futura implementação deverá começar por testes focados.
+
+Cobertura mínima:
+
+1. criação de pedido informa quantidade de itens criados;
+2. update stale informa que itens não foram avaliados;
+3. `items` omitido informa preservação sem reconciliação;
+4. item conhecido sem mudança informa zero updates e zero creates;
+5. mudança de snapshot informa item existente efetivamente atualizado;
+6. item externo novo informa criação efetiva;
+7. conjunto misto informa separadamente update e create;
+8. conjunto bloqueado informa bloqueio e zero writes de item;
+9. pedido legado informa identidade não segura e zero writes;
+10. retry por `P2002` não contabiliza como criação a tentativa revertida.
+
+#### Próxima ação exata
+
+Depois desta definição estar revisada:
+
+1. proteger este checkpoint documental em commit próprio;
+2. criar testes focados para o contrato observável;
+3. observar o RED correspondente;
+4. implementar somente o resultado estruturado em memória;
+5. preservar todas as regras atuais de persistência;
+6. executar build e suíte completa;
+7. somente depois avaliar o registro de `ExternalOrderIngestionService` no `OrdersModule`.
+
+Ainda não fazer:
+
+- endpoint de ingestão;
+- webhook;
+- polling;
+- Mercado Livre;
+- Shopee;
+- backfill;
+- relink automático de `productId`;
+- remoção automática de item;
+- alteração da `main`;
+- mudanças Prisma;
+- migrations.
