@@ -31,7 +31,7 @@ A estratégia será:
 
 1. proteger a base atual;
 2. colocar o Marto em uso real;
-3. começar pela Store5;
+3. começar por uma operação-piloto interna real;
 4. atrair poucos usuários-piloto;
 5. observar o trabalho diário;
 6. resolver primeiro os problemas mais frequentes;
@@ -342,13 +342,13 @@ Criar a primeira versão que uma loja consiga utilizar diariamente para trabalha
 - importação manual ou CSV controlada;
 - visão de atrasos;
 - visão de pedidos sem ação;
-- operação-piloto da Store5;
+- operação-piloto interna;
 - métricas de uso;
 - coleta de feedback.
 
 ### Critério para concluir
 
-- Store5 utiliza o sistema em dias reais de operação;
+- a operação-piloto utiliza o sistema em dias reais de operação;
 - pedidos podem ser encontrados rapidamente;
 - cada pedido importante possui próxima ação;
 - atrasos aparecem sem depender de planilha;
@@ -599,7 +599,7 @@ Será necessário possuir:
 
 ### Estágio A — Operação interna
 
-Usuário principal: Store5.
+Usuário principal: operação-piloto interna.
 
 Objetivos:
 

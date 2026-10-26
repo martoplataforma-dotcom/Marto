@@ -696,7 +696,7 @@ export default function MerchantProfilePage() {
                 <input
                   value={handle}
                   onChange={(e) => setHandle(e.target.value)}
-                  placeholder="ex: store5"
+                  placeholder="ex: minha-loja"
                   className={`rounded-2xl border bg-black/80 px-4 py-3 text-white outline-none placeholder:text-white/65 focus:ring-2 ${
                     handleValidation.ok
                       ? 'border-white/15 focus:border-white/25 focus:ring-white/10'

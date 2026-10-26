@@ -10,7 +10,7 @@ export class ShopsController {
   ) {}
 
   // ✅ NOVO: GET /api/shops/handle/:handle
-  // Ex: /api/shops/handle/store5
+  // Ex: /api/shops/handle/minha-loja
   @Get('handle/:handle')
   async getPublicShopByHandle(@Param('handle') handle: string) {
     const h = String(handle ?? '')

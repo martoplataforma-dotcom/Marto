@@ -65,7 +65,7 @@ Ordem estratégica:
 3. criar a central operacional de pedidos e pós-venda;
 4. conectar pedidos reais de Tiny ERP e marketplaces;
 5. organizar estoque, logística, cotação, rastreio e assistência;
-6. testar com a Store5 e outros usuários-piloto;
+6. testar com a operação-piloto interna e outros usuários-piloto;
 7. medir uso e problemas reais;
 8. evoluir os módulos conforme a demanda;
 9. expandir gradualmente para o ecossistema completo.
@@ -314,7 +314,7 @@ O público inicial deverá ser formado por:
 - operações que ainda dependem de planilhas e WhatsApp;
 - negócios com dificuldades de pós-venda e logística.
 
-A Store5 poderá funcionar como operação-piloto para validar o produto.
+A primeira operação interna poderá funcionar como operação-piloto para validar o produto.
 
 ## 11. Resultado esperado da fase atual
 

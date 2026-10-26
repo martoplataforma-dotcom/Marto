@@ -65,15 +65,30 @@ Modelo conceitual:
 
 `Merchant → SalesChannel → ExternalOrderReference → Order → Operação`
 
-### 5.3 Store5
+### 5.3 Merchant e contas de canal
 
-A Store5 continua sendo o `Merchant` existente do Marto.
+O `Merchant` representa o lojista/empresa dentro do Marto.
 
-Não criar uma Store5 separada para o Ops e não hard-code Store5 na arquitetura.
+Uma conta conectada de marketplace é um `SalesChannel` pertencente ao `Merchant`, e não um `Merchant` separado.
+
+Cada `SalesChannel` possui identidade própria e pode ter um nome livre definido pelo usuário.
+
+No modelo atual:
+
+- `SalesChannel.id` identifica internamente o canal conectado;
+- `SalesChannel.type` identifica a plataforma, como `MERCADO_LIVRE`;
+- `SalesChannel.name` é apenas o nome de exibição escolhido pelo usuário;
+- `SalesChannel.externalAccountId` identifica a conta correspondente na plataforma externa.
+
+A lógica de integração nunca deve depender de `SalesChannel.name`.
+
+Nomes de lojas, contas-piloto, ambientes de teste ou nomes escolhidos pelos usuários não podem ser hard-coded na arquitetura.
+
+A mesma integração Mercado Livre deve funcionar para qualquer `SalesChannel` cujo tipo seja `MERCADO_LIVRE`, independentemente do nome escolhido para a conta.
 
 ### 5.4 Equipe e permissões
 
-Funcionários não devem compartilhar o login da Store5.
+Funcionários não devem compartilhar o login principal do Merchant nem credenciais de contas externas conectadas.
 
 Direção:
 
@@ -273,7 +288,7 @@ Quando um módulo estiver validado no Marto e em uso real, melhorias novas desse
 
 - [x] Inventário macro do Ops v230
 - [x] Comparação DB/API atual do Marto x Ops
-- [x] Núcleo Merchant/Store5 + canal + Order canônico
+- [x] Núcleo Merchant + SalesChannel + Order canônico
 - [x] Blocos de domínio faltantes definidos conceitualmente
 - [x] Ordem segura de implantação
 - [x] PC e GitHub confirmados no mesmo commit-base
@@ -5976,7 +5991,496 @@ Somente depois da publicação iniciar o próximo checkpoint.
 
 Próximo checkpoint técnico candidato:
 
-- definir a fronteira interna do primeiro adapter de canal para aproximar a STORE5 da ingestão canônica;
+- definir a fronteira interna do primeiro adapter Mercado Livre para aproximar contas desse canal da ingestão canônica;
 - o adapter deverá transformar dados específicos do Mercado Livre em `NormalizedExternalOrderInput`;
 - ele não deverá possuir lógica própria de persistência de pedidos;
 - ainda não criar endpoint público ou webhook antes de essa fronteira estar definida e testada.
+
+### Definição — fronteira interna do adapter Mercado Livre
+
+Após a publicação do registro interno do `ExternalOrderIngestionService`, o próximo checkpoint técnico será a primeira fronteira específica de canal.
+
+Canal da primeira integração:
+
+`Mercado Livre`
+
+A conta utilizada durante desenvolvimento e testes é selecionada através de um `SalesChannel` cadastrado.
+
+O nome escolhido para essa conta é apenas dado de exibição em `SalesChannel.name` e não faz parte do contrato do adapter.
+
+O adapter Mercado Livre deve funcionar da mesma forma para qualquer conta Mercado Livre conectada ao Marto.
+
+O objetivo desta etapa NÃO é ainda conectar a API real.
+
+O objetivo é definir e testar o componente responsável por transformar dados externos já coletados do Mercado Livre em:
+
+`NormalizedExternalOrderInput`
+
+A persistência continuará exclusivamente em:
+
+`ExternalOrderIngestionService.ingest(...)`
+
+#### Separação das responsabilidades
+
+A arquitetura planejada fica dividida em quatro responsabilidades:
+
+1. descoberta de pedidos;
+2. coleta/enriquecimento dos recursos externos;
+3. normalização para o contrato canônico;
+4. ingestão/persistência canônica.
+
+Fluxo conceitual:
+
+`MercadoLivreClient futuro`
+
+→ `MercadoLivreSyncService futuro`
+
+→ `MercadoLivreOrderAdapter.normalize(...)`
+
+→ `ExternalOrderIngestionService.ingest(...)`
+
+O adapter de normalização será puro.
+
+#### Regra de independência da conta
+
+O adapter Mercado Livre é específico da plataforma Mercado Livre, não de uma loja ou conta específica.
+
+O caller fornecerá o `salesChannelId` da conta que está sendo processada.
+
+O adapter não poderá:
+
+- conhecer o nome escolhido para a conta;
+- procurar uma conta por nome;
+- comparar nomes como condição de negócio;
+- possuir IDs fixos de conta;
+- assumir que existe apenas uma conta Mercado Livre por Merchant;
+- possuir qualquer constante referente ao nome de uma loja-piloto.
+
+Assim, um mesmo Merchant poderá futuramente possuir múltiplos `SalesChannel` do tipo `MERCADO_LIVRE`, cada um com seu próprio `externalAccountId` e nome de exibição.
+
+Do mesmo modo, vários Merchants poderão utilizar o mesmo adapter sem qualquer alteração de código.
+
+Ele NÃO poderá:
+
+- fazer chamada HTTP;
+- conhecer access token;
+- renovar token;
+- consultar banco;
+- usar `PrismaService`;
+- criar `Order`;
+- criar `OrderItem`;
+- criar `ExternalOrderReference`;
+- criar `ExternalOrderItemReference`;
+- alterar `Product`;
+- chamar controller;
+- executar polling;
+- receber webhook.
+
+#### Local arquitetural candidato
+
+O código específico do Mercado Livre não deverá ser colocado dentro do núcleo canônico de `orders`.
+
+Estrutura candidata:
+
+`apps/api/src/modules/integrations/mercado-livre/`
+
+Primeiro componente:
+
+`mercado-livre-order.adapter.ts`
+
+Teste correspondente:
+
+`mercado-livre-order.adapter.spec.ts`
+
+O módulo Nest e a orquestração HTTP poderão ser criados em checkpoint posterior.
+
+Não criar ainda `MercadoLivreModule` apenas para hospedar um mapper puro.
+
+#### Fonte do pedido
+
+A listagem/search de pedidos deverá futuramente ser usada para:
+
+- descobrir IDs;
+- percorrer paginação;
+- identificar pedidos que precisam de atualização.
+
+Ela NÃO deverá ser considerada automaticamente o snapshot autoritativo enviado para a ingestão.
+
+Antes de normalizar um pedido, o fluxo futuro deverá obter o detalhe do order correspondente.
+
+Recurso conceitual:
+
+`GET /orders/{order_id}`
+
+O relógio principal usado para:
+
+`externalUpdatedAt`
+
+deverá vir do:
+
+`last_updated`
+
+do detalhe do pedido.
+
+Não usar `date_last_updated` de resultados de busca como substituto automático do `last_updated` autoritativo do detalhe.
+
+Isso protege a regra stale já existente em `ExternalOrderIngestionService`.
+
+#### Identidade do pedido
+
+A identidade externa canônica do pedido Mercado Livre será:
+
+`String(order.id)`
+
+Portanto:
+
+`externalOrderId = String(order.id)`
+
+Nunca usar como `externalOrderId`:
+
+- `pack_id`;
+- shipment id;
+- payment id;
+- buyer id;
+- número de NF;
+- SKU;
+- posição na listagem.
+
+#### Packs
+
+`pack_id` NÃO representa a identidade canônica deste `Order`.
+
+Quando presente, deverá ser preservado apenas como informação externa/metadata.
+
+Um pack poderá futuramente ser utilizado para:
+
+- agrupamento visual;
+- logística;
+- relacionamento entre orders;
+- conferência operacional.
+
+Mas não deverá fazer vários orders externos perderem suas identidades individuais.
+
+Não criar nesta etapa uma entidade Marto específica para pack.
+
+#### Identidade do item externo
+
+Na primeira versão, o detalhe de order Mercado Livre deverá possuir exatamente um item-variação válido para entrar no adapter.
+
+A identidade externa do item será derivada diretamente do identificador externo da publicação:
+
+`externalItemId = item.id`
+
+Essa decisão é válida porque a referência externa de item no Marto já é escopada por:
+
+`ExternalOrderReference`
+
+Portanto a mesma publicação pode aparecer em vários pedidos sem colisão global.
+
+Não usar como identidade:
+
+- título;
+- SKU;
+- posição do array;
+- quantidade;
+- preço;
+- `productId` Marto.
+
+`variation_id` será snapshot da variação e não será usado para relink automático de catálogo.
+
+Se a estrutura recebida contradizer o contrato esperado — por exemplo, item sem `item.id` — o adapter deverá falhar explicitamente.
+
+Não inventar identificador substituto.
+
+#### `productId` canônico
+
+O campo:
+
+`NormalizedExternalOrderItem.productId`
+
+representa o catálogo canônico do Marto.
+
+Portanto o adapter Mercado Livre NÃO poderá preencher `productId` automaticamente a partir de:
+
+- `item.id`;
+- `variation_id`;
+- `seller_sku`;
+- `seller_custom_field`;
+- título;
+- categoria;
+- posição.
+
+Enquanto não existir uma política explícita e segura de vinculação catálogo ↔ canal:
+
+`productId` deverá permanecer ausente.
+
+Isso preserva a regra já aprovada de que reconciliação de pedido não realiza relink automático de produto.
+
+#### Snapshot do item
+
+O adapter poderá normalizar:
+
+- `externalItemId`;
+- título;
+- SKU externo;
+- variação;
+- quantidade;
+- preço unitário.
+
+SKU:
+
+1. usar `seller_sku` quando existir e for não vazio;
+2. caso contrário, usar `seller_custom_field` quando existir e for não vazio;
+3. caso contrário, manter SKU ausente.
+
+SKU continua sendo snapshot.
+
+Não usar SKU como identidade canônica.
+
+Variação poderá preservar, quando disponível:
+
+- `variation_id`;
+- `variation_attributes`.
+
+A estrutura deverá continuar sendo JSON de snapshot.
+
+#### Datas
+
+`date_created` deverá alimentar:
+
+`externalCreatedAt`
+
+`last_updated` do detalhe deverá alimentar:
+
+`externalUpdatedAt`
+
+Datas inválidas não deverão ser silenciosamente convertidas em `new Date()` do momento atual.
+
+Não inventar horário.
+
+#### Status externo
+
+O status original do Mercado Livre deverá sempre poder ser preservado em:
+
+`externalStatus`
+
+A conversão para:
+
+`canonicalStatus`
+
+deverá ser explícita e testada.
+
+Não mapear estados apenas por semelhança de nome.
+
+Especialmente:
+
+`confirmed` do Mercado Livre
+
+NÃO deve automaticamente significar:
+
+`CONFIRMED_BY_SELLER`
+
+do Marto.
+
+`CONFIRMED_BY_SELLER` representa uma etapa semântica própria do lifecycle Marto.
+
+#### Política inicial conservadora de status
+
+A primeira implementação deverá começar somente com mapeamentos cuja semântica esteja suficientemente clara.
+
+Base inicial:
+
+- order `paid` → `PAID`;
+- order `cancelled` → `CANCELLED`;
+- shipment `delivered` → `DELIVERED`;
+- shipment `shipped` → `IN_TRANSIT`.
+
+Para `ready_to_ship`, o substatus deverá ser considerado antes do mapeamento.
+
+Casos que indiquem coleta/trânsito, como:
+
+- `picked_up`;
+- `authorized_by_carrier`;
+- `in_hub`;
+
+poderão ser tratados como candidatos a:
+
+`IN_TRANSIT`
+
+mas essa regra deverá possuir teste explícito antes de ser implementada.
+
+`ready_to_ship` sem evidência de coleta não deverá ser confundido automaticamente com `IN_TRANSIT`.
+
+Estados ainda sem política aprovada não deverão ser inventados.
+
+O adapter deverá falhar de maneira explícita quando um status necessário para criação não possuir mapeamento seguro.
+
+#### Separação Order x Shipment
+
+Dados comerciais do pedido e dados logísticos não deverão ser confundidos.
+
+O snapshot de order poderá fornecer, entre outros:
+
+- ID;
+- status comercial;
+- datas;
+- comprador;
+- item;
+- quantidade;
+- preço;
+- pack;
+- moeda.
+
+O recurso de shipment deverá futuramente fornecer o enriquecimento logístico.
+
+O adapter deverá aceitar shipment como informação opcional.
+
+Ausência de shipment NÃO deverá fazer o adapter:
+
+- inventar endereço;
+- inventar CEP;
+- inventar cidade;
+- inventar estado;
+- inventar destinatário;
+- inventar status logístico.
+
+#### Endereço de destino
+
+Quando o snapshot enriquecido de shipment possuir endereço de destino válido, poderão ser normalizados:
+
+- `recipientName`;
+- `destinationZipCode`;
+- `city`;
+- `state`;
+- `destinationAddress`.
+
+`destinationAddress` deverá conter um snapshot estruturado dos campos relevantes recebidos.
+
+Não persistir automaticamente o payload bruto inteiro do shipment como endereço.
+
+#### Metadata externa
+
+Informações externas úteis que não possuem campo canônico próprio poderão ser preservadas em `metadata`.
+
+Candidatos iniciais:
+
+- `packId`;
+- `shippingId`;
+- `currencyId`;
+- `totalAmount`;
+- `paidAmount`;
+- seller externo;
+- site do marketplace;
+- detalhes externos de status quando necessários.
+
+Metadata não poderá ser usada para duplicar lógica canônica.
+
+#### Dados do comprador
+
+Dados disponíveis do buyer poderão alimentar:
+
+- `buyerName`;
+- `buyerContact`.
+
+A composição de nome deverá usar apenas campos recebidos.
+
+Não inventar nome quando os dados estiverem ocultos ou ausentes.
+
+IDs externos do comprador são metadata/contato externo.
+
+Eles NÃO deverão ser tratados como `userId` canônico do Marto.
+
+#### Payload parcial
+
+O adapter deverá respeitar o significado atual de payload parcial.
+
+Se determinado enriquecimento não estiver disponível:
+
+- omitir o campo;
+- preservar a ausência;
+- não preencher com `null` apenas para apagar snapshot existente.
+
+Especialmente em updates, ausência não deve virar remoção implícita.
+
+#### Limites da primeira implementação
+
+O primeiro `MercadoLivreOrderAdapter` NÃO fará:
+
+- paginação;
+- OAuth;
+- refresh token;
+- HTTP;
+- webhook;
+- polling;
+- persistência;
+- lookup de `Product`;
+- criação de `Product`;
+- backfill;
+- agrupamento por pack;
+- NF;
+- Mercado Pago;
+- reclamações;
+- devoluções;
+- mediações;
+- cotação de frete;
+- rastreamento ativo.
+
+Essas responsabilidades serão adicionadas em checkpoints separados.
+
+#### Testes mínimos do primeiro adapter
+
+A implementação deverá começar por testes focados.
+
+Cobertura mínima planejada:
+
+1. transforma `order.id` em `externalOrderId` string;
+2. usa o `salesChannelId` recebido pelo caller;
+3. nunca usa `pack_id` como `externalOrderId`;
+4. preserva `pack_id` em metadata quando presente;
+5. mapeia `paid` para `PAID`;
+6. mapeia `cancelled` para `CANCELLED`;
+7. mapeia shipment `delivered` para `DELIVERED`;
+8. mapeia shipment `shipped` para `IN_TRANSIT`;
+9. não converte automaticamente ML `confirmed` em `CONFIRMED_BY_SELLER`;
+10. usa `item.id` como `externalItemId`;
+11. não preenche `productId` a partir do item Mercado Livre;
+12. preserva SKU somente como snapshot;
+13. preserva `variation_id` e atributos como snapshot;
+14. normaliza quantidade e preço unitário;
+15. usa `date_created` como `externalCreatedAt`;
+16. usa `last_updated` do detalhe como `externalUpdatedAt`;
+17. rejeita data obrigatória inválida em vez de inventar horário;
+18. ausência de shipment não inventa endereço;
+19. shipment enriquecido pode preencher CEP/cidade/estado/endereço;
+20. item sem identificador externo falha explicitamente;
+21. estrutura de item incompatível falha sem inferência por posição/título/SKU;
+22. status necessário sem política segura falha explicitamente.
+
+#### Sequência planejada depois desta definição
+
+Depois de proteger esta definição documental:
+
+1. criar somente o spec do mapper;
+2. observar RED;
+3. implementar o mapper puro;
+4. executar testes focados;
+5. executar build;
+6. executar suíte completa da API;
+7. registrar o resultado no MASTER;
+8. auditar;
+9. commit;
+10. push somente em `feat/marto-ops-integration`.
+
+Somente depois avaliar o próximo componente:
+
+`MercadoLivreSyncService`
+
+Esse serviço futuro poderá coordenar:
+
+- descoberta/paginação;
+- GET de detalhe;
+- GET de shipment;
+- chamada ao mapper;
+- chamada a `ExternalOrderIngestionService.ingest(...)`.
+
+Ainda não criar endpoint público nem webhook.

@@ -687,7 +687,7 @@ model Merchant {
   supportsLocalDelivery  Boolean @default(false)
   supportsPickup         Boolean @default(false)
 
-  handle   String? @unique // ex: "store5" (sem @ no banco)
+  handle   String? @unique // ex: "minha-loja" (sem @ no banco)
   logoUrl  String?
   coverUrl String?
 
@@ -1132,7 +1132,7 @@ model PublicLink {
   id          String      @id @default(cuid())
   code        String      @unique
   kind        String      // MVP: "SHOP" etc
-  targetPath  String      // ex: "/@store5"
+  targetPath  String      // ex: "/@minha-loja"
   ownerUserId String?     // opcional
   createdAt   DateTime    @default(now())
   scans       PublicScan[]
