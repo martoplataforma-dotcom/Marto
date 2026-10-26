@@ -5842,3 +5842,141 @@ Próximo checkpoint técnico candidato após publicação:
 - registrar `ExternalOrderIngestionService` no `OrdersModule` como provider/export para uso interno por adapters futuros.
 
 Ainda não criar endpoint público nem integração Mercado Livre/Shopee nesse passo.
+
+### Checkpoint implementado — registro interno da ingestão externa no OrdersModule
+
+O `ExternalOrderIngestionService` foi registrado no `OrdersModule` para poder ser consumido internamente por futuros componentes de integração.
+
+Arquivos deste checkpoint:
+
+- `apps/api/src/modules/orders/orders.module.ts`;
+- `apps/api/src/modules/orders/orders.module.spec.ts`.
+
+Nenhum controller, endpoint, webhook, adapter externo, migration ou schema Prisma foi alterado.
+
+#### Alteração aplicada
+
+`OrdersModule` passou a importar:
+
+- `ExternalOrderIngestionService`.
+
+O service passou a constar em:
+
+- `providers`;
+- `exports`.
+
+Isso permite que outros módulos internos possam depender do serviço canônico de ingestão sem duplicar sua lógica de persistência.
+
+`PrismaService` não foi registrado novamente no módulo porque `PrismaModule` já é global.
+
+#### Proteção por teste arquitetural
+
+Foi criado `orders.module.spec.ts` com dois contratos:
+
+1. `ExternalOrderIngestionService` deve estar registrado como provider do `OrdersModule`;
+2. `ExternalOrderIngestionService` deve ser exportado pelo `OrdersModule`.
+
+Ciclo RED confirmado antes da implementação:
+
+- 1 suíte executada;
+- 2 testes executados;
+- 2 testes falharam;
+- `providers` continha somente `OrdersService`;
+- `exports` continha somente `OrdersService`.
+
+Após a implementação:
+
+- 2/2 testes focados aprovados.
+
+#### Validação completa
+
+Após o registro interno:
+
+- `pnpm --filter api test -- orders.module.spec.ts --runInBand` aprovado;
+- 2/2 testes focados aprovados;
+- `pnpm --filter api build` aprovado;
+- 9/9 suítes da API aprovadas;
+- 80/80 testes da API aprovados.
+
+O diff do `OrdersModule` foi mantido mínimo:
+
+- 3 adições;
+- 2 remoções.
+
+As mudanças lógicas são somente:
+
+1. import de `ExternalOrderIngestionService`;
+2. inclusão em `providers`;
+3. inclusão em `exports`.
+
+O arquivo mantém seu formato CRLF original.
+
+Não existe espaço ou TAB real no final das linhas alteradas.
+
+A validação de whitespace do arquivo CRLF foi executada com `core.whitespace=cr-at-eol`.
+
+#### Escopo explicitamente não alterado
+
+Este checkpoint NÃO criou:
+
+- endpoint público de ingestão;
+- endpoint administrativo de ingestão;
+- webhook;
+- polling;
+- integração Mercado Livre;
+- integração Shopee;
+- adapter de marketplace;
+- controller novo;
+- método novo no `OrdersController`;
+- migration;
+- alteração no Prisma schema;
+- tabela de auditoria;
+- backfill;
+- relink automático;
+- remoção de item externo.
+
+O comportamento e as regras do `ExternalOrderIngestionService` publicado no checkpoint anterior permanecem inalterados.
+
+#### Estado arquitetural após este checkpoint
+
+A cadeia interna passa a permitir:
+
+`futuro adapter de canal -> OrdersModule -> ExternalOrderIngestionService -> Prisma`
+
+O `ExternalOrderIngestionService` continua sendo a fronteira canônica responsável pelas regras de ingestão e reconciliação.
+
+Adapters futuros não devem escrever diretamente em:
+
+- `Order`;
+- `OrderItem`;
+- `ExternalOrderReference`;
+- `ExternalOrderItemReference`.
+
+Eles deverão normalizar os dados externos para o contrato canônico e delegar a persistência ao serviço de ingestão.
+
+#### Próxima ação exata
+
+Antes de abrir outro checkpoint técnico:
+
+1. auditar o diff final de:
+   - `orders.module.ts`;
+   - `orders.module.spec.ts`;
+   - este registro no MASTER;
+2. confirmar novamente:
+   - diff mínimo do módulo;
+   - somente provider/export adicionados;
+   - nenhuma rota/controller alterado;
+   - nenhuma migration;
+   - `docs/marto-ia/` fora do Git;
+3. criar um commit único deste checkpoint;
+4. publicar somente em `feat/marto-ops-integration`;
+5. confirmar o SHA remoto.
+
+Somente depois da publicação iniciar o próximo checkpoint.
+
+Próximo checkpoint técnico candidato:
+
+- definir a fronteira interna do primeiro adapter de canal para aproximar a STORE5 da ingestão canônica;
+- o adapter deverá transformar dados específicos do Mercado Livre em `NormalizedExternalOrderInput`;
+- ele não deverá possuir lógica própria de persistência de pedidos;
+- ainda não criar endpoint público ou webhook antes de essa fronteira estar definida e testada.
