@@ -4,6 +4,47 @@ import { OrderEventType, Prisma } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import type { NormalizedExternalOrderInput } from './types/normalized-external-order';
 
+type ExternalItemIdentityState =
+  | 'items_omitted'
+  | 'legacy_unlinked'
+  | 'identified_complete'
+  | 'empty_unidentified'
+  | 'inconsistent';
+
+type ObservableItemReconciliationDecisionState =
+  | 'preserve_items'
+  | 'blocked_item_reconciliation'
+  | 'no_changes'
+  | 'snapshot_changes_detected'
+  | 'new_items_detected';
+
+type ObservableItemReconciliationBlockReason =
+  | 'blocked_not_comparable'
+  | 'blocked_invalid_product_id'
+  | 'blocked_product_relink_required'
+  | 'blocked_new_item_product_id';
+
+type ObservableItemReconciliationResult = {
+  mode:
+    | 'initial_creation'
+    | 'update_reconciliation'
+    | 'not_evaluated';
+  reason:
+    | 'stale_update'
+    | 'items_omitted'
+    | 'unsafe_item_identity'
+    | null;
+  itemIdentityState: ExternalItemIdentityState | null;
+  decisionState: ObservableItemReconciliationDecisionState | null;
+  receivedItems: number;
+  matchedExistingItems: number;
+  newItemCandidates: number;
+  updatedExistingItems: number;
+  createdNewItems: number;
+  blockedItems: number;
+  blockReasons?: ObservableItemReconciliationBlockReason[];
+};
+
 @Injectable()
 export class ExternalOrderIngestionService {
   constructor(private readonly prisma: PrismaService) {}
@@ -375,6 +416,46 @@ export class ExternalOrderIngestionService {
                 normalized.externalUpdatedAt.getTime() <
                   existingReference.externalUpdatedAt.getTime();
 
+              const itemReconciliation: ObservableItemReconciliationResult =
+                isStale
+                  ? {
+                      mode: 'not_evaluated',
+                      reason: 'stale_update',
+                      itemIdentityState: null,
+                      decisionState: null,
+                      receivedItems: normalized.items?.length ?? 0,
+                      matchedExistingItems: 0,
+                      newItemCandidates: 0,
+                      updatedExistingItems: 0,
+                      createdNewItems: 0,
+                      blockedItems: 0,
+                    }
+                  : normalized.items === undefined
+                    ? {
+                        mode: 'not_evaluated',
+                        reason: 'items_omitted',
+                        itemIdentityState: 'items_omitted',
+                        decisionState: null,
+                        receivedItems: 0,
+                        matchedExistingItems: 0,
+                        newItemCandidates: 0,
+                        updatedExistingItems: 0,
+                        createdNewItems: 0,
+                        blockedItems: 0,
+                      }
+                    : {
+                        mode: 'not_evaluated',
+                        reason: 'unsafe_item_identity',
+                        itemIdentityState: null,
+                        decisionState: null,
+                        receivedItems: normalized.items.length,
+                        matchedExistingItems: 0,
+                        newItemCandidates: 0,
+                        updatedExistingItems: 0,
+                        createdNewItems: 0,
+                        blockedItems: 0,
+                      };
+
               return {
                 action: isStale
                   ? ('ignored_stale' as const)
@@ -387,6 +468,7 @@ export class ExternalOrderIngestionService {
                   externalUpdatedAt: existingReference.externalUpdatedAt,
                   lastSyncedAt: existingReference.lastSyncedAt,
                 },
+                itemReconciliation,
               };
             }
 
@@ -530,12 +612,26 @@ export class ExternalOrderIngestionService {
               },
             });
 
+            const itemReconciliation: ObservableItemReconciliationResult = {
+              mode: 'initial_creation',
+              reason: null,
+              itemIdentityState: null,
+              decisionState: null,
+              receivedItems: normalizedItems.length,
+              matchedExistingItems: 0,
+              newItemCandidates: 0,
+              updatedExistingItems: 0,
+              createdNewItems: normalizedItems.length,
+              blockedItems: 0,
+            };
+
             return {
               action: 'create' as const,
               salesChannel: transactionalSalesChannel,
               externalOrderId,
               existingReference: null,
               order,
+              itemReconciliation,
             };
           },
           {
@@ -678,11 +774,25 @@ export class ExternalOrderIngestionService {
                   },
                 });
 
+              const itemReconciliation: ObservableItemReconciliationResult = {
+                mode: 'not_evaluated',
+                reason: 'stale_update',
+                itemIdentityState: null,
+                decisionState: null,
+                receivedItems: normalized.items?.length ?? 0,
+                matchedExistingItems: 0,
+                newItemCandidates: 0,
+                updatedExistingItems: 0,
+                createdNewItems: 0,
+                blockedItems: 0,
+              };
+
               return {
                 action: 'ignored_stale' as const,
                 salesChannel: transactionalSalesChannel,
                 externalOrderId,
                 existingReference: updatedReference,
+                itemReconciliation,
               };
             }
 
@@ -701,7 +811,7 @@ export class ExternalOrderIngestionService {
                 existingReference.order.items.length &&
               hasOnlySameOrderItemReferences;
 
-            const itemIdentityState =
+            const itemIdentityState: ExternalItemIdentityState =
               normalized.items === undefined
                 ? 'items_omitted'
                 : existingReference.order.items.length > 0 &&
@@ -714,11 +824,41 @@ export class ExternalOrderIngestionService {
                       ? 'empty_unidentified'
                       : 'inconsistent';
 
+            let itemReconciliation: ObservableItemReconciliationResult =
+              normalized.items === undefined
+                ? {
+                    mode: 'not_evaluated',
+                    reason: 'items_omitted',
+                    itemIdentityState,
+                    decisionState: null,
+                    receivedItems: 0,
+                    matchedExistingItems: 0,
+                    newItemCandidates: 0,
+                    updatedExistingItems: 0,
+                    createdNewItems: 0,
+                    blockedItems: 0,
+                  }
+                : {
+                    mode: 'not_evaluated',
+                    reason: 'unsafe_item_identity',
+                    itemIdentityState,
+                    decisionState: null,
+                    receivedItems: normalized.items.length,
+                    matchedExistingItems: 0,
+                    newItemCandidates: 0,
+                    updatedExistingItems: 0,
+                    createdNewItems: 0,
+                    blockedItems: 0,
+                  };
+
             if (
               itemIdentityState === 'identified_complete' &&
               normalized.items !== undefined
             ) {
               this.validateExternalItems(normalized.items);
+
+              let updatedExistingItems = 0;
+              let createdNewItems = 0;
 
               const externalItemReferencesByExternalItemId = new Map(
                 existingReference.externalItems.map((externalItem) => [
@@ -1111,6 +1251,8 @@ export class ExternalOrderIngestionService {
                       },
                       data: orderItemUpdateData,
                     });
+
+                    updatedExistingItems += 1;
                   }
                 }
 
@@ -1137,8 +1279,64 @@ export class ExternalOrderIngestionService {
                       externalItemId: match.externalItemId,
                     },
                   });
+
+                  createdNewItems += 1;
                 }
               }
+
+              const observableDecisionState:
+                ObservableItemReconciliationDecisionState =
+                itemReconciliationSetState === 'blocked_unmatched'
+                  ? 'blocked_item_reconciliation'
+                  : itemReconciliationSetState;
+
+              const blockedItems =
+                itemReconciliationPlanSummary.blockedItems +
+                (hasBlockedNewItemProductId
+                  ? newItemCandidates.length
+                  : 0);
+
+              const blockReasons:
+                ObservableItemReconciliationBlockReason[] = [];
+
+              if (
+                itemReconciliationPlanSummary.blockedNotComparable > 0
+              ) {
+                blockReasons.push('blocked_not_comparable');
+              }
+
+              if (
+                itemReconciliationPlanSummary.blockedInvalidProductId > 0
+              ) {
+                blockReasons.push('blocked_invalid_product_id');
+              }
+
+              if (
+                itemReconciliationPlanSummary.blockedProductRelinkRequired >
+                0
+              ) {
+                blockReasons.push(
+                  'blocked_product_relink_required',
+                );
+              }
+
+              if (hasBlockedNewItemProductId) {
+                blockReasons.push('blocked_new_item_product_id');
+              }
+
+              itemReconciliation = {
+                mode: 'update_reconciliation',
+                reason: null,
+                itemIdentityState,
+                decisionState: observableDecisionState,
+                receivedItems: normalized.items.length,
+                matchedExistingItems: existingItemMatches.length,
+                newItemCandidates: newItemCandidates.length,
+                updatedExistingItems,
+                createdNewItems,
+                blockedItems,
+                blockReasons,
+              };
             }
 
             const externalCreatedAt =
@@ -1288,6 +1486,7 @@ export class ExternalOrderIngestionService {
               salesChannel: transactionalSalesChannel,
               externalOrderId,
               existingReference: updatedReference,
+              itemReconciliation,
             };
           },
           {

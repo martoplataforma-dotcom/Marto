@@ -5634,3 +5634,211 @@ Ainda não fazer:
 - alteração da `main`;
 - mudanças Prisma;
 - migrations.
+
+### Checkpoint implementado — resultado observável da ingestão externa
+
+O contrato definido anteriormente para observabilidade da ingestão externa foi implementado no `ExternalOrderIngestionService`.
+
+Arquivos de código envolvidos:
+
+- `apps/api/src/modules/orders/external-order-ingestion.service.ts`;
+- `apps/api/src/modules/orders/external-order-ingestion.service.spec.ts`.
+
+Nenhuma migration, alteração de schema Prisma, controller público, adapter de marketplace ou integração externa foi criada neste checkpoint.
+
+#### Resultado `itemReconciliation`
+
+A ingestão agora devolve um resultado estruturado em memória capaz de separar:
+
+- ação principal da ingestão;
+- modo da reconciliação de itens;
+- motivo de não avaliação;
+- estado de identidade dos itens;
+- decisão de reconciliação;
+- quantidade recebida;
+- itens conhecidos encontrados;
+- candidatos a novo item;
+- updates efetivamente aplicados;
+- novos itens efetivamente criados;
+- itens bloqueados;
+- motivos de bloqueio.
+
+Modos implementados:
+
+- `initial_creation`;
+- `update_reconciliation`;
+- `not_evaluated`.
+
+Motivos explícitos de `not_evaluated`:
+
+- `stale_update`;
+- `items_omitted`;
+- `unsafe_item_identity`.
+
+Estados observáveis de decisão:
+
+- `preserve_items`;
+- `blocked_item_reconciliation`;
+- `no_changes`;
+- `snapshot_changes_detected`;
+- `new_items_detected`.
+
+#### Contadores de efeito
+
+Foram implementados os contadores:
+
+- `receivedItems`;
+- `matchedExistingItems`;
+- `newItemCandidates`;
+- `updatedExistingItems`;
+- `createdNewItems`;
+- `blockedItems`.
+
+`updatedExistingItems` é incrementado somente após um `OrderItem.update()` efetivamente executado na tentativa transacional corrente.
+
+`createdNewItems` é incrementado somente depois da criação do par:
+
+- `OrderItem`;
+- `ExternalOrderItemReference`.
+
+Os contadores existem dentro da tentativa transacional.
+
+Assim, uma tentativa revertida por `P2002` ou `P2034` não contamina o resultado retornado pela tentativa posterior que realmente conclui.
+
+#### Diagnóstico de bloqueios
+
+Foi adicionado `blockReasons` para que um adapter futuro não receba apenas um bloqueio genérico.
+
+Motivos atualmente expostos:
+
+- `blocked_not_comparable`;
+- `blocked_invalid_product_id`;
+- `blocked_product_relink_required`;
+- `blocked_new_item_product_id`.
+
+Isso é somente observabilidade.
+
+Os motivos não alteram a decisão de persistência já existente.
+
+#### Regras de persistência preservadas
+
+Este checkpoint não alterou as regras previamente aprovadas.
+
+Continua proibido:
+
+- inferir identidade por título;
+- inferir identidade por SKU;
+- inferir identidade por posição;
+- inferir identidade por quantidade ou preço;
+- relink automático de `productId`;
+- remover item por ausência no payload;
+- cancelar item por ausência no payload;
+- backfill automático de identidade legada;
+- criar `Product` artificialmente;
+- alterar `Product` durante reconciliação;
+- remover `ExternalOrderItemReference`.
+
+Pedido legado continua sem reconciliação automática quando a identidade externa segura não existe.
+
+Payload parcial continua preservando itens omitidos.
+
+`productId` continua sendo identidade canônica de catálogo e não snapshot mutável.
+
+#### Comportamentos observáveis protegidos por testes
+
+Os testes agora cobrem explicitamente:
+
+1. criação inicial com contagem de itens criados;
+2. update stale como `not_evaluated`;
+3. campo `items` omitido como preservação sem reconciliação;
+4. item conhecido sem alteração;
+5. alteração efetiva de snapshot;
+6. criação efetiva de novo item externo;
+7. conjunto misto com update + criação;
+8. conjunto bloqueado com zero writes;
+9. identidade legada insegura;
+10. retry `P2002` sem contabilizar criação revertida;
+11. bloqueio por relink de `productId`;
+12. bloqueio por `productId` inválido;
+13. bloqueio de novo item cujo `productId` não é válido para o merchant.
+
+#### Ciclo RED → GREEN confirmado
+
+Primeiro ciclo:
+
+- 68 testes focados;
+- 58 passaram;
+- 10 falharam;
+- as 10 falhas eram exclusivamente pela ausência de `itemReconciliation`.
+
+Após implementação inicial:
+
+- 65/68 passaram;
+- 3 falharam;
+- causa identificada: o resultado observável estava sendo finalizado dentro do gate de escrita.
+
+Correção aplicada:
+
+- resultado observável passou a ser calculado mesmo quando não existe write;
+- regras de persistência permaneceram iguais.
+
+Resultado:
+
+- 68/68 testes focados aprovados.
+
+Depois foi ampliado o diagnóstico de bloqueios com `blockReasons`.
+
+Validação final:
+
+- 71/71 testes focados aprovados;
+- `pnpm --filter api build` aprovado;
+- 8/8 suítes da API aprovadas;
+- 78/78 testes da API aprovados;
+- `git diff --check` aprovado.
+
+#### Estado arquitetural após este checkpoint
+
+`ExternalOrderIngestionService` agora possui:
+
+- persistência segura de pedidos externos;
+- proteção stale;
+- reconciliação segura de snapshots;
+- criação segura de novos itens externos;
+- proteção contra relink automático;
+- retry para `P2002` e `P2034`;
+- resultado observável estruturado para consumo futuro por adapters.
+
+Ainda não existe neste checkpoint:
+
+- endpoint público de ingestão;
+- webhook;
+- polling;
+- adapter Mercado Livre;
+- adapter Shopee;
+- registro público via `OrdersController`;
+- backfill;
+- remoção/cancelamento de item;
+- migration nova.
+
+#### Próxima ação exata
+
+Antes de abrir nova funcionalidade:
+
+1. revisar o diff final dos três arquivos;
+2. confirmar que o diff contém somente:
+   - testes do contrato observável;
+   - retorno estruturado em memória;
+   - contadores de efeito;
+   - diagnóstico de bloqueios;
+   - este registro no MASTER;
+3. confirmar novamente ausência de operações proibidas;
+4. criar um commit único deste checkpoint;
+5. publicar somente em `feat/marto-ops-integration`;
+6. confirmar o SHA remoto;
+7. somente depois iniciar o próximo checkpoint técnico.
+
+Próximo checkpoint técnico candidato após publicação:
+
+- registrar `ExternalOrderIngestionService` no `OrdersModule` como provider/export para uso interno por adapters futuros.
+
+Ainda não criar endpoint público nem integração Mercado Livre/Shopee nesse passo.

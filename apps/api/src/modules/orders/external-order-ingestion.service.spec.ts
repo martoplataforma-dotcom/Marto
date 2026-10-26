@@ -2154,6 +2154,847 @@ describe('ExternalOrderIngestionService', () => {
       expect(tx.orderItem.update).not.toHaveBeenCalled();
     });
   });
+  describe('observable item reconciliation result', () => {
+    const previousExternalUpdatedAt = new Date(
+      '2026-09-01T11:00:00.000Z',
+    );
+
+    const incomingExternalUpdatedAt = new Date(
+      '2026-09-01T13:00:00.000Z',
+    );
+
+    type CanonicalOrderItemFixture = {
+      id: string;
+      productId: string | null;
+      titleSnapshot: string | null;
+      skuSnapshot: string | null;
+      variationSnapshot: unknown;
+      quantity: number;
+      unitPrice: Prisma.Decimal;
+    };
+
+    type ExternalOrderItemReferenceFixture = {
+      id: string;
+      orderItemId: string;
+      externalItemId: string;
+    };
+
+    const createUpdateHarness = (input?: {
+      orderItems?: CanonicalOrderItemFixture[];
+      externalItems?: ExternalOrderItemReferenceFixture[];
+      products?: Array<{ id: string }>;
+      persistedExternalUpdatedAt?: Date;
+    }) => {
+      const orderItems =
+        input?.orderItems ??
+        [
+          {
+            id: 'order-item-1',
+            productId: 'product-1',
+            titleSnapshot: 'Produto 1',
+            skuSnapshot: 'SKU-1',
+            variationSnapshot: null,
+            quantity: 1,
+            unitPrice: new Prisma.Decimal('100.00'),
+          },
+        ];
+
+      const externalItems =
+        input?.externalItems !== undefined
+          ? input.externalItems
+          : orderItems.map((item, index) => ({
+              id: `external-order-item-reference-${index + 1}`,
+              orderItemId: item.id,
+              externalItemId: `external-item-${index + 1}`,
+            }));
+
+      const persistedExternalUpdatedAt =
+        input?.persistedExternalUpdatedAt ??
+        previousExternalUpdatedAt;
+
+      const existingReference = {
+        id: 'external-reference-1',
+        orderId: 'order-1',
+        externalStatus: 'paid',
+        externalCreatedAt: new Date('2026-09-01T10:00:00.000Z'),
+        externalUpdatedAt: persistedExternalUpdatedAt,
+        lastSyncedAt: new Date('2026-09-01T11:05:00.000Z'),
+        metadata: null,
+        order: {
+          id: 'order-1',
+          merchantId: 'merchant-1',
+          status: OrderStatus.PAID,
+          buyerNameSnapshot: null,
+          buyerContactSnapshot: null,
+          recipientNameSnapshot: null,
+          destinationZipCode: null,
+          city: null,
+          state: null,
+          destinationAddressSnapshot: null,
+          items: orderItems,
+        },
+        externalItems,
+      };
+
+      let createdOrderItemIndex = 0;
+
+      const tx = {
+        salesChannel: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            merchantId: 'merchant-1',
+            status: 'ACTIVE',
+          }),
+        },
+        externalOrderReference: {
+          findUnique: jest.fn().mockResolvedValue(existingReference),
+          update: jest.fn().mockResolvedValue({
+            id: 'external-reference-1',
+            orderId: 'order-1',
+            externalUpdatedAt: incomingExternalUpdatedAt,
+            lastSyncedAt: new Date(),
+          }),
+        },
+        product: {
+          findMany: jest.fn().mockResolvedValue(input?.products ?? []),
+        },
+        order: {
+          update: jest.fn(),
+        },
+        orderItem: {
+          update: jest.fn().mockResolvedValue({
+            id: 'updated-order-item',
+          }),
+          create: jest.fn().mockImplementation(async () => {
+            createdOrderItemIndex += 1;
+
+            return {
+              id: `created-order-item-${createdOrderItemIndex}`,
+            };
+          }),
+        },
+        externalOrderItemReference: {
+          create: jest.fn().mockResolvedValue({
+            id: 'created-external-order-item-reference',
+          }),
+        },
+        orderEvent: {
+          create: jest.fn(),
+        },
+      };
+
+      const prisma = {
+        salesChannel: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            merchantId: 'merchant-1',
+            status: 'ACTIVE',
+          }),
+        },
+        externalOrderReference: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'external-reference-1',
+            orderId: 'order-1',
+            externalUpdatedAt: persistedExternalUpdatedAt,
+            lastSyncedAt: new Date('2026-09-01T11:05:00.000Z'),
+          }),
+        },
+        $transaction: jest.fn(
+          async (callback: (transaction: typeof tx) => unknown) =>
+            callback(tx),
+        ),
+      } as unknown as PrismaService;
+
+      return {
+        service: new ExternalOrderIngestionService(prisma),
+        prisma,
+        tx,
+      };
+    };
+
+    const createInitialCreationHarness = () => {
+      let createdOrderItemIndex = 0;
+
+      const tx = {
+        salesChannel: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            merchantId: 'merchant-1',
+            status: 'ACTIVE',
+          }),
+        },
+        externalOrderReference: {
+          findUnique: jest.fn().mockResolvedValue(null),
+          create: jest.fn().mockResolvedValue({
+            id: 'external-reference-1',
+          }),
+        },
+        product: {
+          findMany: jest.fn(),
+        },
+        order: {
+          create: jest.fn().mockResolvedValue({
+            id: 'order-1',
+          }),
+          findUniqueOrThrow: jest.fn().mockResolvedValue({
+            id: 'order-1',
+            items: [],
+            externalOrderReferences: [],
+          }),
+        },
+        orderItem: {
+          create: jest.fn().mockImplementation(async () => {
+            createdOrderItemIndex += 1;
+
+            return {
+              id: `order-item-${createdOrderItemIndex}`,
+            };
+          }),
+        },
+        externalOrderItemReference: {
+          create: jest.fn().mockResolvedValue({
+            id: 'external-order-item-reference',
+          }),
+        },
+      };
+
+      const prisma = {
+        salesChannel: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            merchantId: 'merchant-1',
+            status: 'ACTIVE',
+          }),
+        },
+        externalOrderReference: {
+          findUnique: jest.fn().mockResolvedValue(null),
+        },
+        $transaction: jest.fn(
+          async (callback: (transaction: typeof tx) => unknown) =>
+            callback(tx),
+        ),
+      } as unknown as PrismaService;
+
+      return {
+        service: new ExternalOrderIngestionService(prisma),
+        tx,
+      };
+    };
+
+    it('reports initial item creation with the number of items actually created', async () => {
+      const { service } = createInitialCreationHarness();
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        canonicalStatus: OrderStatus.PAID,
+        items: [
+          {
+            externalItemId: 'external-item-1',
+            title: 'Produto 1',
+            quantity: 1,
+            unitPrice: '100.00',
+          },
+          {
+            externalItemId: 'external-item-2',
+            title: 'Produto 2',
+            quantity: 2,
+            unitPrice: '200.00',
+          },
+          {
+            externalItemId: 'external-item-3',
+            title: 'Produto 3',
+            quantity: 1,
+            unitPrice: '300.00',
+          },
+        ],
+      });
+
+      expect(result).toMatchObject({
+        action: 'create',
+        itemReconciliation: {
+          mode: 'initial_creation',
+          reason: null,
+          itemIdentityState: null,
+          decisionState: null,
+          receivedItems: 3,
+          matchedExistingItems: 0,
+          newItemCandidates: 0,
+          updatedExistingItems: 0,
+          createdNewItems: 3,
+          blockedItems: 0,
+        },
+      });
+    });
+
+    it('reports stale updates as not evaluated without counting item writes', async () => {
+      const persistedExternalUpdatedAt = new Date(
+        '2026-09-02T13:00:00.000Z',
+      );
+
+      const incomingStaleExternalUpdatedAt = new Date(
+        '2026-09-01T13:00:00.000Z',
+      );
+
+      const { service } = createUpdateHarness({
+        persistedExternalUpdatedAt,
+      });
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingStaleExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-1',
+            title: 'Produto 1',
+            quantity: 1,
+            unitPrice: '100.00',
+          },
+          {
+            externalItemId: 'external-item-2',
+            title: 'Produto 2',
+            quantity: 1,
+            unitPrice: '200.00',
+          },
+        ],
+      });
+
+      expect(result).toMatchObject({
+        action: 'ignored_stale',
+        itemReconciliation: {
+          mode: 'not_evaluated',
+          reason: 'stale_update',
+          itemIdentityState: null,
+          decisionState: null,
+          receivedItems: 2,
+          matchedExistingItems: 0,
+          newItemCandidates: 0,
+          updatedExistingItems: 0,
+          createdNewItems: 0,
+          blockedItems: 0,
+        },
+      });
+    });
+
+    it('reports omitted items as preserved without reconciliation', async () => {
+      const { service } = createUpdateHarness();
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+      });
+
+      expect(result).toMatchObject({
+        action: 'update',
+        itemReconciliation: {
+          mode: 'not_evaluated',
+          reason: 'items_omitted',
+          itemIdentityState: 'items_omitted',
+          decisionState: null,
+          receivedItems: 0,
+          matchedExistingItems: 0,
+          newItemCandidates: 0,
+          updatedExistingItems: 0,
+          createdNewItems: 0,
+          blockedItems: 0,
+        },
+      });
+    });
+
+    it('reports an unchanged known item without writes', async () => {
+      const { service } = createUpdateHarness();
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-1',
+            productId: 'product-1',
+            title: 'Produto 1',
+            sku: 'SKU-1',
+            quantity: 1,
+            unitPrice: '100.00',
+          },
+        ],
+      });
+
+      expect(result).toMatchObject({
+        action: 'update',
+        itemReconciliation: {
+          mode: 'update_reconciliation',
+          reason: null,
+          itemIdentityState: 'identified_complete',
+          decisionState: 'no_changes',
+          receivedItems: 1,
+          matchedExistingItems: 1,
+          newItemCandidates: 0,
+          updatedExistingItems: 0,
+          createdNewItems: 0,
+          blockedItems: 0,
+        },
+      });
+    });
+
+    it('reports a known item snapshot update as an effective update', async () => {
+      const { service, tx } = createUpdateHarness();
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-1',
+            title: 'Produto 1 atualizado',
+            quantity: 1,
+            unitPrice: '100.00',
+          },
+        ],
+      });
+
+      expect(tx.orderItem.update).toHaveBeenCalledTimes(1);
+
+      expect(result).toMatchObject({
+        action: 'update',
+        itemReconciliation: {
+          mode: 'update_reconciliation',
+          reason: null,
+          itemIdentityState: 'identified_complete',
+          decisionState: 'snapshot_changes_detected',
+          receivedItems: 1,
+          matchedExistingItems: 1,
+          newItemCandidates: 0,
+          updatedExistingItems: 1,
+          createdNewItems: 0,
+          blockedItems: 0,
+        },
+      });
+    });
+
+    it('reports an external new item as an effective creation', async () => {
+      const { service, tx } = createUpdateHarness();
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-new',
+            title: 'Produto novo',
+            quantity: 1,
+            unitPrice: '90.00',
+          },
+        ],
+      });
+
+      expect(tx.orderItem.create).toHaveBeenCalledTimes(1);
+
+      expect(result).toMatchObject({
+        action: 'update',
+        itemReconciliation: {
+          mode: 'update_reconciliation',
+          reason: null,
+          itemIdentityState: 'identified_complete',
+          decisionState: 'new_items_detected',
+          receivedItems: 1,
+          matchedExistingItems: 0,
+          newItemCandidates: 1,
+          updatedExistingItems: 0,
+          createdNewItems: 1,
+          blockedItems: 0,
+        },
+      });
+    });
+
+    it('reports update and creation separately for a valid mixed item set', async () => {
+      const { service, tx } = createUpdateHarness();
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-1',
+            title: 'Produto 1',
+            quantity: 2,
+            unitPrice: '100.00',
+          },
+          {
+            externalItemId: 'external-item-new',
+            title: 'Produto novo',
+            quantity: 1,
+            unitPrice: '75.00',
+          },
+        ],
+      });
+
+      expect(tx.orderItem.update).toHaveBeenCalledTimes(1);
+      expect(tx.orderItem.create).toHaveBeenCalledTimes(1);
+
+      expect(result).toMatchObject({
+        action: 'update',
+        itemReconciliation: {
+          mode: 'update_reconciliation',
+          reason: null,
+          itemIdentityState: 'identified_complete',
+          decisionState: 'new_items_detected',
+          receivedItems: 2,
+          matchedExistingItems: 1,
+          newItemCandidates: 1,
+          updatedExistingItems: 1,
+          createdNewItems: 1,
+          blockedItems: 0,
+        },
+      });
+    });
+
+    it('reports a blocked set with zero effective item writes', async () => {
+      const { service, tx } = createUpdateHarness();
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-1',
+            productId: 'product-different',
+            title: 'Produto 1 atualizado',
+            quantity: 2,
+            unitPrice: '100.00',
+          },
+        ],
+      });
+
+      expect(tx.orderItem.update).not.toHaveBeenCalled();
+      expect(tx.orderItem.create).not.toHaveBeenCalled();
+
+      expect(result).toMatchObject({
+        action: 'update',
+        itemReconciliation: {
+          mode: 'update_reconciliation',
+          reason: null,
+          itemIdentityState: 'identified_complete',
+          decisionState: 'blocked_item_reconciliation',
+          receivedItems: 1,
+          matchedExistingItems: 1,
+          newItemCandidates: 0,
+          updatedExistingItems: 0,
+          createdNewItems: 0,
+          blockedItems: 1,
+        },
+      });
+    });
+
+    it('reports legacy item identity as unsafe and does not pretend reconciliation ran', async () => {
+      const { service, tx } = createUpdateHarness({
+        externalItems: [],
+      });
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-new',
+            title: 'Produto desconhecido',
+            quantity: 1,
+            unitPrice: '100.00',
+          },
+        ],
+      });
+
+      expect(tx.orderItem.update).not.toHaveBeenCalled();
+      expect(tx.orderItem.create).not.toHaveBeenCalled();
+
+      expect(result).toMatchObject({
+        action: 'update',
+        itemReconciliation: {
+          mode: 'not_evaluated',
+          reason: 'unsafe_item_identity',
+          itemIdentityState: 'legacy_unlinked',
+          decisionState: null,
+          receivedItems: 1,
+          matchedExistingItems: 0,
+          newItemCandidates: 0,
+          updatedExistingItems: 0,
+          createdNewItems: 0,
+          blockedItems: 0,
+        },
+      });
+    });
+
+    it('does not count a reverted P2002 creation in the final reconciliation result', async () => {
+      const baseOrderItem = {
+        id: 'order-item-1',
+        productId: 'product-1',
+        titleSnapshot: 'Produto 1',
+        skuSnapshot: 'SKU-1',
+        variationSnapshot: null,
+        quantity: 1,
+        unitPrice: new Prisma.Decimal('100.00'),
+      };
+
+      const concurrentOrderItem = {
+        id: 'order-item-concurrent',
+        productId: null,
+        titleSnapshot: 'Produto concorrente',
+        skuSnapshot: null,
+        variationSnapshot: null,
+        quantity: 1,
+        unitPrice: new Prisma.Decimal('90.00'),
+      };
+
+      const firstReferenceState = {
+        id: 'external-reference-1',
+        orderId: 'order-1',
+        externalStatus: 'paid',
+        externalCreatedAt: new Date('2026-09-01T10:00:00.000Z'),
+        externalUpdatedAt: previousExternalUpdatedAt,
+        lastSyncedAt: new Date('2026-09-01T11:05:00.000Z'),
+        metadata: null,
+        order: {
+          id: 'order-1',
+          merchantId: 'merchant-1',
+          status: OrderStatus.PAID,
+          buyerNameSnapshot: null,
+          buyerContactSnapshot: null,
+          recipientNameSnapshot: null,
+          destinationZipCode: null,
+          city: null,
+          state: null,
+          destinationAddressSnapshot: null,
+          items: [baseOrderItem],
+        },
+        externalItems: [
+          {
+            id: 'external-item-reference-1',
+            orderItemId: 'order-item-1',
+            externalItemId: 'external-item-1',
+          },
+        ],
+      };
+
+      const secondReferenceState = {
+        ...firstReferenceState,
+        order: {
+          ...firstReferenceState.order,
+          items: [
+            baseOrderItem,
+            concurrentOrderItem,
+          ],
+        },
+        externalItems: [
+          ...firstReferenceState.externalItems,
+          {
+            id: 'external-item-reference-concurrent',
+            orderItemId: 'order-item-concurrent',
+            externalItemId: 'external-item-new',
+          },
+        ],
+      };
+
+      const p2002 = new Prisma.PrismaClientKnownRequestError(
+        'Synthetic concurrent external item identity collision.',
+        {
+          code: 'P2002',
+          clientVersion: '6.19.1',
+        },
+      );
+
+      const tx = {
+        salesChannel: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            merchantId: 'merchant-1',
+            status: 'ACTIVE',
+          }),
+        },
+        externalOrderReference: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValueOnce(firstReferenceState)
+            .mockResolvedValueOnce(secondReferenceState),
+          update: jest.fn().mockResolvedValue({
+            id: 'external-reference-1',
+            orderId: 'order-1',
+            externalUpdatedAt: incomingExternalUpdatedAt,
+            lastSyncedAt: new Date(),
+          }),
+        },
+        product: {
+          findMany: jest.fn(),
+        },
+        order: {
+          update: jest.fn(),
+        },
+        orderItem: {
+          update: jest.fn(),
+          create: jest.fn().mockResolvedValue({
+            id: 'order-item-from-failed-attempt',
+          }),
+        },
+        externalOrderItemReference: {
+          create: jest.fn().mockRejectedValueOnce(p2002),
+        },
+        orderEvent: {
+          create: jest.fn(),
+        },
+      };
+
+      const prisma = {
+        salesChannel: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            merchantId: 'merchant-1',
+            status: 'ACTIVE',
+          }),
+        },
+        externalOrderReference: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'external-reference-1',
+            orderId: 'order-1',
+            externalUpdatedAt: previousExternalUpdatedAt,
+            lastSyncedAt: new Date('2026-09-01T11:05:00.000Z'),
+          }),
+        },
+        $transaction: jest.fn(
+          async (callback: (transaction: typeof tx) => unknown) =>
+            callback(tx),
+        ),
+      } as unknown as PrismaService;
+
+      const service = new ExternalOrderIngestionService(prisma);
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-new',
+            title: 'Produto concorrente',
+            quantity: 1,
+            unitPrice: '90.00',
+          },
+        ],
+      });
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+      expect(tx.orderItem.create).toHaveBeenCalledTimes(1);
+
+      expect(result).toMatchObject({
+        action: 'update',
+        itemReconciliation: {
+          mode: 'update_reconciliation',
+          reason: null,
+          itemIdentityState: 'identified_complete',
+          decisionState: 'no_changes',
+          receivedItems: 1,
+          matchedExistingItems: 1,
+          newItemCandidates: 0,
+          updatedExistingItems: 0,
+          createdNewItems: 0,
+          blockedItems: 0,
+        },
+      });
+    });
+    it('reports product relink as a distinguishable reconciliation blocker', async () => {
+      const { service } = createUpdateHarness();
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-1',
+            productId: 'product-different',
+            title: 'Produto 1',
+            quantity: 1,
+            unitPrice: '100.00',
+          },
+        ],
+      });
+
+      expect(result).toMatchObject({
+        action: 'update',
+        itemReconciliation: {
+          decisionState: 'blocked_item_reconciliation',
+          blockedItems: 1,
+          blockReasons: ['blocked_product_relink_required'],
+        },
+      });
+    });
+
+    it('reports an invalid provided productId as a distinguishable reconciliation blocker', async () => {
+      const { service } = createUpdateHarness();
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-1',
+            productId: '   ',
+            title: 'Produto 1',
+            quantity: 1,
+            unitPrice: '100.00',
+          },
+        ],
+      });
+
+      expect(result).toMatchObject({
+        action: 'update',
+        itemReconciliation: {
+          decisionState: 'blocked_item_reconciliation',
+          blockedItems: 1,
+          blockReasons: ['blocked_invalid_product_id'],
+        },
+      });
+    });
+
+    it('reports a blocked new-item productId separately from existing-item blockers', async () => {
+      const { service, tx } = createUpdateHarness({
+        products: [],
+      });
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-new',
+            productId: 'product-from-another-merchant',
+            title: 'Produto novo invalido',
+            quantity: 1,
+            unitPrice: '80.00',
+          },
+        ],
+      });
+
+      expect(tx.orderItem.create).not.toHaveBeenCalled();
+      expect(tx.externalOrderItemReference.create).not.toHaveBeenCalled();
+
+      expect(result).toMatchObject({
+        action: 'update',
+        itemReconciliation: {
+          decisionState: 'blocked_item_reconciliation',
+          createdNewItems: 0,
+          blockReasons: ['blocked_new_item_product_id'],
+        },
+      });
+    });
+  });
   describe('areJsonValuesStructurallyEqual', () => {
     const service = new ExternalOrderIngestionService(
       {} as unknown as PrismaService,
