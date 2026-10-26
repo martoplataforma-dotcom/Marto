@@ -887,6 +887,9 @@ export class ExternalOrderIngestionService {
                   incomingVariation: item.variation,
                   incomingQuantity: item.quantity,
                   incomingUnitPrice,
+                  incomingProductIdProvided:
+                    item.productId !== undefined && item.productId !== null,
+                  normalizedProductId,
                   skuComparisonState,
                   productIdComparisonState,
                   variationComparisonState,
@@ -899,10 +902,20 @@ export class ExternalOrderIngestionService {
                 };
               });
 
-              const itemReconciliationPlanSummary =
-                this.summarizeItemReconciliationPlans(incomingItemMatches);
+              const existingItemMatches = incomingItemMatches.filter(
+                (match) => match.canonicalOrderItem !== null,
+              );
 
-              const scalarItemComparisonSummary = incomingItemMatches.reduce(
+              const newItemCandidates = incomingItemMatches.filter(
+                (match) =>
+                  match.canonicalOrderItem === null &&
+                  match.externalOrderItemReferenceId === null,
+              );
+
+              const itemReconciliationPlanSummary =
+                this.summarizeItemReconciliationPlans(existingItemMatches);
+
+              const scalarItemComparisonSummary = existingItemMatches.reduce(
                 (summary, match) => {
                   summary.totalItems += 1;
 
@@ -939,74 +952,121 @@ export class ExternalOrderIngestionService {
                 },
               );
 
-              const scalarItemDifferenceFieldSummary = incomingItemMatches.reduce(
-                (summary, match) => {
-                  if (match.scalarItemDifferences?.includes('title')) {
-                    summary.title += 1;
-                  }
+              const scalarItemDifferenceFieldSummary =
+                existingItemMatches.reduce(
+                  (summary, match) => {
+                    if (match.scalarItemDifferences?.includes('title')) {
+                      summary.title += 1;
+                    }
 
-                  if (match.scalarItemDifferences?.includes('sku')) {
-                    summary.sku += 1;
-                  }
+                    if (match.scalarItemDifferences?.includes('sku')) {
+                      summary.sku += 1;
+                    }
 
-                  if (match.scalarItemDifferences?.includes('quantity')) {
-                    summary.quantity += 1;
-                  }
+                    if (match.scalarItemDifferences?.includes('quantity')) {
+                      summary.quantity += 1;
+                    }
 
-                  if (match.scalarItemDifferences?.includes('unitPrice')) {
-                    summary.unitPrice += 1;
-                  }
+                    if (match.scalarItemDifferences?.includes('unitPrice')) {
+                      summary.unitPrice += 1;
+                    }
 
-                  return summary;
-                },
-                {
-                  title: 0,
-                  sku: 0,
-                  quantity: 0,
-                  unitPrice: 0,
-                },
-              );
+                    return summary;
+                  },
+                  {
+                    title: 0,
+                    sku: 0,
+                    quantity: 0,
+                    unitPrice: 0,
+                  },
+                );
 
               const incomingItemMatchState =
                 incomingItemMatches.length === 0
                   ? 'items_empty'
-                  : incomingItemMatches.some((match) => match.orderItemId === null)
-                    ? 'contains_unmatched'
+                  : newItemCandidates.length > 0
+                    ? 'contains_new_items'
                     : incomingItemMatches.length ===
                         existingReference.externalItems.length
                       ? 'matched_complete_set'
                       : 'matched_subset';
 
               const itemUpdateEligibility =
-                incomingItemMatchState === 'matched_complete_set' ||
-                incomingItemMatchState === 'matched_subset'
-                  ? 'matched_items_only'
-                  : incomingItemMatchState === 'contains_unmatched'
-                    ? 'blocked_unmatched'
-                    : 'preserve_items';
+                incomingItemMatchState === 'items_empty'
+                  ? 'preserve_items'
+                  : 'matched_items_only';
 
-              const itemReconciliationSetState =
+              const hasInvalidNewItemProductId = newItemCandidates.some(
+                (match) =>
+                  match.incomingProductIdProvided &&
+                  match.normalizedProductId === '',
+              );
+
+              const newItemProductIds = Array.from(
+                new Set(
+                  newItemCandidates
+                    .map((match) => match.normalizedProductId)
+                    .filter((id): id is string => Boolean(id)),
+                ),
+              );
+
+              let hasBlockedNewItemProductId = hasInvalidNewItemProductId;
+
+              if (
+                !hasBlockedNewItemProductId &&
+                newItemProductIds.length > 0
+              ) {
+                const products = await tx.product.findMany({
+                  where: {
+                    id: {
+                      in: newItemProductIds,
+                    },
+                    merchantId: transactionalSalesChannel.merchantId,
+                  },
+                  select: {
+                    id: true,
+                  },
+                });
+
+                const validProductIds = new Set(
+                  products.map((product) => product.id),
+                );
+
+                hasBlockedNewItemProductId = newItemProductIds.some(
+                  (productId) => !validProductIds.has(productId),
+                );
+              }
+
+              const baseItemReconciliationSetState =
                 this.getItemReconciliationSetState({
                   itemUpdateEligibility,
                   itemReconciliationPlanSummary,
                 });
 
+              const itemReconciliationSetState =
+                hasBlockedNewItemProductId
+                  ? 'blocked_item_reconciliation'
+                  : newItemCandidates.length > 0 &&
+                      itemReconciliationPlanSummary.blockedItems === 0
+                    ? 'new_items_detected'
+                    : baseItemReconciliationSetState;
+
               const scalarItemReconciliationReadiness =
                 itemUpdateEligibility === 'preserve_items'
                   ? 'preserve_items'
-                  : itemUpdateEligibility === 'blocked_unmatched'
-                    ? 'blocked_unmatched'
-                    : scalarItemComparisonSummary.notComparableItems > 0
-                      ? 'blocked_not_comparable'
-                      : scalarItemComparisonSummary.singleFieldDifferences === 0 &&
+                  : scalarItemComparisonSummary.notComparableItems > 0
+                    ? 'blocked_not_comparable'
+                    : scalarItemComparisonSummary.singleFieldDifferences === 0 &&
                           scalarItemComparisonSummary.multipleFieldDifferences === 0
-                        ? 'no_scalar_changes'
-                        : 'scalar_changes_detected';
+                      ? 'no_scalar_changes'
+                      : 'scalar_changes_detected';
 
-              if (
-                itemReconciliationSetState === 'snapshot_changes_detected'
-              ) {
-                for (const match of incomingItemMatches) {
+              const canWriteReceivedItems =
+                itemReconciliationSetState === 'snapshot_changes_detected' ||
+                itemReconciliationSetState === 'new_items_detected';
+
+              if (canWriteReceivedItems) {
+                for (const match of existingItemMatches) {
                   if (
                     match.orderItemId === null ||
                     match.canonicalOrderItem === null ||
@@ -1052,6 +1112,31 @@ export class ExternalOrderIngestionService {
                       data: orderItemUpdateData,
                     });
                   }
+                }
+
+                for (const match of newItemCandidates) {
+                  const orderItem = await tx.orderItem.create({
+                    data: {
+                      orderId: existingReference.orderId,
+                      productId: match.normalizedProductId,
+                      titleSnapshot: match.incomingTitle,
+                      skuSnapshot: match.normalizedSku,
+                      variationSnapshot: match.incomingVariation,
+                      quantity: match.incomingQuantity,
+                      unitPrice: match.incomingUnitPrice,
+                    },
+                    select: {
+                      id: true,
+                    },
+                  });
+
+                  await tx.externalOrderItemReference.create({
+                    data: {
+                      orderItemId: orderItem.id,
+                      externalOrderReferenceId: existingReference.id,
+                      externalItemId: match.externalItemId,
+                    },
+                  });
                 }
               }
             }
@@ -1212,7 +1297,7 @@ export class ExternalOrderIngestionService {
       } catch (error) {
         const retryable =
           error instanceof Prisma.PrismaClientKnownRequestError &&
-          error.code === 'P2034';
+          (error.code === 'P2034' || error.code === 'P2002');
 
         if (!retryable || attempt === 3) {
           throw error;

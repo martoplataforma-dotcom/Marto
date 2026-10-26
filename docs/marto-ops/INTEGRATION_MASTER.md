@@ -4798,3 +4798,267 @@ Ainda não implementar nesta etapa:
 - endpoints;
 - conectores Mercado Livre ou Shopee;
 - alteração da `main`.
+
+### Micro-checkpoint — criação segura de item externo novo em pedido existente
+
+A política desta etapa foi definida e protegida anteriormente no Git em:
+
+`5f82482` — `docs(orders): define criacao segura de item externo novo`
+
+A partir dessa definição, foi implementado localmente o comportamento de criação segura de item externo novo em pedido já existente.
+
+Arquivos envolvidos:
+
+- `apps/api/src/modules/orders/external-order-ingestion.service.ts`;
+- `apps/api/src/modules/orders/external-order-ingestion.service.spec.ts`.
+
+Nenhum schema Prisma, migration, endpoint ou conector foi alterado.
+
+#### Pré-condição estrutural preservada
+
+A criação automática de novo item continua restrita ao fluxo em que o pedido existente possui identidade externa de itens confiável.
+
+Pedido legado sem cobertura de `ExternalOrderItemReference` continua sem interpretar `externalItemId` desconhecido como item novo.
+
+Assim:
+
+- pedido com identidade completa pode classificar `externalItemId` desconhecido como candidato novo;
+- pedido legado sem identidade de item continua preservado;
+- nenhuma associação é inferida por SKU, título, posição, preço, quantidade, `productId` ou `variation`.
+
+#### Separação entre itens conhecidos e candidatos novos
+
+O fluxo passou a separar explicitamente:
+
+- itens recebidos já associados a `OrderItem` canônico;
+- candidatos novos sem `ExternalOrderItemReference` existente.
+
+Itens conhecidos continuam seguindo a política já protegida de atualização conservadora dos snapshots.
+
+Candidatos novos somente entram no fluxo de criação quando não existe bloqueio no conjunto recebido.
+
+#### productId de item novo
+
+Para candidato novo:
+
+- `productId` ausente ou `null` resulta em novo `OrderItem` com `productId = null`;
+- string vazia após normalização é considerada inválida;
+- valor informado é validado contra `Product` pertencente ao mesmo `Merchant` do `SalesChannel`;
+- produto inexistente ou pertencente a outro Merchant bloqueia todas as escritas de item daquele payload;
+- nenhum `Product` fictício é criado;
+- nenhum `productId` de item existente sofre relink automático.
+
+A validação dos produtos candidatos ocorre antes de qualquer update ou create de item do conjunto.
+
+#### Criação atômica
+
+Novo item externo é criado como par dentro da mesma transação:
+
+`OrderItem + ExternalOrderItemReference`
+
+O `OrderItem` recebe:
+
+- `orderId` do pedido existente;
+- `productId` validado ou `null`;
+- `titleSnapshot` normalizado;
+- `skuSnapshot` normalizado ou `null`;
+- `variationSnapshot` quando fornecido;
+- `quantity`;
+- `unitPrice`.
+
+Depois da criação do `OrderItem`, é criada a referência com:
+
+- `orderItemId` recém-criado;
+- `externalOrderReferenceId` do pedido existente;
+- `externalItemId` recebido.
+
+Se qualquer escrita da transação falhar, o par não deverá permanecer parcialmente persistido.
+
+#### Conjunto misto
+
+Payload pode conter simultaneamente:
+
+- item conhecido sem mudanças;
+- item conhecido com mudança autorizada de snapshot;
+- item externo novo.
+
+Quando o conjunto é válido:
+
+- snapshots autorizados dos itens conhecidos podem ser atualizados;
+- novos itens podem ser criados;
+- novas `ExternalOrderItemReference` podem ser criadas.
+
+Quando existe bloqueio:
+
+- nenhum snapshot conhecido daquele conjunto é atualizado;
+- nenhum `OrderItem` novo é criado;
+- nenhuma nova `ExternalOrderItemReference` é criada.
+
+#### Payload parcial
+
+A inclusão de um item novo não transforma a resposta externa em snapshot completo do pedido.
+
+Itens canônicos omitidos continuam preservados.
+
+Ausência continua sem significar:
+
+- remoção;
+- cancelamento;
+- redução de conjunto;
+- desvinculação.
+
+#### Idempotência
+
+`externalItemId` já conhecido continua localizando o mesmo item.
+
+Nesse caso:
+
+- não é criado outro `OrderItem`;
+- não é criada outra `ExternalOrderItemReference`;
+- snapshots somente são atualizados quando realmente diferentes.
+
+Depois que um item novo for persistido com sua identidade externa, nova sincronização com o mesmo `externalItemId` deverá entrar nesse fluxo de item conhecido.
+
+#### Concorrência
+
+O retry transacional do update foi ampliado para tratar:
+
+- `P2034`;
+- `P2002`.
+
+`P2034` já era protegido anteriormente.
+
+`P2002` foi acrescentado porque a criação de nova `ExternalOrderItemReference` durante update introduz possibilidade de colisão de unicidade entre sincronizações concorrentes.
+
+Após retry, toda a transação reexecuta a leitura do estado atual antes das escritas.
+
+#### Testes adicionados
+
+Foram adicionados 12 testes novos nesta microetapa.
+
+Nove testes de comportamento de item novo:
+
+1. criar item para `externalItemId` desconhecido quando a identidade existente é completa;
+2. criar `OrderItem + ExternalOrderItemReference` como par;
+3. criar com `productId = null` quando `productId` é omitido;
+4. aceitar `productId` somente quando pertence ao mesmo Merchant;
+5. bloquear todas as escritas de item quando o `productId` novo é inválido;
+6. não criar item desconhecido para pedido legado sem identidade de item;
+7. preservar itens existentes omitidos em payload parcial;
+8. atualizar item conhecido e criar item novo juntos quando não existem bloqueios;
+9. não duplicar item quando o `externalItemId` já é conhecido.
+
+Três testes de concorrência:
+
+10. preservar retry do update após `P2034`;
+11. executar retry do update após `P2002`;
+12. após colisão `P2002`, repetir a transação, reler a identidade externa criada concorrentemente e não tentar criar um segundo `OrderItem`.
+
+#### Ciclo RED
+
+Primeiro conjunto de testes de item novo, antes da implementação:
+
+- 55 testes focados;
+- 48 aprovados;
+- 7 falharam;
+- as 7 falhas corresponderam exatamente aos comportamentos de criação ainda ausentes.
+
+Depois da inclusão dos testes de concorrência:
+
+- 57 testes focados;
+- 49 aprovados;
+- 8 falharam.
+
+Nesse segundo RED:
+
+- o teste de `P2034` passou;
+- o teste de `P2002` falhou;
+- a falha de `P2002` ocorreu porque o update ainda rejeitava a exceção em vez de repetir a transação.
+
+Nenhuma regressão inesperada foi observada nos testes já existentes.
+
+#### Resultado GREEN
+
+Depois da implementação:
+
+- teste focado de `ExternalOrderIngestionService`:
+  - 1 suíte aprovada;
+  - 57 de 57 testes aprovados.
+
+#### Proteção adicional de concorrência após o GREEN inicial
+
+Depois do primeiro GREEN de 57 de 57 testes focados, foi adicionada uma proteção adicional específica para concorrência real de identidade externa.
+
+O novo teste simula:
+
+1. primeira tentativa classificando `externalItemId` como novo;
+2. criação local de `OrderItem`;
+3. colisão `P2002` ao criar `ExternalOrderItemReference`;
+4. rollback da primeira tentativa pela transação;
+5. retry do update;
+6. nova leitura transacional encontrando o item e a referência criados concorrentemente;
+7. reconhecimento do `externalItemId` como item já conhecido;
+8. nenhuma segunda tentativa de criação de `OrderItem`.
+
+Resultado após essa proteção adicional:
+
+- teste focado de `ExternalOrderIngestionService`:
+  - 1 suíte aprovada;
+  - 58 de 58 testes aprovados.
+
+Isso protege explicitamente a regra de que retry por `P2002` deve revalidar o estado atual antes de qualquer nova escrita e não pode duplicar item externo.
+
+#### Validação ampla
+
+Após o GREEN focado:
+
+- `git diff --check`:
+  - aprovado;
+
+- `pnpm --filter api build`:
+  - aprovado;
+
+- suíte completa da API:
+  - 8 de 8 suítes aprovadas;
+  - 65 de 65 testes aprovados;
+  - 0 snapshots.
+
+Estado local validado:
+
+- branch: `feat/marto-ops-integration`;
+- HEAD base protegido: `5f82482`;
+- arquivos de código alterados:
+  - `apps/api/src/modules/orders/external-order-ingestion.service.ts`;
+  - `apps/api/src/modules/orders/external-order-ingestion.service.spec.ts`;
+- `docs/marto-ia/` permanece untracked e fora do escopo;
+- nenhum commit ou push desta implementação foi realizado.
+
+#### Limites preservados
+
+Esta etapa não autoriza:
+
+- remoção automática de `OrderItem`;
+- cancelamento automático de item;
+- remoção de `ExternalOrderItemReference`;
+- alteração automática de `OrderItem.productId`;
+- relink de produto;
+- bootstrap/backfill de pedido legado;
+- heurística de identidade;
+- criação de `Product`;
+- endpoints;
+- conectores Mercado Livre;
+- conectores Shopee;
+- telas operacionais;
+- alteração da `main`;
+- substituição ou remoção do HTML.
+
+#### Próxima ação exata
+
+1. revisar o diff final de:
+   - service;
+   - spec;
+   - este MASTER;
+2. confirmar novamente que a implementação respeita os bloqueios e não introduziu escrita fora do escopo;
+3. proteger esta microetapa em commit próprio na branch `feat/marto-ops-integration`;
+4. executar push somente após revisão;
+5. somente então definir o próximo checkpoint técnico.

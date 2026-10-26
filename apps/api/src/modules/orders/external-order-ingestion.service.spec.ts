@@ -1107,6 +1107,14 @@ describe('ExternalOrderIngestionService', () => {
           update: jest.fn().mockResolvedValue({
             id: 'updated-order-item',
           }),
+          create: jest.fn().mockResolvedValue({
+            id: 'created-order-item',
+          }),
+        },
+        externalOrderItemReference: {
+          create: jest.fn().mockResolvedValue({
+            id: 'created-external-order-item-reference',
+          }),
         },
         orderEvent: {
           create: jest.fn(),
@@ -1360,6 +1368,792 @@ describe('ExternalOrderIngestionService', () => {
     });
   });
 
+  describe('new external item creation on existing orders', () => {
+    const previousExternalUpdatedAt = new Date(
+      '2026-09-01T11:00:00.000Z',
+    );
+    const incomingExternalUpdatedAt = new Date(
+      '2026-09-01T13:00:00.000Z',
+    );
+
+    type CanonicalOrderItemFixture = {
+      id: string;
+      productId: string | null;
+      titleSnapshot: string | null;
+      skuSnapshot: string | null;
+      variationSnapshot: unknown;
+      quantity: number;
+      unitPrice: Prisma.Decimal;
+    };
+
+    type ExternalOrderItemReferenceFixture = {
+      id: string;
+      orderItemId: string;
+      externalItemId: string;
+    };
+
+    const createHarness = (input?: {
+      orderItems?: CanonicalOrderItemFixture[];
+      externalItems?: ExternalOrderItemReferenceFixture[];
+      products?: Array<{ id: string }>;
+    }) => {
+      const orderItems =
+        input?.orderItems ??
+        [
+          {
+            id: 'order-item-1',
+            productId: 'product-1',
+            titleSnapshot: 'Produto 1',
+            skuSnapshot: 'SKU-1',
+            variationSnapshot: {
+              cor: 'preto',
+            },
+            quantity: 1,
+            unitPrice: new Prisma.Decimal('100.00'),
+          },
+        ];
+
+      const externalItems =
+        input?.externalItems !== undefined
+          ? input.externalItems
+          : orderItems.map((item, index) => ({
+              id: `external-order-item-reference-${index + 1}`,
+              orderItemId: item.id,
+              externalItemId: `external-item-${index + 1}`,
+            }));
+
+      const existingReference = {
+        id: 'external-reference-1',
+        orderId: 'order-1',
+        externalStatus: 'paid',
+        externalCreatedAt: new Date('2026-09-01T10:00:00.000Z'),
+        externalUpdatedAt: previousExternalUpdatedAt,
+        lastSyncedAt: new Date('2026-09-01T11:05:00.000Z'),
+        metadata: null,
+        order: {
+          id: 'order-1',
+          merchantId: 'merchant-1',
+          status: OrderStatus.PAID,
+          buyerNameSnapshot: null,
+          buyerContactSnapshot: null,
+          recipientNameSnapshot: null,
+          destinationZipCode: null,
+          city: null,
+          state: null,
+          destinationAddressSnapshot: null,
+          items: orderItems,
+        },
+        externalItems,
+      };
+
+      let createdOrderItemIndex = 0;
+
+      const tx = {
+        salesChannel: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            merchantId: 'merchant-1',
+            status: 'ACTIVE',
+          }),
+        },
+        externalOrderReference: {
+          findUnique: jest.fn().mockResolvedValue(existingReference),
+          update: jest.fn().mockResolvedValue({
+            id: 'external-reference-1',
+            orderId: 'order-1',
+            externalUpdatedAt: incomingExternalUpdatedAt,
+            lastSyncedAt: new Date(),
+          }),
+        },
+        product: {
+          findMany: jest.fn().mockResolvedValue(input?.products ?? []),
+        },
+        order: {
+          update: jest.fn(),
+        },
+        orderItem: {
+          update: jest.fn().mockResolvedValue({
+            id: 'updated-order-item',
+          }),
+          create: jest.fn().mockImplementation(async () => {
+            createdOrderItemIndex += 1;
+
+            return {
+              id: `created-order-item-${createdOrderItemIndex}`,
+            };
+          }),
+        },
+        externalOrderItemReference: {
+          create: jest.fn().mockResolvedValue({
+            id: 'created-external-order-item-reference',
+          }),
+        },
+        orderEvent: {
+          create: jest.fn(),
+        },
+      };
+
+      const prisma = {
+        salesChannel: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            merchantId: 'merchant-1',
+            status: 'ACTIVE',
+          }),
+        },
+        externalOrderReference: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'external-reference-1',
+            orderId: 'order-1',
+            externalUpdatedAt: previousExternalUpdatedAt,
+            lastSyncedAt: new Date('2026-09-01T11:05:00.000Z'),
+          }),
+        },
+        $transaction: jest.fn(
+          async (callback: (transaction: typeof tx) => unknown) =>
+            callback(tx),
+        ),
+      } as unknown as PrismaService;
+
+      return {
+        service: new ExternalOrderIngestionService(prisma),
+        tx,
+        prisma,
+      };
+    };
+
+    it('creates a new item for an unknown externalItemId when existing identity is complete', async () => {
+      const { service, tx } = createHarness();
+
+      await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-new',
+            title: 'Produto novo',
+            sku: 'SKU-NOVO',
+            variation: {
+              cor: 'branco',
+            },
+            quantity: 2,
+            unitPrice: '150.00',
+          },
+        ],
+      });
+
+      expect(tx.orderItem.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('creates OrderItem and ExternalOrderItemReference as an atomic pair', async () => {
+      const { service, tx } = createHarness();
+
+      await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-new',
+            title: 'Produto novo',
+            quantity: 1,
+            unitPrice: '90.00',
+          },
+        ],
+      });
+
+      expect(tx.orderItem.create).toHaveBeenCalledTimes(1);
+
+      expect(tx.externalOrderItemReference.create).toHaveBeenCalledTimes(1);
+
+      expect(tx.externalOrderItemReference.create).toHaveBeenCalledWith({
+        data: {
+          orderItemId: 'created-order-item-1',
+          externalOrderReferenceId: 'external-reference-1',
+          externalItemId: 'external-item-new',
+        },
+      });
+    });
+
+    it('creates a new external item with productId null when productId is omitted', async () => {
+      const { service, tx } = createHarness();
+
+      await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-new',
+            title: 'Produto sem catalogo',
+            quantity: 1,
+            unitPrice: '80.00',
+          },
+        ],
+      });
+
+      expect(tx.orderItem.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          orderId: 'order-1',
+          productId: null,
+          titleSnapshot: 'Produto sem catalogo',
+          skuSnapshot: null,
+          quantity: 1,
+        }),
+        select: {
+          id: true,
+        },
+      });
+    });
+
+    it('accepts a new item productId only when it belongs to the same merchant', async () => {
+      const { service, tx } = createHarness({
+        products: [
+          {
+            id: 'product-new',
+          },
+        ],
+      });
+
+      await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-new',
+            productId: '  product-new  ',
+            title: 'Produto vinculado',
+            quantity: 1,
+            unitPrice: '120.00',
+          },
+        ],
+      });
+
+      expect(tx.product.findMany).toHaveBeenCalledWith({
+        where: {
+          id: {
+            in: ['product-new'],
+          },
+          merchantId: 'merchant-1',
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      expect(tx.orderItem.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          orderId: 'order-1',
+          productId: 'product-new',
+        }),
+        select: {
+          id: true,
+        },
+      });
+    });
+
+    it('blocks all item writes when a new item productId is invalid for the merchant', async () => {
+      const { service, tx } = createHarness({
+        products: [],
+      });
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-1',
+            title: 'Produto 1',
+            quantity: 2,
+            unitPrice: '100.00',
+          },
+          {
+            externalItemId: 'external-item-new',
+            productId: 'product-from-another-merchant',
+            title: 'Produto invalido',
+            quantity: 1,
+            unitPrice: '50.00',
+          },
+        ],
+      });
+
+      expect(result.action).toBe('update');
+
+      expect(tx.product.findMany).toHaveBeenCalledWith({
+        where: {
+          id: {
+            in: ['product-from-another-merchant'],
+          },
+          merchantId: 'merchant-1',
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      expect(tx.orderItem.update).not.toHaveBeenCalled();
+      expect(tx.orderItem.create).not.toHaveBeenCalled();
+      expect(tx.externalOrderItemReference.create).not.toHaveBeenCalled();
+    });
+
+    it('does not create an unknown item for a legacy order without item identity', async () => {
+      const { service, tx } = createHarness({
+        externalItems: [],
+      });
+
+      const result = await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-new',
+            title: 'Produto desconhecido',
+            quantity: 1,
+            unitPrice: '100.00',
+          },
+        ],
+      });
+
+      expect(result.action).toBe('update');
+
+      expect(tx.orderItem.create).not.toHaveBeenCalled();
+      expect(tx.externalOrderItemReference.create).not.toHaveBeenCalled();
+
+      expect(tx.externalOrderReference.update).toHaveBeenCalledTimes(1);
+    });
+
+    it('preserves omitted existing items when a new item is received in a partial payload', async () => {
+      const { service, tx } = createHarness({
+        orderItems: [
+          {
+            id: 'order-item-1',
+            productId: 'product-1',
+            titleSnapshot: 'Produto 1',
+            skuSnapshot: 'SKU-1',
+            variationSnapshot: null,
+            quantity: 1,
+            unitPrice: new Prisma.Decimal('100.00'),
+          },
+          {
+            id: 'order-item-2',
+            productId: 'product-2',
+            titleSnapshot: 'Produto 2',
+            skuSnapshot: 'SKU-2',
+            variationSnapshot: null,
+            quantity: 1,
+            unitPrice: new Prisma.Decimal('200.00'),
+          },
+        ],
+      });
+
+      await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-new',
+            title: 'Produto 3',
+            quantity: 1,
+            unitPrice: '300.00',
+          },
+        ],
+      });
+
+      expect(tx.orderItem.create).toHaveBeenCalledTimes(1);
+      expect(tx.orderItem.update).not.toHaveBeenCalled();
+
+      expect(tx.externalOrderItemReference.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          externalItemId: 'external-item-new',
+          externalOrderReferenceId: 'external-reference-1',
+        }),
+      });
+    });
+
+    it('updates known items and creates new items together when the mixed set has no blockers', async () => {
+      const { service, tx } = createHarness();
+
+      await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-1',
+            title: 'Produto 1',
+            quantity: 2,
+            unitPrice: '100.00',
+          },
+          {
+            externalItemId: 'external-item-new',
+            title: 'Produto novo',
+            quantity: 1,
+            unitPrice: '75.00',
+          },
+        ],
+      });
+
+      expect(tx.orderItem.update).toHaveBeenCalledTimes(1);
+      expect(tx.orderItem.update).toHaveBeenCalledWith({
+        where: {
+          id: 'order-item-1',
+        },
+        data: {
+          quantity: 2,
+        },
+      });
+
+      expect(tx.orderItem.create).toHaveBeenCalledTimes(1);
+      expect(tx.externalOrderItemReference.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('never creates another item when the externalItemId is already known', async () => {
+      const { service, tx } = createHarness();
+
+      await service.ingest({
+        salesChannelId: 'channel-1',
+        externalOrderId: 'external-order-1',
+        externalUpdatedAt: incomingExternalUpdatedAt,
+        items: [
+          {
+            externalItemId: 'external-item-1',
+            title: 'Produto 1',
+            quantity: 2,
+            unitPrice: '100.00',
+          },
+        ],
+      });
+
+      expect(tx.orderItem.update).toHaveBeenCalledTimes(1);
+      expect(tx.orderItem.create).not.toHaveBeenCalled();
+      expect(tx.externalOrderItemReference.create).not.toHaveBeenCalled();
+    });
+  });
+  describe('update transaction retry behavior', () => {
+    const previousExternalUpdatedAt = new Date(
+      '2026-09-01T11:00:00.000Z',
+    );
+
+    const incomingExternalUpdatedAt = new Date(
+      '2026-09-01T13:00:00.000Z',
+    );
+
+    const createKnownRequestError = (code: string) =>
+      new Prisma.PrismaClientKnownRequestError(
+        `Synthetic ${code} for update retry test.`,
+        {
+          code,
+          clientVersion: '6.19.1',
+        },
+      );
+
+    const createRetryHarness = (firstErrorCode: 'P2034' | 'P2002') => {
+      const transactionalReference = {
+        id: 'external-reference-1',
+        orderId: 'order-1',
+        externalStatus: 'paid',
+        externalCreatedAt: new Date('2026-09-01T10:00:00.000Z'),
+        externalUpdatedAt: previousExternalUpdatedAt,
+        lastSyncedAt: new Date('2026-09-01T11:05:00.000Z'),
+        metadata: null,
+        order: {
+          id: 'order-1',
+          merchantId: 'merchant-1',
+          status: OrderStatus.PAID,
+          buyerNameSnapshot: null,
+          buyerContactSnapshot: null,
+          recipientNameSnapshot: null,
+          destinationZipCode: null,
+          city: null,
+          state: null,
+          destinationAddressSnapshot: null,
+          items: [],
+        },
+        externalItems: [],
+      };
+
+      const tx = {
+        salesChannel: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            merchantId: 'merchant-1',
+            status: 'ACTIVE',
+          }),
+        },
+        externalOrderReference: {
+          findUnique: jest.fn().mockResolvedValue(transactionalReference),
+          update: jest.fn().mockResolvedValue({
+            id: 'external-reference-1',
+            orderId: 'order-1',
+            externalUpdatedAt: incomingExternalUpdatedAt,
+            lastSyncedAt: new Date(),
+          }),
+        },
+        order: {
+          update: jest.fn(),
+        },
+        orderEvent: {
+          create: jest.fn(),
+        },
+      };
+
+      let transactionAttempt = 0;
+
+      const prisma = {
+        salesChannel: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            merchantId: 'merchant-1',
+            status: 'ACTIVE',
+          }),
+        },
+        externalOrderReference: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'external-reference-1',
+            orderId: 'order-1',
+            externalUpdatedAt: previousExternalUpdatedAt,
+            lastSyncedAt: new Date('2026-09-01T11:05:00.000Z'),
+          }),
+        },
+        $transaction: jest.fn(
+          async (
+            callback: (transaction: typeof tx) => unknown,
+          ) => {
+            transactionAttempt += 1;
+
+            if (transactionAttempt === 1) {
+              throw createKnownRequestError(firstErrorCode);
+            }
+
+            return callback(tx);
+          },
+        ),
+      } as unknown as PrismaService;
+
+      return {
+        service: new ExternalOrderIngestionService(prisma),
+        prisma,
+        tx,
+      };
+    };
+
+    it('keeps retrying an update transaction after P2034', async () => {
+      const { service, prisma } = createRetryHarness('P2034');
+
+      await expect(
+        service.ingest({
+          salesChannelId: 'channel-1',
+          externalOrderId: 'external-order-1',
+          externalUpdatedAt: incomingExternalUpdatedAt,
+        }),
+      ).resolves.toMatchObject({
+        action: 'update',
+      });
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    });
+
+    it('retries an update transaction after P2002 before creating external item identity', async () => {
+      const { service, prisma } = createRetryHarness('P2002');
+
+      await expect(
+        service.ingest({
+          salesChannelId: 'channel-1',
+          externalOrderId: 'external-order-1',
+          externalUpdatedAt: incomingExternalUpdatedAt,
+        }),
+      ).resolves.toMatchObject({
+        action: 'update',
+      });
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+    });
+    it('revalidates item identity after P2002 and does not create the item again', async () => {
+      const baseOrderItem = {
+        id: 'order-item-1',
+        productId: 'product-1',
+        titleSnapshot: 'Produto 1',
+        skuSnapshot: 'SKU-1',
+        variationSnapshot: null,
+        quantity: 1,
+        unitPrice: new Prisma.Decimal('100.00'),
+      };
+
+      const concurrentOrderItem = {
+        id: 'order-item-concurrent',
+        productId: null,
+        titleSnapshot: 'Produto concorrente',
+        skuSnapshot: null,
+        variationSnapshot: null,
+        quantity: 1,
+        unitPrice: new Prisma.Decimal('90.00'),
+      };
+
+      const firstReferenceState = {
+        id: 'external-reference-1',
+        orderId: 'order-1',
+        externalStatus: 'paid',
+        externalCreatedAt: new Date('2026-09-01T10:00:00.000Z'),
+        externalUpdatedAt: previousExternalUpdatedAt,
+        lastSyncedAt: new Date('2026-09-01T11:05:00.000Z'),
+        metadata: null,
+        order: {
+          id: 'order-1',
+          merchantId: 'merchant-1',
+          status: OrderStatus.PAID,
+          buyerNameSnapshot: null,
+          buyerContactSnapshot: null,
+          recipientNameSnapshot: null,
+          destinationZipCode: null,
+          city: null,
+          state: null,
+          destinationAddressSnapshot: null,
+          items: [baseOrderItem],
+        },
+        externalItems: [
+          {
+            id: 'external-item-reference-1',
+            orderItemId: 'order-item-1',
+            externalItemId: 'external-item-1',
+          },
+        ],
+      };
+
+      const secondReferenceState = {
+        ...firstReferenceState,
+        order: {
+          ...firstReferenceState.order,
+          items: [
+            baseOrderItem,
+            concurrentOrderItem,
+          ],
+        },
+        externalItems: [
+          ...firstReferenceState.externalItems,
+          {
+            id: 'external-item-reference-concurrent',
+            orderItemId: 'order-item-concurrent',
+            externalItemId: 'external-item-new',
+          },
+        ],
+      };
+
+      const p2002 = new Prisma.PrismaClientKnownRequestError(
+        'Synthetic concurrent external item identity collision.',
+        {
+          code: 'P2002',
+          clientVersion: '6.19.1',
+        },
+      );
+
+      const tx = {
+        salesChannel: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            merchantId: 'merchant-1',
+            status: 'ACTIVE',
+          }),
+        },
+        externalOrderReference: {
+          findUnique: jest
+            .fn()
+            .mockResolvedValueOnce(firstReferenceState)
+            .mockResolvedValueOnce(secondReferenceState),
+          update: jest.fn().mockResolvedValue({
+            id: 'external-reference-1',
+            orderId: 'order-1',
+            externalUpdatedAt: incomingExternalUpdatedAt,
+            lastSyncedAt: new Date(),
+          }),
+        },
+        product: {
+          findMany: jest.fn(),
+        },
+        order: {
+          update: jest.fn(),
+        },
+        orderItem: {
+          update: jest.fn(),
+          create: jest.fn().mockResolvedValue({
+            id: 'order-item-from-failed-attempt',
+          }),
+        },
+        externalOrderItemReference: {
+          create: jest.fn().mockRejectedValueOnce(p2002),
+        },
+        orderEvent: {
+          create: jest.fn(),
+        },
+      };
+
+      const prisma = {
+        salesChannel: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'channel-1',
+            merchantId: 'merchant-1',
+            status: 'ACTIVE',
+          }),
+        },
+        externalOrderReference: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'external-reference-1',
+            orderId: 'order-1',
+            externalUpdatedAt: previousExternalUpdatedAt,
+            lastSyncedAt: new Date('2026-09-01T11:05:00.000Z'),
+          }),
+        },
+        $transaction: jest.fn(
+          async (callback: (transaction: typeof tx) => unknown) =>
+            callback(tx),
+        ),
+      } as unknown as PrismaService;
+
+      const service = new ExternalOrderIngestionService(prisma);
+
+      await expect(
+        service.ingest({
+          salesChannelId: 'channel-1',
+          externalOrderId: 'external-order-1',
+          externalUpdatedAt: incomingExternalUpdatedAt,
+          items: [
+            {
+              externalItemId: 'external-item-new',
+              title: 'Produto concorrente',
+              quantity: 1,
+              unitPrice: '90.00',
+            },
+          ],
+        }),
+      ).resolves.toMatchObject({
+        action: 'update',
+      });
+
+      expect(prisma.$transaction).toHaveBeenCalledTimes(2);
+
+      expect(
+        tx.externalOrderReference.findUnique,
+      ).toHaveBeenCalledTimes(2);
+
+      // Primeira tentativa chegou a criar o item localmente,
+      // mas a transacao falhou em P2002 e seria revertida pelo banco.
+      expect(tx.orderItem.create).toHaveBeenCalledTimes(1);
+
+      expect(
+        tx.externalOrderItemReference.create,
+      ).toHaveBeenCalledTimes(1);
+
+      // Na segunda tentativa, a identidade concorrente ja existe.
+      // Portanto nao deve existir uma segunda tentativa de criacao.
+      expect(tx.orderItem.create).toHaveBeenCalledTimes(1);
+
+      expect(tx.orderItem.update).not.toHaveBeenCalled();
+    });
+  });
   describe('areJsonValuesStructurallyEqual', () => {
     const service = new ExternalOrderIngestionService(
       {} as unknown as PrismaService,
