@@ -6937,3 +6937,205 @@ Ainda não fazer:
 - integração Shopee;
 - alteração da `main`;
 - alteração ou commit de `docs/marto-ia/`.
+
+### Checkpoint — MercadoLivreClient interno GREEN com transporte abstrato
+
+A definição da fronteira do `MercadoLivreClient` foi protegida e publicada na branch `feat/marto-ops-integration`.
+
+Commit publicado anterior:
+
+`716a740fec3f747a7fee4a063f9ab3831e607120` — `docs(integrations): define fronteira MercadoLivreClient`
+
+Depois dessa publicação foi executado o primeiro ciclo RED -> GREEN do client.
+
+#### Arquivos desta microetapa
+
+- `apps/api/src/modules/integrations/mercado-livre/mercado-livre.client.ts`;
+- `apps/api/src/modules/integrations/mercado-livre/mercado-livre.client.spec.ts`.
+
+No momento deste registro ambos permanecem locais e ainda não commitados.
+
+#### RED confirmado
+
+Foi criada primeiro somente a suíte do client.
+
+Resultado:
+
+- 1 suíte focada falhou;
+- 20/20 contratos falharam;
+- a causa exclusiva foi a ausência de `./mercado-livre.client`;
+- nenhum client existia;
+- nenhuma rede real foi utilizada.
+
+#### GREEN confirmado
+
+Depois foi criado somente o `MercadoLivreClient` contra uma porta abstrata de transporte.
+
+Validação final:
+
+- Prettier aprovado;
+- ESLint aprovado;
+- 1/1 suíte focada aprovada;
+- 20/20 contratos do client aprovados;
+- build da API aprovado;
+- 12/12 suítes da API aprovadas;
+- 128/128 testes da API aprovados.
+
+#### Fronteira implementada
+
+Foram introduzidos:
+
+- `MercadoLivreHttpRequest`;
+- `MercadoLivreHttpResponse`;
+- `MercadoLivreHttpTransport`;
+- `SearchOrdersPageInput`;
+- `GetOrderInput`;
+- `GetOrderShipmentsInput`;
+- `GetShipmentInput`;
+- `MercadoLivreClient`.
+
+A relação permanece:
+
+`MercadoLivreClient -> MercadoLivreHttpTransport`
+
+O transporte concreto ainda não existe.
+
+#### searchOrdersPage
+
+Implementado:
+
+- `GET /orders/search`;
+- `Authorization: Bearer ...`;
+- `seller`;
+- `offset` opcional;
+- `limit` opcional;
+- `order.date_last_updated.from` opcional;
+- `order.date_last_updated.to` opcional;
+- uma única chamada de transporte;
+- retorno de `paging` e `results` sem normalização.
+
+O client não percorre paginação automaticamente.
+
+#### getOrder
+
+Implementado:
+
+- `GET /orders/{orderId}`;
+- Bearer token;
+- HTTP 200;
+- HTTP 206;
+- headers preservados;
+- body bruto preservado.
+
+Isso permite manter `X-Content-Missing` quando recebido.
+
+Não existe fallback automático para a busca.
+
+#### getOrderShipments
+
+Implementado:
+
+- `GET /orders/{orderId}/shipments`;
+- Bearer token;
+- `X-New-Domain: true`;
+- coleção bruta preservada;
+- somente HTTP 204 vira `[]`.
+
+O client não seleciona shipment por posição ou tipo.
+
+A futura orquestração continuará responsável por procurar explicitamente `type === "forward"`.
+
+#### getShipment
+
+Implementado:
+
+- `GET /shipments/{shipmentId}`;
+- Bearer token;
+- `x-format-new: true`;
+- body bruto preservado.
+
+Nenhum status logístico, endereço, tracking ou lifecycle é convertido pelo client.
+
+#### Falhas de transporte
+
+Status HTTP fora dos contratos permitidos geram erro explícito.
+
+Não existe:
+
+- retry automático;
+- refresh automático;
+- fallback automático;
+- polling;
+- webhook.
+
+Cada método público realiza no máximo uma chamada da porta de transporte.
+
+#### Separação arquitetural preservada
+
+O client NÃO conhece:
+
+- `Merchant`;
+- `SalesChannel`;
+- `salesChannelId`;
+- nome de conta;
+- STORE5;
+- Prisma;
+- `MercadoLivreOrderAdapter`;
+- `ExternalOrderIngestionService`;
+- persistência;
+- reconciliação de itens.
+
+A cadeia permanece conceitualmente:
+
+`credencial futura -> transporte HTTP futuro -> MercadoLivreClient -> orquestração -> MercadoLivreOrderAdapter -> ExternalOrderIngestionService`
+
+O `MercadoLivreSyncService` já publicado permanece mínimo e ainda não foi ampliado.
+
+#### Limites atuais
+
+Ainda NÃO existe:
+
+- implementação concreta de `MercadoLivreHttpTransport`;
+- request real para a API do Mercado Livre;
+- biblioteca HTTP nova;
+- access token real;
+- armazenamento de credenciais;
+- OAuth;
+- refresh token;
+- sincronização de conta real;
+- paginação automática;
+- seleção operacional do shipment `forward`;
+- endpoint de sincronização;
+- webhook;
+- polling;
+- `MercadoLivreModule`;
+- migration.
+
+`docs/marto-ia/` permanece untracked e fora do escopo.
+
+`main` permanece intocada.
+
+#### Próxima ação exata
+
+1. auditar `mercado-livre.client.ts`, `mercado-livre.client.spec.ts` e este MASTER;
+2. confirmar exatamente esses três arquivos no checkpoint;
+3. manter `docs/marto-ia/` fora do Git;
+4. proteger os três arquivos em um único commit;
+5. publicar somente `feat/marto-ops-integration`;
+6. confirmar o SHA remoto;
+7. somente depois definir a fronteira seguinte entre transporte HTTP concreto, credenciais e orquestração real.
+
+Ainda não fazer:
+
+- chamada HTTP real;
+- token real;
+- OAuth;
+- refresh automático;
+- endpoint;
+- webhook;
+- polling;
+- `MercadoLivreModule`;
+- migration;
+- integração Shopee;
+- alteração da `main`;
+- alteração ou commit de `docs/marto-ia/`.
