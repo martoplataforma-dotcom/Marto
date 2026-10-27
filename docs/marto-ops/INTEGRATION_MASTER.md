@@ -6651,3 +6651,289 @@ Ainda não fazer nesta microetapa:
 - integração Shopee;
 - alteração da `main`;
 - alteração ou commit de `docs/marto-ia/`.
+
+### Definição — fronteira interna do MercadoLivreClient
+
+O checkpoint anterior foi publicado na branch `feat/marto-ops-integration` em:
+
+`9d9b803536d1f2ed4686c0377c9156539d090d06` — `feat(integrations): adiciona sync interno Mercado Livre`
+
+Com isso, a próxima fronteira técnica é o componente de leitura HTTP da API do Mercado Livre.
+
+Este checkpoint é somente documental.
+
+Nenhum client HTTP, credencial, chamada real ou biblioteca de rede será criado nesta etapa.
+
+#### Responsabilidade
+
+O `MercadoLivreClient` será uma fronteira de infraestrutura específica do Mercado Livre.
+
+Ele poderá:
+
+- montar requests HTTP;
+- incluir `Authorization: Bearer <accessToken>`;
+- incluir headers exigidos pelo recurso;
+- encaminhar query parameters;
+- receber status, headers e body externos;
+- devolver payload externo sem normalização de negócio.
+
+Ele NÃO poderá:
+
+- consultar Prisma;
+- conhecer `Merchant`;
+- procurar `SalesChannel`;
+- procurar conta por nome;
+- conhecer STORE5;
+- decidir `OrderStatus`;
+- produzir `NormalizedExternalOrderInput`;
+- persistir pedido ou item;
+- chamar `ExternalOrderIngestionService`;
+- renovar token silenciosamente;
+- armazenar refresh token;
+- executar retry automático nesta primeira versão;
+- executar polling;
+- receber webhook.
+
+#### Credencial
+
+Cada operação privada receberá um `accessToken` válido do caller.
+
+OAuth e refresh permanecerão em uma fronteira separada.
+
+Essa separação é obrigatória porque o refresh token do Mercado Livre é rotativo e de uso único: cada renovação devolve um novo refresh token que substitui o anterior.
+
+#### Transporte
+
+A API do Marto atualmente não possui Axios ou `@nestjs/axios` como dependência.
+
+Portanto não será instalada biblioteca de rede neste checkpoint.
+
+O client deverá ser testável inicialmente através de uma porta de transporte fake/injetável.
+
+Conceito:
+
+`MercadoLivreClient -> MercadoLivreHttpTransport`
+
+O transporte concreto será decidido somente depois dos contratos do client estarem protegidos por testes.
+
+#### searchOrdersPage
+
+Recurso:
+
+`GET /orders/search`
+
+Busca de vendedor:
+
+`seller=<sellerId>`
+
+O client deverá executar UMA página por chamada.
+
+Não percorrer toda a paginação automaticamente.
+
+Parâmetros inicialmente autorizados:
+
+- `seller`;
+- `offset`;
+- `limit`;
+- `order.date_last_updated.from`;
+- `order.date_last_updated.to`.
+
+O retorno deverá preservar:
+
+- `paging`;
+- `results`.
+
+Os objetos de `results` são usados para descoberta.
+
+Eles NÃO serão tratados como snapshot autoritativo para a ingestão.
+
+Cada order selecionada deverá ser consultada individualmente antes de passar pelo adapter.
+
+#### getOrder
+
+Recurso:
+
+`GET /orders/{orderId}`
+
+O body do detalhe será o snapshot de order entregue posteriormente ao `MercadoLivreOrderAdapter`.
+
+O client não deverá alterar os campos recebidos.
+
+Respostas válidas inicialmente:
+
+- `200 OK`;
+- `206 Partial Content`.
+
+No caso de `206`, o client deverá preservar também a informação do header:
+
+`X-Content-Missing`
+
+O client não deverá:
+
+- inventar campos ausentes;
+- completar o detalhe com dados da busca;
+- transformar automaticamente 206 em 200;
+- esconder que o conteúdo veio parcial.
+
+A camada posterior decidirá se o payload contém dados suficientes para normalização.
+
+#### getOrderShipments
+
+Recurso atual para relacionar order e shipments:
+
+`GET /orders/{orderId}/shipments`
+
+O client deverá solicitar a Hosted View com:
+
+`X-New-Domain: true`
+
+A resposta válida é uma coleção contendo referências como:
+
+`{ id, type }`
+
+Tipos relevantes incluem:
+
+- `forward`;
+- `return`;
+- `return_to_buyer`.
+
+`204 No Content` deverá ser representado somente como coleção vazia:
+
+`[]`
+
+Isso significa que naquele momento não existem shipments associados ou sua propagação ainda não terminou.
+
+O client NÃO deverá selecionar automaticamente o primeiro elemento.
+
+A futura orquestração deverá procurar explicitamente:
+
+`type === "forward"`
+
+para localizar o envio original da compra.
+
+Shipments de devolução deverão permanecer distinguíveis para a futura evolução de devoluções e pós-venda.
+
+#### getShipment
+
+Recurso:
+
+`GET /shipments/{shipmentId}`
+
+O request deverá utilizar:
+
+`x-format-new: true`
+
+O client retornará o payload externo recebido sem transformar:
+
+- status;
+- substatus;
+- endereço;
+- destinatário;
+- datas;
+- tracking;
+- modalidade logística.
+
+Se determinado dado de endereço não estiver presente na resposta recebida, o client não deverá inventá-lo.
+
+O adapter já possui política conservadora para ausência de shipment ou ausência de endereço.
+
+#### Fluxo futuro
+
+A futura camada de orquestração poderá executar:
+
+1. descobrir IDs por `searchOrdersPage`;
+2. obter o detalhe com `getOrder`;
+3. consultar referências com `getOrderShipments`;
+4. localizar explicitamente o shipment `forward`;
+5. quando existir, consultar seu detalhe com `getShipment`;
+6. entregar `order + shipment?` ao `MercadoLivreOrderAdapter`;
+7. entregar o resultado normalizado ao `ExternalOrderIngestionService`.
+
+Ainda não está decidido se essa orquestração ampliará o `MercadoLivreSyncService` atual ou ficará em um coordenador separado.
+
+Essa decisão será tomada em checkpoint próprio para evitar sobrecarregar o serviço mínimo já protegido.
+
+#### Relógio da atualização
+
+A busca poderá usar `order.date_last_updated` para descoberta e janela temporal.
+
+O snapshot autoritativo continua sendo `getOrder()`.
+
+O adapter já utiliza:
+
+`order.last_updated -> externalUpdatedAt`
+
+Não substituir por `date_last_updated` da listagem.
+
+#### Erros HTTP
+
+Nesta primeira versão, respostas não autorizadas pelo contrato deverão falhar explicitamente.
+
+Não haverá inicialmente:
+
+- retry automático;
+- refresh automático;
+- fallback para endpoint alternativo;
+- body default inventado;
+- resposta fake de produção.
+
+Políticas futuras de 401, 403, 429, 500 e 503 serão definidas separadamente.
+
+#### Local arquitetural candidato
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre.client.ts`
+
+Teste:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre.client.spec.ts`
+
+Não criar `MercadoLivreModule` ainda.
+
+#### RED planejado
+
+A primeira suíte deverá usar transporte fake e proteger pelo menos:
+
+1. search usa `GET /orders/search`;
+2. search envia Bearer token;
+3. search envia `seller`;
+4. search preserva `offset` e `limit`;
+5. search preserva janela `order.date_last_updated.from/to`;
+6. search retorna `paging + results` sem normalizar;
+7. getOrder usa `GET /orders/{id}`;
+8. getOrder aceita 200;
+9. getOrder aceita 206 e preserva `X-Content-Missing`;
+10. getOrder não usa search como fallback;
+11. getOrderShipments usa `GET /orders/{id}/shipments`;
+12. getOrderShipments envia `X-New-Domain: true`;
+13. coleção de shipment refs é preservada;
+14. 204 de getOrderShipments resulta em `[]`;
+15. client não escolhe o primeiro shipment nem o `forward`;
+16. getShipment envia `x-format-new: true`;
+17. erro HTTP inesperado falha explicitamente;
+18. nenhuma operação executa retry ou refresh automático;
+19. client não conhece `salesChannelId`, Merchant ou nome de conta;
+20. client não normaliza nem persiste dados.
+
+#### Próxima ação exata
+
+1. auditar esta definição;
+2. confirmar que somente o MASTER foi alterado;
+3. proteger a definição em commit documental próprio;
+4. publicar somente na branch `feat/marto-ops-integration`;
+5. somente depois criar o spec RED do `MercadoLivreClient`;
+6. implementar o client apenas depois do RED confirmado.
+
+Ainda não fazer:
+
+- chamada real à API do Mercado Livre;
+- access token real;
+- OAuth;
+- refresh token;
+- instalação de biblioteca HTTP;
+- endpoint;
+- webhook;
+- polling;
+- migration;
+- integração Shopee;
+- alteração da `main`;
+- alteração ou commit de `docs/marto-ia/`.
