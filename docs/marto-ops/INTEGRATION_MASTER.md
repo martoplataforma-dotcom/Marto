@@ -4409,7 +4409,7 @@ O próximo passo técnico, antes de qualquer escrita de `OrderItem`, deverá ser
 
 ## 20. NÃO FAZER AINDA
 
-- não integrar Mercado Livre;
+- não conectar ainda a API real do Mercado Livre nem criar endpoint, webhook ou polling;
 - não integrar Shopee;
 - não criar telas de Operação;
 - não migrar Cotações;
@@ -6484,3 +6484,170 @@ Esse serviço futuro poderá coordenar:
 - chamada a `ExternalOrderIngestionService.ingest(...)`.
 
 Ainda não criar endpoint público nem webhook.
+
+### Checkpoint — adapter Mercado Livre publicado e SyncService interno GREEN
+
+A primeira fronteira específica de Mercado Livre avançou da definição para implementação validada.
+
+#### MercadoLivreOrderAdapter — publicado
+
+O mapper puro foi implementado, validado, commitado e publicado na branch:
+
+`feat/marto-ops-integration`
+
+Commit confirmado:
+
+`7f633ca327672f25dd17b877d1ad16710b641732` — `feat(integrations): adiciona adapter Mercado Livre`
+
+Arquivos publicados:
+
+- `apps/api/src/modules/integrations/mercado-livre/mercado-livre-order.adapter.ts`;
+- `apps/api/src/modules/integrations/mercado-livre/mercado-livre-order.adapter.spec.ts`.
+
+O adapter permanece puro:
+
+- recebe `salesChannelId` do caller;
+- recebe o detalhe bruto do order e shipment opcional;
+- normaliza para `NormalizedExternalOrderInput`;
+- não consulta banco;
+- não usa `PrismaService`;
+- não realiza HTTP;
+- não conhece OAuth ou tokens;
+- não executa webhook ou polling;
+- não persiste pedido;
+- não infere `productId` Marto;
+- não depende do nome da conta ou de STORE5.
+
+Identidades protegidas:
+
+- `externalOrderId = String(order.id)`;
+- `pack_id` permanece somente em metadata;
+- `externalItemId = item.id`;
+- `variation_id` permanece snapshot;
+- `productId` continua identidade canônica de catálogo e não é inferido do Mercado Livre.
+
+Política inicial de status protegida:
+
+- order `paid` -> `PAID`;
+- order `cancelled` -> `CANCELLED`;
+- shipment `shipped` -> `IN_TRANSIT`;
+- shipment `delivered` -> `DELIVERED`;
+- estados sem política segura falham explicitamente;
+- Mercado Livre `confirmed` não é convertido automaticamente em `CONFIRMED_BY_SELLER`.
+
+Validação final do adapter antes da publicação:
+
+- 22/22 contratos focados aprovados;
+- Prettier aprovado;
+- ESLint aprovado;
+- build da API aprovado;
+- 10/10 suítes da API aprovadas;
+- 102/102 testes da API aprovados.
+
+#### MercadoLivreSyncService — GREEN local
+
+Foi implementada localmente a primeira versão interna de:
+
+`MercadoLivreSyncService`
+
+Arquivos locais desta microetapa:
+
+- `apps/api/src/modules/integrations/mercado-livre/mercado-livre-sync.service.ts`;
+- `apps/api/src/modules/integrations/mercado-livre/mercado-livre-sync.service.spec.ts`.
+
+Este serviço ainda NÃO é client HTTP do Mercado Livre.
+
+A responsabilidade atual é deliberadamente mínima:
+
+`raw order/shipment já obtidos -> MercadoLivreOrderAdapter.normalize(...) -> ExternalOrderIngestionService.ingest(...) -> resultado ao caller`
+
+Contrato atual:
+
+- encaminha ao adapter exatamente o `salesChannelId`, order e shipment recebidos;
+- preserva ausência de shipment quando o caller não o forneceu;
+- entrega à ingestão exatamente o objeto normalizado retornado pelo adapter;
+- devolve ao caller exatamente o resultado da ingestão;
+- se a normalização falhar, não chama ingestão;
+- se a ingestão falhar, propaga o erro;
+- não executa retry próprio;
+- `syncOrder()` possui fronteira assíncrona consistente.
+
+Ciclo RED confirmado:
+
+- 1 suíte falhou;
+- 6/6 contratos falharam exclusivamente porque `MercadoLivreSyncService` ainda não existia.
+
+GREEN confirmado depois da implementação:
+
+- 6/6 contratos do SyncService aprovados;
+- Prettier aprovado;
+- ESLint aprovado;
+- build da API aprovado;
+- 11/11 suítes da API aprovadas;
+- 108/108 testes da API aprovados.
+
+A primeira implementação síncrona de `syncOrder()` revelou que erro lançado pelo adapter escapava antes da criação de uma Promise.
+
+A fronteira foi corrigida para `async`, preservando a lógica e garantindo que falhas de normalização e ingestão sejam expostas de forma assíncrona consistente ao caller.
+
+#### Limites atuais da integração Mercado Livre
+
+Ainda NÃO existe:
+
+- `MercadoLivreClient`;
+- chamada HTTP para a API real;
+- access token ou refresh token;
+- fluxo OAuth;
+- descoberta ou paginação de pedidos;
+- GET real de detalhe de order;
+- GET real de shipment;
+- webhook;
+- polling;
+- endpoint público ou administrativo de sincronização;
+- `MercadoLivreModule`;
+- persistência específica fora de `ExternalOrderIngestionService`;
+- integração Shopee;
+- migration desta etapa.
+
+O `MercadoLivreSyncService` atual também não deve ser interpretado como responsável por descoberta ou HTTP.
+
+A coleta de recursos externos continuará sendo uma fronteira separada e deverá ser definida antes de qualquer conexão real.
+
+#### Estado local deste checkpoint
+
+Base publicada antes desta microetapa:
+
+`7f633ca327672f25dd17b877d1ad16710b641732`
+
+No estado GREEN atual:
+
+- `mercado-livre-sync.service.ts` está novo e ainda não commitado;
+- `mercado-livre-sync.service.spec.ts` está novo e ainda não commitado;
+- este registro no `INTEGRATION_MASTER.md` ainda não está commitado;
+- `docs/marto-ia/` permanece untracked e fora do escopo;
+- nenhum push desta microetapa foi realizado;
+- `main` permanece intocada.
+
+#### Próxima ação exata
+
+1. auditar o diff final de `mercado-livre-sync.service.ts`, `mercado-livre-sync.service.spec.ts` e deste MASTER;
+2. confirmar que somente esses três arquivos pertencem ao checkpoint;
+3. confirmar novamente que `docs/marto-ia/` permanece fora do Git;
+4. proteger os três arquivos em um único commit na branch `feat/marto-ops-integration`;
+5. executar push somente dessa branch;
+6. confirmar o SHA remoto;
+7. somente depois definir a fronteira do `MercadoLivreClient` e da coleta real de dados externos.
+
+Ainda não fazer nesta microetapa:
+
+- conexão com a API real do Mercado Livre;
+- OAuth ou armazenamento de tokens;
+- descoberta/paginação real;
+- webhook;
+- polling;
+- endpoint público;
+- endpoint administrativo de sincronização;
+- criação de `MercadoLivreModule`;
+- integração Shopee;
+- alteração da `main`;
+- alteração ou commit de `docs/marto-ia/`.
