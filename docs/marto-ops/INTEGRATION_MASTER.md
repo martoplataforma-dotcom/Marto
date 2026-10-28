@@ -7260,3 +7260,262 @@ Ainda não fazer:
 - integração Shopee;
 - alteração da `main`;
 - alteração ou commit de `docs/marto-ia/`.
+
+### Definição — transporte HTTP concreto do Mercado Livre
+
+A correção de destino do `MercadoLivreClient` está publicada em:
+
+`7c4e7548efe2a8b333f29170ed13de16dec854e1` — `fix(integrations): solicita destino no shipment Mercado Livre`
+
+O próximo componente será somente a implementação concreta da porta `MercadoLivreHttpTransport`.
+
+#### Objetivo
+
+Transformar o contrato abstrato já utilizado pelo `MercadoLivreClient` em uma chamada HTTP real, sem introduzir OAuth, persistência de credenciais ou regras de sincronização.
+
+Nome candidato:
+
+`MercadoLivreFetchTransport`
+
+Arquivo candidato:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre.fetch-transport.ts`
+
+Teste candidato:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre.fetch-transport.spec.ts`
+
+#### Dependência HTTP
+
+Não instalar inicialmente:
+
+- Axios;
+- `@nestjs/axios`;
+- `HttpService`;
+- Undici como dependência direta.
+
+A API atual já executa em runtime Node moderno e poderá utilizar o `fetch` global.
+
+Nos testes, a função responsável pelo fetch deverá ser injetável para que nenhuma chamada externa seja realizada.
+
+Forma conceitual:
+
+`MercadoLivreClient -> MercadoLivreHttpTransport -> MercadoLivreFetchTransport -> fetch`
+
+#### Base URL
+
+A base padrão será:
+
+`https://api.mercadolibre.com`
+
+O caller continuará fornecendo somente paths relativos da API, por exemplo:
+
+- `/orders/search`;
+- `/orders/{id}`;
+- `/orders/{id}/shipments`;
+- `/shipments/{id}`.
+
+#### Segurança do path
+
+O transporte não deverá aceitar URL externa fornecida como `path`.
+
+O path deverá:
+
+- iniciar com `/`;
+- não iniciar com `//`;
+- permanecer relativo à base oficial configurada.
+
+Isso impede que um path acidental ou malformado troque silenciosamente o host de destino.
+
+#### Construção da URL
+
+O transporte deverá:
+
+1. combinar base URL e path;
+2. acrescentar cada entrada de `query`;
+3. converter valores numéricos para texto;
+4. usar encoding de URL padrão;
+5. preservar nomes de parâmetros como `order.date_last_updated.from`;
+6. não modificar semanticamente os valores recebidos.
+
+Exemplo conceitual:
+
+`/orders/search + seller + offset + limit -> https://api.mercadolibre.com/orders/search?...`
+
+#### Request
+
+O transporte deverá encaminhar:
+
+- método recebido no contrato atual (`GET`);
+- headers recebidos do `MercadoLivreClient`;
+- URL construída;
+- exatamente uma chamada de fetch por `request()`.
+
+O transporte não cria Bearer token.
+
+O transporte apenas encaminha `Authorization` quando esse header foi fornecido pelo client.
+
+O mesmo vale para:
+
+- `X-New-Domain`;
+- `x-format-new`;
+- `X-Api-Version`;
+- futuros headers explicitamente definidos pelo client.
+
+#### Response
+
+O transporte retornará o formato já definido:
+
+`MercadoLivreHttpResponse`
+
+Preservando:
+
+- `status`;
+- headers;
+- body.
+
+O transporte NÃO decide se um status HTTP é aceito pelo caso de uso.
+
+Exemplos:
+
+- 200 continua sendo 200;
+- 206 continua sendo 206;
+- 204 continua sendo 204;
+- 401 continua sendo 401;
+- 429 continua sendo 429;
+- 500 continua sendo 500.
+
+A política de status permanece no `MercadoLivreClient` ou em camada superior.
+
+#### Headers de resposta
+
+Os nomes dos headers retornados pelo transporte deverão ser normalizados para minúsculas.
+
+Exemplo:
+
+`X-Content-Missing -> x-content-missing`
+
+Isso evita dependência de capitalização, já que nomes de headers HTTP são case-insensitive.
+
+Quando a integração precisar consultar `X-Content-Missing`, deverá considerar a representação normalizada.
+
+#### Body
+
+Política inicial de leitura:
+
+1. HTTP 204 retorna `body: undefined` sem exigir JSON;
+2. nos demais status, o corpo é lido uma única vez como texto;
+3. corpo vazio resulta em `undefined`;
+4. se o texto representar JSON válido, retornar o valor JSON parseado;
+5. se não representar JSON válido, preservar o texto recebido.
+
+O transporte não inventa objeto vazio.
+
+O transporte não converte arrays em objetos.
+
+O transporte não normaliza payload do Mercado Livre.
+
+#### Erros de rede
+
+Falhas da própria execução do fetch deverão ser propagadas.
+
+Nesta primeira versão não haverá política Marto de:
+
+- retry automático;
+- refresh de token;
+- fallback de host;
+- polling;
+- repetição silenciosa da chamada.
+
+Uma chamada de `request()` deve resultar em no máximo uma chamada de fetch.
+
+Timeout/retry resiliente poderá ser definido separadamente antes da operação contínua em produção.
+
+#### Separação de OAuth
+
+O transporte NÃO deverá conhecer:
+
+- `client_id`;
+- `client_secret`;
+- authorization code;
+- access token armazenado;
+- refresh token;
+- expiração de token;
+- rotação de refresh token.
+
+Credenciais/OAuth continuarão em fronteira própria.
+
+#### Separação de domínio Marto
+
+O transporte NÃO deverá conhecer:
+
+- `Merchant`;
+- `SalesChannel`;
+- `salesChannelId`;
+- nome de conta;
+- STORE5;
+- Prisma;
+- `Order`;
+- `MercadoLivreOrderAdapter`;
+- `ExternalOrderIngestionService`;
+- lifecycle de pedido.
+
+Sua responsabilidade termina em HTTP.
+
+#### Instanciação
+
+A primeira implementação poderá receber:
+
+- uma função fetch injetável para testes;
+- base URL opcional para isolamento técnico, com padrão `https://api.mercadolibre.com`.
+
+Isso não significa permitir troca arbitrária de host por dados externos.
+
+A base é configuração de infraestrutura controlada pela aplicação.
+
+#### RED planejado
+
+A primeira suíte do `MercadoLivreFetchTransport` deverá proteger pelo menos:
+
+1. usa `https://api.mercadolibre.com` como base padrão;
+2. combina corretamente base + path;
+3. encaminha método GET;
+4. encaminha headers recebidos;
+5. serializa query string;
+6. preserva parâmetros com pontos no nome;
+7. serializa valores numéricos de query;
+8. realiza exatamente uma chamada de fetch;
+9. preserva o status HTTP;
+10. normaliza nomes de headers de resposta para minúsculas;
+11. parseia body JSON de objeto;
+12. preserva body JSON que seja array;
+13. HTTP 204 resulta em body ausente;
+14. body vazio resulta em body ausente;
+15. body não JSON é preservado como texto;
+16. erro de rede é propagado sem retry;
+17. rejeita path absoluto ou protocol-relative antes do fetch.
+
+#### Próxima ação exata
+
+1. auditar esta definição;
+2. confirmar que somente o MASTER foi alterado;
+3. proteger esta definição em commit documental próprio;
+4. publicar somente na branch `feat/marto-ops-integration`;
+5. somente depois criar o spec RED de `MercadoLivreFetchTransport`;
+6. implementar o transporte apenas depois do RED confirmado.
+
+Ainda não fazer:
+
+- chamada real ao Mercado Livre;
+- access token real;
+- OAuth;
+- refresh token;
+- migration de credenciais;
+- `MercadoLivreModule`;
+- orquestração de conta;
+- endpoint;
+- webhook;
+- polling;
+- integração Shopee;
+- alteração da `main`;
+- alteração ou commit de `docs/marto-ia/`.
