@@ -553,6 +553,70 @@ describe('MercadoLivreClient', () => {
     );
   });
 
+  it('requests destination view when requesting shipment detail', async () => {
+    const transport = createTransport({
+      status: 200,
+      headers: {},
+      body: {
+        id: 7001,
+        status: 'shipped',
+        receiver_address: {
+          zip_code: '36500-000',
+        },
+      },
+    });
+
+    const client = createClient(transport);
+
+    await client.getShipment({
+      accessToken: 'access-token',
+      shipmentId: '7001',
+    });
+
+    expect(transport.request).toHaveBeenCalledTimes(1);
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: 'GET',
+        path: '/shipments/7001',
+        query: {
+          views: 'destination',
+        },
+      }),
+    );
+  });
+
+  it('requests API version 2 for shipment destination PII', async () => {
+    const transport = createTransport({
+      status: 200,
+      headers: {},
+      body: {
+        id: 7001,
+        status: 'shipped',
+        receiver_address: {
+          receiver_name: 'Cliente Teste',
+          zip_code: '36500-000',
+        },
+      },
+    });
+
+    const client = createClient(transport);
+
+    await client.getShipment({
+      accessToken: 'access-token',
+      shipmentId: '7001',
+    });
+
+    expect(transport.request).toHaveBeenCalledTimes(1);
+    expect(transport.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        headers: expect.objectContaining({
+          Authorization: 'Bearer access-token',
+          'x-format-new': 'true',
+          'X-Api-Version': '2',
+        }),
+      }),
+    );
+  });
   it('fails explicitly for an unexpected HTTP status', async () => {
     const transport = createTransport({
       status: 500,

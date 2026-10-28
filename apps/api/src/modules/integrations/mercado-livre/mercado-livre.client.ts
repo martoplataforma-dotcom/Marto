@@ -153,7 +153,11 @@ export class MercadoLivreClient {
       path: `/shipments/${input.shipmentId}`,
       headers: this.getAuthorizationHeaders(input.accessToken, {
         'x-format-new': 'true',
+        'X-Api-Version': '2',
       }),
+      query: {
+        views: 'destination',
+      },
     });
 
     if (response.status !== 200) {

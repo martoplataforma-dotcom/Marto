@@ -7139,3 +7139,124 @@ Ainda não fazer:
 - integração Shopee;
 - alteração da `main`;
 - alteração ou commit de `docs/marto-ia/`.
+
+### Correção — getShipment solicita explicitamente os dados de destino
+
+Depois da publicação inicial do `MercadoLivreClient`, foi identificada uma lacuna no contrato de leitura do shipment.
+
+Checkpoint publicado anterior:
+
+`632f051aa5dbe2ec801b567fd9a9a29c5a487ca0` — `feat(integrations): adiciona client Mercado Livre`
+
+#### Motivo
+
+O adapter utiliza `shipment.receiver_address` para preencher dados operacionais do pedido, incluindo:
+
+- `recipientName`;
+- `destinationZipCode`;
+- `city`;
+- `state`;
+- `destinationAddress`.
+
+O contrato externo vigente exige solicitação explícita da view de destino para disponibilizar `receiver_address`.
+
+Além disso, dados PII do destinatário, como `receiver_name`, dependem da versão 2 da API.
+
+Por isso, `getShipment()` não deve consultar somente `/shipments/{shipmentId}` com `x-format-new`.
+
+#### RED
+
+Foram adicionados primeiro dois contratos ao `mercado-livre.client.spec.ts`:
+
+1. `getShipment()` deve enviar `views=destination`;
+2. `getShipment()` deve enviar `X-Api-Version: 2`.
+
+Resultado RED confirmado:
+
+- 22 contratos totais;
+- 20 contratos anteriores continuaram GREEN;
+- exatamente 2 contratos novos ficaram RED;
+- nenhuma regressão anterior foi detectada.
+
+#### GREEN
+
+A implementação de `getShipment()` foi alterada somente para acrescentar:
+
+```text
+query:
+  views=destination
+
+headers:
+  x-format-new=true
+  X-Api-Version=2
+```
+
+Nenhuma outra responsabilidade foi adicionada ao `MercadoLivreClient`.
+
+#### Resultado validado
+
+- Prettier aprovado;
+- ESLint aprovado;
+- 1/1 suíte focada aprovada;
+- 22/22 contratos do `MercadoLivreClient` aprovados;
+- build da API aprovado;
+- 12/12 suítes da API aprovadas;
+- 130/130 testes da API aprovados.
+
+#### Consequência operacional
+
+Quando o shipment externo disponibilizar os dados permitidos ao caller, o Marto poderá receber o endereço necessário para o adapter preencher o snapshot de destino sem inventar informações ausentes.
+
+A política conservadora permanece:
+
+- dado ausente continua ausente;
+- o client não inventa endereço;
+- o adapter não deve preencher campos não recebidos;
+- nenhuma informação externa é tratada como identidade interna do Marto.
+
+#### Fronteira preservada
+
+Continuam fora do `MercadoLivreClient`:
+
+- OAuth;
+- refresh token;
+- persistência de credenciais;
+- `SalesChannel`;
+- `Merchant`;
+- Prisma;
+- normalização de pedido;
+- ingestão;
+- seleção do shipment `forward`;
+- paginação automática;
+- retry automático.
+
+Ainda não existe transporte HTTP concreto.
+
+Nenhuma chamada real ao Mercado Livre foi realizada nesta correção.
+
+`docs/marto-ia/` continua fora do Git.
+
+`main` continua intocada.
+
+#### Próxima ação exata
+
+1. auditar o diff desta correção em `mercado-livre.client.ts`, `mercado-livre.client.spec.ts` e neste MASTER;
+2. confirmar novamente 22/22 contratos e o escopo de exatamente três arquivos;
+3. proteger a correção em commit próprio;
+4. publicar somente na branch `feat/marto-ops-integration`;
+5. somente depois definir o transporte HTTP concreto;
+6. manter credenciais/OAuth como fronteira separada do transporte.
+
+Ainda não fazer:
+
+- chamada HTTP real;
+- access token real;
+- OAuth;
+- refresh token;
+- migration de credencial;
+- endpoint;
+- webhook;
+- polling;
+- integração Shopee;
+- alteração da `main`;
+- alteração ou commit de `docs/marto-ia/`.
