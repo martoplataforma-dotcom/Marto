@@ -7519,3 +7519,139 @@ Ainda não fazer:
 - integração Shopee;
 - alteração da `main`;
 - alteração ou commit de `docs/marto-ia/`.
+
+### Checkpoint — MercadoLivreFetchTransport GREEN
+
+A fronteira documental do transporte HTTP foi publicada em:
+
+`e99a39e7cabbf15737df2f7af27d7b16e4e30a92` — `docs(integrations): define fetch transport Mercado Livre`
+
+Depois desse checkpoint, foi executado o ciclo RED -> GREEN do transporte HTTP concreto.
+
+#### RED confirmado
+
+Foi criado primeiro somente:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre.fetch-transport.spec.ts`
+
+O RED protege 17 contratos.
+
+Após ajuste exclusivamente de tipagem/estilo dos mocks para atender ESLint:
+
+- Prettier aprovado;
+- ESLint aprovado;
+- 1/1 suíte falhou;
+- 17/17 contratos falharam;
+- a causa exclusiva foi a ausência de `mercado-livre.fetch-transport.ts`;
+- nenhuma implementação existia naquele ponto;
+- nenhuma chamada externa foi executada.
+
+#### GREEN implementado
+
+Foi criado somente:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre.fetch-transport.ts`
+
+A implementação concreta é `MercadoLivreFetchTransport` e implementa a porta `MercadoLivreHttpTransport` já consumida pelo `MercadoLivreClient`.
+
+Fluxo técnico atual:
+
+`MercadoLivreClient -> MercadoLivreHttpTransport -> MercadoLivreFetchTransport -> fetch`
+
+#### Responsabilidades implementadas
+
+O transporte:
+
+- usa `https://api.mercadolibre.com` como base padrão;
+- aceita função fetch injetável para testes;
+- encaminha o método HTTP recebido;
+- encaminha os headers recebidos sem criar autenticação;
+- combina base URL + path relativo;
+- serializa query string;
+- preserva nomes de query com pontos;
+- converte valores numéricos de query para texto;
+- realiza exatamente uma chamada de fetch por `request()`;
+- preserva o status HTTP recebido;
+- normaliza nomes de headers de resposta para minúsculas;
+- lê body JSON de objeto;
+- preserva JSON array como array;
+- trata HTTP 204 sem tentar ler body;
+- trata body vazio como ausente;
+- preserva body não JSON como texto;
+- propaga erro de rede sem retry;
+- rejeita path absoluto, protocol-relative ou não relativo antes do fetch.
+
+#### Resultado GREEN
+
+- 17/17 contratos do `MercadoLivreFetchTransport` aprovados;
+- Prettier aprovado;
+- ESLint aprovado;
+- build da API aprovado;
+- 13/13 suítes aprovadas;
+- 147/147 testes aprovados.
+
+#### Limites preservados
+
+O transporte NÃO conhece:
+
+- access token armazenado;
+- refresh token;
+- OAuth;
+- `client_id`;
+- `client_secret`;
+- `SalesChannel`;
+- `Merchant`;
+- Prisma;
+- pedido Marto;
+- adapter;
+- ingestão;
+- STORE5.
+
+Nenhuma dependência HTTP adicional foi instalada.
+
+Não foram adicionados Axios, `@nestjs/axios` ou `HttpService`.
+
+Nenhuma chamada real ao Mercado Livre foi executada durante o RED/GREEN.
+
+#### Estado da integração após este checkpoint
+
+A cadeia interna já possui:
+
+1. `MercadoLivreOrderAdapter`;
+2. `MercadoLivreSyncService`;
+3. `MercadoLivreClient`;
+4. `MercadoLivreHttpTransport`;
+5. `MercadoLivreFetchTransport`.
+
+Portanto, a camada de leitura HTTP está tecnicamente preparada, mas ainda não existe conexão autorizada com uma conta real.
+
+Ainda faltam, separadamente:
+
+1. modelo seguro de credenciais por `SalesChannel`;
+2. OAuth/autorização da conta;
+3. persistência segura de access token e refresh token;
+4. rotação concorrente segura do refresh token;
+5. orquestração que liga `SalesChannel` + credencial + client + adapter + ingestão;
+6. primeira sincronização controlada de uma conta real.
+
+#### Próxima ação exata
+
+1. auditar os dois arquivos do fetch transport e este checkpoint no MASTER;
+2. confirmar novamente 17/17 contratos;
+3. proteger implementação + spec + MASTER em um único commit;
+4. publicar somente em `feat/marto-ops-integration`;
+5. depois definir documentalmente a fronteira de credenciais/OAuth ligada a `SalesChannel`;
+6. não conectar conta real antes dessa fronteira estar definida e testada.
+
+Ainda não fazer:
+
+- token real;
+- OAuth real;
+- migration de credenciais sem desenho prévio;
+- refresh automático;
+- endpoint público;
+- webhook;
+- polling;
+- sincronização automática;
+- alteração da `main`;
+- alteração ou commit de `docs/marto-ia/`.
