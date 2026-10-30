@@ -8059,3 +8059,415 @@ A implementação será dividida para manter baixo risco:
 #### Próxima ação exata
 
 Depois que esta fronteira documental estiver auditada e publicada, o próximo microstep será desenhar o modelo Prisma mínimo de `SalesChannelCredential` e os estados necessários, ainda sem executar migration e sem armazenar qualquer segredo real.
+
+### Definição — modelo Prisma mínimo de SalesChannelCredential
+
+Esta definição acontece depois da publicação da fronteira de credenciais/OAuth em:
+
+`dd29589b83bf7f35c97aad1a599db93cbab933be` — `docs(integrations): define credenciais OAuth Mercado Livre`
+
+Neste checkpoint ainda NÃO será alterado `schema.prisma` e nenhuma migration será criada.
+
+O objetivo é fechar o desenho mínimo do armazenamento antes de transformar o desenho em schema executável.
+
+#### Decisão principal
+
+A credencial será uma entidade 1:1 subordinada a `SalesChannel`:
+
+`SalesChannel -> SalesChannelCredential`
+
+`SalesChannel` continua sendo a identidade operacional do canal.
+
+`SalesChannelCredential` guarda somente estado técnico de autorização e material secreto criptografado.
+
+Não duplicar `merchantId` na credencial.
+
+Não duplicar `SalesChannel.type` na credencial.
+
+Essas informações são obtidas pela relação com `SalesChannel`.
+
+#### Enum proposto
+
+```prisma
+enum SalesChannelCredentialStatus {
+  ACTIVE
+  REFRESHING
+  TRANSIENT_ERROR
+  ROTATION_UNCERTAIN
+  REAUTH_REQUIRED
+}
+```
+
+#### Semântica dos estados
+
+`ACTIVE`:
+
+- existe uma geração de credencial persistida;
+- ela pode ser utilizada diretamente se o access token ainda estiver válido;
+- ela pode entrar em refresh controlado quando necessário.
+
+`REFRESHING`:
+
+- uma tentativa exclusiva de rotação está em andamento;
+- nenhuma segunda tentativa deve utilizar a mesma geração de refresh token;
+- `refreshAttemptId` e `refreshStartedAt` identificam a tentativa.
+
+`TRANSIENT_ERROR`:
+
+- ocorreu falha classificada como recuperável;
+- não significa revogação;
+- não autoriza retry infinito;
+- uma nova tentativa só acontece por política controlada.
+
+`ROTATION_UNCERTAIN`:
+
+- existe dúvida se o provedor já consumiu o refresh token atual;
+- inclui falha de persistência depois de resposta OAuth bem-sucedida;
+- inclui resultado de rede realmente ambíguo quando não é seguro afirmar que o token não foi consumido;
+- o refresh token antigo NÃO pode ser reutilizado cegamente;
+- recuperação futura deverá reconciliar o estado ou exigir reautorização.
+
+`REAUTH_REQUIRED`:
+
+- a credencial não pode continuar sendo recuperada automaticamente com segurança;
+- autorização OAuth nova é necessária;
+- `invalid_grant`, revogação ou rotação irrecuperável podem levar a este estado.
+
+#### Model proposto
+
+```prisma
+model SalesChannelCredential {
+  id                          String                       @id @default(uuid())
+  salesChannelId              String                       @unique
+  status                      SalesChannelCredentialStatus @default(ACTIVE)
+
+  accessTokenEncrypted        String
+  refreshTokenEncrypted       String
+  encryptionKeyVersion        String
+
+  tokenType                   String?
+  scope                       String?
+  accessTokenExpiresAt        DateTime
+  authorizedExternalAccountId String
+
+  tokenGeneration             Int                          @default(1)
+  refreshAttemptId            String?
+  refreshStartedAt            DateTime?
+  lastRotatedAt               DateTime?
+
+  lastErrorCode               String?
+  lastErrorAt                 DateTime?
+
+  createdAt                   DateTime                     @default(now())
+  updatedAt                   DateTime                     @updatedAt
+
+  salesChannel SalesChannel @relation(fields: [salesChannelId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([accessTokenExpiresAt])
+}
+```
+
+E em `SalesChannel` será adicionada somente a relação inversa opcional:
+
+```prisma
+credential SalesChannelCredential?
+```
+
+#### salesChannelId
+
+`salesChannelId` é `@unique`.
+
+Isso implementa a relação 1:1.
+
+Um mesmo `SalesChannel` não pode possuir duas credenciais OAuth ativas em registros diferentes.
+
+A chave estrangeira usa `onDelete: Cascade` porque a credencial é material subordinado ao canal e não deve sobreviver como segredo órfão depois da remoção do `SalesChannel`.
+
+As restrições já existentes sobre pedidos externos continuam podendo impedir a exclusão do canal em outros pontos do modelo.
+
+#### accessTokenEncrypted e refreshTokenEncrypted
+
+Apesar do nome dos campos, eles NÃO contêm token em texto puro.
+
+Cada valor deverá representar um envelope criptográfico autenticado produzido pelo serviço criptográfico do backend.
+
+O formato interno do envelope ainda será definido no checkpoint do serviço criptográfico.
+
+Ele deverá ser suficiente para transportar os dados necessários à descriptografia autenticada, como nonce/IV, ciphertext e authentication tag ou representação equivalente.
+
+Nunca usar esses campos para salvar temporariamente token puro.
+
+#### encryptionKeyVersion
+
+`encryptionKeyVersion` identifica qual versão da chave externa foi utilizada para proteger a geração armazenada.
+
+A chave propriamente dita NÃO fica no banco.
+
+Esse campo permite futura rotação/recriptografia sem adivinhar qual chave deve abrir o envelope.
+
+Access token e refresh token da mesma geração devem ser persistidos de forma coerente com essa versão.
+
+#### authorizedExternalAccountId
+
+`authorizedExternalAccountId` registra a identidade externa devolvida/confirmada durante a autorização.
+
+Ele existe para validação e auditoria da credencial.
+
+A identidade canônica do canal continua sendo:
+
+`SalesChannel.externalAccountId`
+
+Na criação e reconexão, os dois valores devem ser compatíveis.
+
+O campo da credencial não deve substituir silenciosamente `SalesChannel.externalAccountId`.
+
+Nenhuma operação de pedido deverá escolher seller usando apenas `authorizedExternalAccountId` ignorando o canal.
+
+#### accessTokenExpiresAt
+
+O banco persiste a expiração absoluta.
+
+Ela será calculada a partir do `expires_in` efetivamente recebido pelo OAuth.
+
+Não será persistida uma duração hardcoded do Mercado Livre.
+
+A margem de segurança para refresh antecipado pertence à política do credential provider, não ao schema.
+
+#### tokenGeneration
+
+`tokenGeneration` começa em `1` porque o registro só deve ser criado depois de uma autorização inicial bem-sucedida com uma primeira geração válida.
+
+Cada refresh persistido com sucesso incrementa a geração exatamente uma vez.
+
+O campo auxilia:
+
+- detecção de concorrência;
+- compare-and-swap/controle otimista quando aplicável;
+- releitura depois de lock;
+- diagnóstico sem registrar qualquer segredo.
+
+Iniciar um refresh NÃO incrementa `tokenGeneration`.
+
+A geração só avança quando access token novo + refresh token novo + nova expiração foram persistidos com sucesso.
+
+#### refreshAttemptId e refreshStartedAt
+
+Ao começar uma rotação controlada, a camada de coordenação poderá registrar:
+
+- um `refreshAttemptId` imprevisível;
+- `refreshStartedAt`;
+- status `REFRESHING`.
+
+Esses campos não substituem o lock distribuído.
+
+Eles fornecem estado durável para diagnóstico e recuperação após crash.
+
+Depois de uma rotação confirmada e persistida:
+
+- `refreshAttemptId` volta a `null`;
+- `refreshStartedAt` volta a `null`;
+- `lastRotatedAt` recebe o instante da rotação;
+- `tokenGeneration` é incrementado;
+- status volta a `ACTIVE`.
+
+#### ROTATION_UNCERTAIN
+
+Este estado é deliberado e não deve ser eliminado para simplificar a implementação.
+
+Exemplo crítico:
+
+1. Marto envia refresh token geração 4;
+2. Mercado Livre aceita e cria geração 5;
+3. Marto recebe ou pode ter recebido a resposta;
+4. a persistência da geração 5 falha ou o processo cai;
+5. o banco ainda contém material da geração 4.
+
+Nesse cenário não podemos assumir que geração 4 continua válida.
+
+Por isso:
+
+- não repetir automaticamente o refresh antigo;
+- preservar evidência da tentativa;
+- marcar/interpretar a credencial como rotação incerta;
+- reconciliar de forma segura ou exigir reautorização.
+
+#### lastErrorCode e lastErrorAt
+
+Somente código/classificação não secreta do último erro pode ser persistido.
+
+Não haverá `lastErrorBody` nem armazenamento bruto da resposta OAuth.
+
+`lastErrorCode` pode representar valores sanitizados como:
+
+- `invalid_grant`;
+- `rate_limited`;
+- `provider_unavailable`;
+- `network_error`;
+- classificações internas equivalentes.
+
+Nunca persistir access token, refresh token, authorization code ou client secret em campo de erro.
+
+#### Campos deliberadamente ausentes
+
+O modelo NÃO terá:
+
+- `merchantId`;
+- `provider`;
+- `clientId`;
+- `clientSecret`;
+- authorization code;
+- OAuth `state`;
+- PKCE verifier;
+- token em texto puro;
+- metadata genérica para esconder segredos;
+- pedido;
+- `orderId`;
+- seller name;
+- STORE5.
+
+`merchantId` e provider são derivados de `SalesChannel`.
+
+`client_id` e `client_secret` pertencem à configuração da aplicação.
+
+`state` e PKCE pertencem a uma futura tentativa temporária de autorização, não à credencial permanente.
+
+#### Criação da primeira credencial
+
+O registro `SalesChannelCredential` não deve ser criado vazio antes da conclusão da troca do authorization code.
+
+Na criação inicial bem-sucedida:
+
+1. validar `state`;
+2. trocar authorization code no backend;
+3. validar a identidade externa;
+4. criptografar access token;
+5. criptografar refresh token;
+6. calcular `accessTokenExpiresAt`;
+7. criar a credencial em `ACTIVE`;
+8. iniciar `tokenGeneration = 1`;
+9. não persistir authorization code.
+
+#### Reconexão
+
+Se o canal já possuir credencial, uma nova autorização não deve criar uma segunda linha.
+
+A reconexão deverá:
+
+- validar a identidade externa;
+- substituir os envelopes criptográficos de maneira controlada;
+- reiniciar uma geração coerente segundo a política que será definida na implementação;
+- limpar estados de erro que tenham sido resolvidos.
+
+Nenhuma autorização de outra conta externa pode sobrescrever silenciosamente a credencial do canal.
+
+#### Refresh — atualização atômica
+
+Depois de resposta OAuth de refresh confirmadamente bem-sucedida, a persistência da nova geração precisa atualizar como uma unidade lógica:
+
+- `accessTokenEncrypted`;
+- `refreshTokenEncrypted`;
+- `encryptionKeyVersion`;
+- `accessTokenExpiresAt`;
+- `tokenType`;
+- `scope`;
+- `tokenGeneration`;
+- `lastRotatedAt`;
+- status;
+- campos da tentativa.
+
+Nunca persistir o access token novo e deixar o refresh token antigo por falha parcial da aplicação.
+
+#### Estado do SalesChannel
+
+`SalesChannelStatus` e `SalesChannelCredentialStatus` continuam separados.
+
+Exemplos:
+
+- erro OAuth transitório não precisa transformar imediatamente o canal em `SalesChannelStatus.ERROR`;
+- `REAUTH_REQUIRED` pode posteriormente refletir em experiência operacional de canal desconectado/erro, por política explícita;
+- pausa operacional do canal não significa que a credencial foi revogada.
+
+A sincronização desses dois estados será uma regra de serviço posterior, não uma constraint implícita do banco.
+
+#### Desconexão explícita
+
+Quando futuramente o usuário desconectar uma integração, a política poderá remover a linha de credencial e apagar o material criptografado, mantendo `SalesChannel` como registro operacional/histórico conforme as regras do produto.
+
+Essa política não será implementada neste checkpoint.
+
+#### Índices
+
+`salesChannelId @unique` já fornece o acesso principal 1:1.
+
+`@@index([status])` permite localizar credenciais que exigem ação operacional.
+
+`@@index([accessTokenExpiresAt])` permite futuras rotinas controladas de diagnóstico/manutenção sem varrer a tabela inteira.
+
+Nenhum índice é necessário sobre token criptografado.
+
+#### Invariantes a testar quando o schema for implementado
+
+A próxima implementação deverá provar pelo menos:
+
+1. existe no máximo uma credencial por `SalesChannel`;
+2. `SalesChannel` aceita zero ou uma credencial;
+3. a credencial não possui `merchantId` duplicado;
+4. a credencial não possui `clientSecret`;
+5. a credencial não possui token plaintext;
+6. `accessTokenEncrypted` é obrigatório;
+7. `refreshTokenEncrypted` é obrigatório;
+8. `encryptionKeyVersion` é obrigatório;
+9. `accessTokenExpiresAt` é obrigatório;
+10. `authorizedExternalAccountId` é obrigatório;
+11. `tokenGeneration` inicia em 1;
+12. status inicia em `ACTIVE`;
+13. `REFRESHING` existe no enum;
+14. `TRANSIENT_ERROR` existe no enum;
+15. `ROTATION_UNCERTAIN` existe no enum;
+16. `REAUTH_REQUIRED` existe no enum;
+17. relação inversa em `SalesChannel` é opcional;
+18. exclusão do canal não deixa credencial órfã;
+19. não existe migration contendo segredo real;
+20. Prisma valida e gera client com o novo modelo.
+
+Esses são contratos de schema, não contratos de OAuth HTTP ainda.
+
+#### Próxima sequência
+
+Depois de auditar e publicar esta definição:
+
+1. aplicar somente o enum, model e relação no `schema.prisma`;
+2. executar `prisma format`;
+3. validar o schema;
+4. gerar/inspecionar migration sem qualquer dado real;
+5. revisar SQL gerado;
+6. executar testes/build necessários;
+7. documentar o resultado;
+8. somente depois publicar o checkpoint de schema.
+
+O serviço criptográfico virá depois desse checkpoint de banco.
+
+#### Ainda NÃO fazer
+
+- não alterar `schema.prisma` neste passo;
+- não criar migration neste passo;
+- não executar migration neste passo;
+- não criar serviço criptográfico ainda;
+- não criar `MercadoLivreOAuthClient` ainda;
+- não criar endpoint OAuth;
+- não criar callback;
+- não criar tabela de OAuth state ainda;
+- não configurar `client_secret`;
+- não usar access token real;
+- não usar refresh token real;
+- não conectar conta;
+- não chamar Mercado Livre;
+- não alterar `MercadoLivreClient`;
+- não alterar `MercadoLivreFetchTransport`;
+- não tocar na `main`;
+- não tocar em `docs/marto-ia/`.
+
+#### Próxima ação exata
+
+Auditar esta definição do modelo mínimo, confirmar que somente o MASTER mudou e proteger o desenho documental antes de alterar uma única linha do Prisma.
