@@ -7655,3 +7655,407 @@ Ainda não fazer:
 - sincronização automática;
 - alteração da `main`;
 - alteração ou commit de `docs/marto-ia/`.
+
+### Definição — credenciais e OAuth por SalesChannel
+
+Esta definição começa somente depois da publicação do `MercadoLivreFetchTransport` em:
+
+`9cfc1be39b2a88839ee70ef48e75813aae22dc7d` — `feat(integrations): adiciona fetch transport Mercado Livre`
+
+Neste ponto, a leitura HTTP está pronta, mas nenhuma conta real do Mercado Livre está autorizada no Marto.
+
+O objetivo desta fronteira é definir como uma conta externa será autorizada, identificada, armazenada e renovada com segurança antes de qualquer chamada real autenticada.
+
+#### Regra arquitetural principal
+
+`SalesChannel` continua representando identidade e configuração operacional do canal.
+
+`SalesChannel` NÃO deve armazenar access token, refresh token, client secret ou qualquer outro segredo OAuth diretamente.
+
+A relação continua:
+
+`Merchant -> SalesChannel -> ExternalOrderReference -> Order`
+
+A credencial será uma responsabilidade separada:
+
+`SalesChannel -> SalesChannelCredential`
+
+A relação planejada é 1:1 entre um `SalesChannel` conectado e sua credencial externa.
+
+O nome `SalesChannelCredential` é conceitual nesta definição. Nenhuma migration ou model Prisma deve ser criado antes da auditoria desta fronteira.
+
+#### Separação entre identidade do canal e segredo
+
+`SalesChannel` mantém:
+
+- `id`;
+- `merchantId`;
+- `type`;
+- `name`;
+- `externalAccountId`;
+- `status`;
+- `lastSyncedAt`;
+- timestamps.
+
+`SalesChannelCredential` será responsável somente por material de autorização e estado técnico da autorização.
+
+Nunca usar `SalesChannel.name` para decidir qual conta externa utilizar.
+
+A identidade externa continua baseada em:
+
+`SalesChannel.externalAccountId`
+
+Para Mercado Livre, a identidade retornada pela autorização deve ser compatível com o `user_id` autorizado.
+
+#### Client ID e Client Secret
+
+`client_id`, `client_secret` e configuração de redirect URI pertencem à aplicação Marto registrada no provedor.
+
+Eles NÃO pertencem individualmente a cada `SalesChannel` de vendedor.
+
+Na primeira implementação, esses dados devem vir de configuração segura do backend / ambiente de execução.
+
+Nunca armazenar `client_secret` em:
+
+- frontend;
+- localStorage;
+- código-fonte;
+- Git;
+- `SalesChannel`;
+- logs;
+- metadata de pedido.
+
+#### Material planejado da credencial
+
+A futura entidade de credencial deverá ser capaz de representar, no mínimo:
+
+- `id`;
+- `salesChannelId` único;
+- access token criptografado;
+- refresh token criptografado;
+- `tokenType`;
+- `scope`;
+- `accessTokenExpiresAt`;
+- identidade externa retornada pelo provedor;
+- versão/geração da credencial;
+- versão da chave de criptografia;
+- instante da última rotação bem-sucedida;
+- estado técnico da credencial;
+- timestamps.
+
+Os nomes exatos dos campos Prisma ainda NÃO estão aprovados neste checkpoint.
+
+Primeiro será criado o contrato; depois schema/migration serão implementados e testados separadamente.
+
+#### Criptografia em repouso
+
+Access token e refresh token NÃO podem ser persistidos em texto puro.
+
+A aplicação deverá criptografar os tokens antes da persistência e descriptografá-los somente no backend quando estritamente necessário.
+
+A chave mestra de criptografia NÃO será armazenada na mesma tabela dos tokens.
+
+A chave deverá vir de secret/configuração externa ao banco e ao Git.
+
+A representação persistida precisa permitir rotação futura da chave, portanto deve existir identificação da versão da chave ou mecanismo equivalente.
+
+IV/nonce/tag e ciphertext poderão ser empacotados em um envelope criptográfico, desde que o formato seja autenticado e versionado.
+
+A escolha exata do algoritmo e formato será uma implementação separada.
+
+#### Regra de logs
+
+É proibido registrar em logs:
+
+- access token;
+- refresh token;
+- authorization code;
+- client secret;
+- corpo integral de resposta OAuth contendo tokens.
+
+Erros podem registrar somente informações não secretas, como:
+
+- provider;
+- `salesChannelId`;
+- código de erro OAuth;
+- status HTTP;
+- timestamp;
+- correlation/request id interno.
+
+#### OAuth é separado do MercadoLivreClient de leitura
+
+O atual `MercadoLivreClient` foi desenhado para leitura de recursos do Mercado Livre.
+
+O atual `MercadoLivreHttpTransport` aceita somente `GET`.
+
+Não ampliar esse contrato apenas para encaixar OAuth.
+
+A troca de authorization code e a renovação de token usam um fluxo próprio e deverão ficar em componente separado, por exemplo:
+
+`MercadoLivreOAuthClient`
+
+O nome é conceitual até a implementação.
+
+Fluxo pretendido:
+
+`OAuth orchestration -> MercadoLivreOAuthClient -> POST /oauth/token`
+
+Isso preserva:
+
+`MercadoLivreClient -> MercadoLivreHttpTransport -> MercadoLivreFetchTransport -> recursos de negócio`
+
+#### Requisição de token
+
+A chamada OAuth deverá usar:
+
+`POST https://api.mercadolibre.com/oauth/token`
+
+Os parâmetros sensíveis e de autorização deverão ser enviados no body apropriado, nunca montados como query string.
+
+O cliente OAuth não deve imprimir o body da requisição ou resposta em logs.
+
+#### Authorization Code
+
+No fluxo inicial de autorização:
+
+1. Marto inicia uma intenção de autorização para um merchant/canal;
+2. gera `state` imprevisível, de uso único e com expiração;
+3. vincula o `state` ao contexto que iniciou a conexão;
+4. usa PKCE quando configurado para a aplicação;
+5. redireciona o usuário para autorização do Mercado Livre;
+6. recebe o callback;
+7. valida o `state` antes de trocar qualquer code;
+8. usa o authorization code somente uma vez;
+9. troca o code por tokens no backend;
+10. valida a identidade externa retornada;
+11. só depois persiste a conexão.
+
+Authorization code nunca deve chegar ao frontend como segredo reutilizável nem ser persistido como credencial permanente.
+
+#### Primeira conexão versus reconexão
+
+Na primeira conexão, o Marto poderá conhecer o identificador externo somente depois da autorização.
+
+Nesse caso, a identidade retornada pelo provedor deverá ser a origem de `externalAccountId` na criação do `SalesChannel`.
+
+Em uma reconexão de `SalesChannel` existente, a identidade retornada pelo provedor deve corresponder ao `externalAccountId` já associado.
+
+Se houver divergência de identidade, a credencial NÃO deve ser anexada silenciosamente ao canal existente.
+
+Nunca trocar a conta externa de um `SalesChannel` apenas porque uma nova autorização retornou outro usuário.
+
+#### Access token e expires_in
+
+Não hardcodar a duração do access token.
+
+Embora a documentação textual do Mercado Livre atualmente descreva validade de 6 horas, exemplos oficiais podem retornar valores específicos de `expires_in`.
+
+O Marto deverá usar o `expires_in` efetivamente retornado pela resposta OAuth para calcular `accessTokenExpiresAt`.
+
+Regra:
+
+`accessTokenExpiresAt = instante de recebimento + expires_in`
+
+Pode existir uma pequena margem operacional de segurança para evitar usar token no limite da expiração, mas essa margem deverá ser explícita e testada.
+
+#### Refresh token rotativo
+
+No Mercado Livre, refresh token deve ser tratado como token rotativo de uso único.
+
+Depois de uma renovação bem-sucedida:
+
+- o novo access token substitui o anterior;
+- o novo refresh token substitui o anterior;
+- o refresh token anterior não pode continuar sendo reutilizado;
+- a nova geração deve ser persistida como uma unidade.
+
+Nunca manter uma política que tente reutilizar indefinidamente o refresh token anterior.
+
+#### Não renovar em toda chamada
+
+A obtenção de credencial válida deverá verificar `accessTokenExpiresAt`.
+
+Se o access token ainda estiver válido além da margem de segurança, ele deve ser reutilizado.
+
+O refresh não deve acontecer em toda leitura de pedido.
+
+Isso evita chamadas desnecessárias ao endpoint OAuth e reduz risco de corrida na rotação do refresh token.
+
+#### Concorrência — requisito crítico
+
+Como o refresh token é rotativo e de uso único, duas instâncias do Marto NÃO podem renovar a mesma credencial simultaneamente.
+
+O futuro coordenador deverá garantir single-flight/lock por credencial ou `salesChannelId` antes da chamada de refresh.
+
+Esse lock precisa funcionar entre processos/instâncias, não apenas dentro de uma única instância Node.
+
+Fluxo obrigatório:
+
+1. detectar necessidade de refresh;
+2. adquirir exclusividade da credencial;
+3. reler a credencial após adquirir a exclusividade;
+4. se outro processo já renovou, usar a nova geração e NÃO chamar OAuth novamente;
+5. se ainda for necessário, usar exatamente o refresh token atual;
+6. executar uma única tentativa controlada;
+7. persistir access token + refresh token novos como a nova geração;
+8. liberar exclusividade.
+
+Um mutex somente em memória NÃO é suficiente para produção com múltiplas instâncias.
+
+A escolha concreta entre lock PostgreSQL, mecanismo transacional, Redis ou equivalente será feita em checkpoint posterior.
+
+#### Janela crítica de rotação
+
+Existe uma condição que precisa ser tratada explicitamente:
+
+o provedor pode aceitar o refresh token e retornar a nova geração, mas a persistência local pode falhar depois da resposta externa.
+
+Nesse cenário, o refresh token antigo pode já estar inutilizado.
+
+Portanto, depois de uma resposta de refresh bem-sucedida:
+
+- persistir a nova geração imediatamente;
+- não repetir cegamente o refresh com o token antigo;
+- tratar estado de resultado incerto de forma conservadora;
+- se a nova geração não puder ser recuperada/persistida com segurança, exigir recuperação/reautorização em vez de criar loop com token antigo.
+
+A implementação deverá ter estado durável de refresh em andamento, geração/versionamento ou mecanismo equivalente suficiente para detectar uma rotação incerta.
+
+#### Estado da credencial
+
+A futura credencial deverá distinguir pelo menos semanticamente:
+
+- autorização utilizável;
+- renovação em andamento ou estado equivalente;
+- reautorização necessária;
+- erro transitório.
+
+Os nomes finais do enum ainda serão definidos antes da migration.
+
+Não usar `SalesChannelStatus.ERROR` como único lugar para representar toda a máquina de estados de OAuth.
+
+O status operacional do canal e o estado técnico da credencial são conceitos relacionados, mas diferentes.
+
+#### Tratamento de invalid_grant
+
+Um `invalid_grant` não deve iniciar loop de refresh.
+
+Quando indicar refresh token inválido, expirado, já utilizado ou autorização revogada, a credencial deverá caminhar para reautorização controlada.
+
+Nunca apagar silenciosamente o histórico da conexão para esconder o erro.
+
+#### Erros transitórios
+
+Erro de rede, 429 ou erro 5xx do OAuth não significa automaticamente que o usuário revogou a autorização.
+
+Esses erros deverão ser classificados separadamente de `invalid_grant`.
+
+Nenhum retry infinito ou agressivo será embutido no cliente OAuth.
+
+Retry/backoff, se necessário, será uma política explícita da camada de orquestração.
+
+#### Uso posterior pelo sincronizador
+
+O futuro sincronizador real não receberá token hardcoded.
+
+Fluxo esperado:
+
+`SalesChannel -> credential provider -> access token válido -> MercadoLivreClient -> adapter -> ingestion`
+
+O `MercadoLivreClient` continuará recebendo o access token necessário para cada operação, mas não será responsável por armazenar ou renovar esse token.
+
+#### externalAccountId
+
+Para Mercado Livre, `SalesChannel.externalAccountId` será a identidade da conta externa utilizada pela integração.
+
+O futuro coordenador poderá usar essa identidade como seller nas operações que exigem seller id, depois de validar a autorização correspondente.
+
+Nenhuma integração deve depender de nome de loja para determinar seller.
+
+#### Escopo da primeira implementação
+
+A primeira implementação de credenciais deverá ser mínima e orientada ao Mercado Livre, mas sem criar arquitetura STORE5-específica.
+
+Ela não deve implementar Shopee, Amazon, Magalu ou Mercado Pago antecipadamente.
+
+O armazenamento pode possuir desenho reaproveitável por `SalesChannel`, enquanto a lógica OAuth permanece específica do provedor.
+
+Mercado Livre e Mercado Pago não devem compartilhar tokens apenas por pertencerem ao mesmo ecossistema empresarial.
+
+#### Contratos que deverão existir antes de conectar conta real
+
+A fase de credenciais/OAuth deverá proteger por testes, no mínimo:
+
+1. `SalesChannel` continua sem tokens em texto puro;
+2. credencial possui vínculo único com o canal;
+3. access token é criptografado antes da persistência;
+4. refresh token é criptografado antes da persistência;
+5. tokens descriptografados não aparecem em logs;
+6. chave de criptografia não vem do banco da credencial;
+7. `client_secret` não é persistido por `SalesChannel`;
+8. authorization code é trocado por POST no body;
+9. refresh token é enviado por POST no body;
+10. query string OAuth não recebe segredos;
+11. `state` inválido bloqueia troca do authorization code;
+12. `state` expirado bloqueia troca do authorization code;
+13. `state` só pode ser consumido uma vez;
+14. identidade externa divergente bloqueia associação silenciosa;
+15. `expires_in` retornado determina `accessTokenExpiresAt`;
+16. access token ainda válido não provoca refresh;
+17. access token vencido provoca refresh controlado;
+18. refresh bem-sucedido substitui access token e refresh token juntos;
+19. geração anterior não continua sendo usada depois da rotação;
+20. duas solicitações concorrentes não executam dois refreshes para a mesma geração;
+21. após adquirir o lock, a credencial é relida antes do refresh;
+22. `invalid_grant` não entra em retry infinito;
+23. `invalid_grant` pode exigir reautorização;
+24. erro 429/5xx não é confundido automaticamente com revogação;
+25. falha de persistência após refresh não permite reutilização cega do token antigo;
+26. `MercadoLivreClient` continua sem responsabilidade de renovar token;
+27. OAuth permanece separado do `MercadoLivreHttpTransport` GET atual;
+28. nenhuma conta real é chamada durante testes unitários.
+
+Esses 28 pontos são contratos arquiteturais planejados, não significam que todos serão implementados em um único arquivo ou um único passo.
+
+#### Ordem de implementação planejada
+
+A implementação será dividida para manter baixo risco:
+
+1. auditar e publicar esta definição documental;
+2. definir o modelo Prisma mínimo de credencial e seus estados, ainda sem token real;
+3. testar schema/migration;
+4. criar serviço criptográfico isolado e testado;
+5. criar cliente OAuth isolado e totalmente mockado;
+6. criar fluxo de authorization code com `state` e identidade externa;
+7. criar coordenador de acesso/refresh com proteção contra concorrência;
+8. testar rotação e falhas críticas;
+9. somente então configurar credenciais reais da aplicação;
+10. fazer primeira autorização controlada;
+11. validar identidade da conta;
+12. fazer primeira chamada autenticada pequena e controlada;
+13. depois ligar essa credencial ao sincronizador de pedidos.
+
+#### Ainda NÃO fazer
+
+- não criar migration neste passo;
+- não alterar `schema.prisma` neste passo;
+- não criar tabela de credenciais neste passo;
+- não colocar token em `.env` para teste improvisado;
+- não inserir access token em código;
+- não inserir refresh token em código;
+- não criar endpoint OAuth ainda;
+- não abrir callback público ainda;
+- não executar `/oauth/token`;
+- não chamar `/users/me`;
+- não puxar pedido real;
+- não criar polling;
+- não criar webhook;
+- não alterar `MercadoLivreClient`;
+- não alterar `MercadoLivreFetchTransport`;
+- não alterar `SalesChannel` ainda;
+- não tocar na `main`;
+- não tocar em `docs/marto-ia/`.
+
+#### Próxima ação exata
+
+Depois que esta fronteira documental estiver auditada e publicada, o próximo microstep será desenhar o modelo Prisma mínimo de `SalesChannelCredential` e os estados necessários, ainda sem executar migration e sem armazenar qualquer segredo real.
