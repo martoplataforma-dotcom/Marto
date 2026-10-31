@@ -8471,3 +8471,221 @@ O serviço criptográfico virá depois desse checkpoint de banco.
 #### Próxima ação exata
 
 Auditar esta definição do modelo mínimo, confirmar que somente o MASTER mudou e proteger o desenho documental antes de alterar uma única linha do Prisma.
+
+---
+
+### Checkpoint — implementação Prisma de SalesChannelCredential
+
+O desenho documental de `SalesChannelCredential`, publicado anteriormente no commit:
+
+`4024e882652c01eb18efbf3b94a77392e1e7dc99` — `docs(integrations): define modelo de credencial SalesChannel`
+
+foi transformado em schema Prisma e migration auditada.
+
+Este checkpoint implementa somente a persistência estrutural da credencial.
+
+Ainda NÃO implementa criptografia, OAuth HTTP, authorization code, refresh, callback, conexão de conta real ou sincronização autenticada.
+
+#### Schema implementado
+
+Foram adicionados:
+
+- `SalesChannelCredentialStatus`;
+- `SalesChannelCredential`;
+- relação inversa opcional `SalesChannel.credential`.
+
+Estados persistidos:
+
+- `ACTIVE`;
+- `REFRESHING`;
+- `TRANSIENT_ERROR`;
+- `ROTATION_UNCERTAIN`;
+- `REAUTH_REQUIRED`.
+
+A relação é 1:1 por:
+
+`SalesChannelCredential.salesChannelId @unique`
+
+A credencial permanece subordinada a `SalesChannel` e usa:
+
+`onDelete: Cascade`
+
+Não foram adicionados à credencial:
+
+- `merchantId`;
+- `clientId`;
+- `clientSecret`;
+- authorization code;
+- OAuth state;
+- PKCE verifier;
+- token plaintext;
+- `orderId`;
+- qualquer regra específica de STORE5.
+
+Os campos de token existentes no schema são somente:
+
+- `accessTokenEncrypted`;
+- `refreshTokenEncrypted`.
+
+Nenhum token real ou segredo real foi utilizado nesta implementação.
+
+#### Diff do schema
+
+O diff final auditado do `schema.prisma` contém:
+
+- `40` linhas adicionadas;
+- `0` linhas removidas;
+- `31` linhas funcionais;
+- `9` linhas vazias de organização.
+
+Blob auditado do schema:
+
+`05512acbab91243fe21bbe95ac488cee90e5a3db`
+
+Nenhuma alteração antiga ou cosmética do restante do schema foi misturada neste checkpoint.
+
+#### Prisma format
+
+O `prisma format` foi testado inicialmente em cópia temporária do schema.
+
+Foi identificado que o formatter atual normalizaria conteúdo preexistente fora do escopo desta implementação.
+
+A auditoria da cópia formatada confirmou:
+
+- mesmos `50` models;
+- mesmos `40` enums antes desta implementação;
+- `0` deltas de tokens significativos;
+- alteração não semântica de formatação preexistente.
+
+Por esse motivo, `prisma format` NÃO foi executado sobre o arquivo real.
+
+A implementação foi mantida cirúrgica e o schema real foi validado com `prisma validate`.
+
+Isso evita misturar uma reforma cosmética global com a criação de `SalesChannelCredential`.
+
+#### Migration
+
+Migration criada:
+
+`20261031135015_add_sales_channel_credential`
+
+Arquivo:
+
+`packages/db/prisma/migrations/20261031135015_add_sales_channel_credential/migration.sql`
+
+O SQL foi gerado por comparação direta entre:
+
+`schema do HEAD -> schema novo auditado`
+
+usando `prisma migrate diff` com:
+
+- `--from-schema-datamodel`;
+- `--to-schema-datamodel`;
+- `--script`.
+
+Esse método foi utilizado deliberadamente para inspecionar o SQL sem executar `migrate dev`, sem shadow database para essa geração e sem aplicar qualquer alteração ao banco.
+
+O SQL final possui:
+
+- `38` linhas;
+- `1562` bytes;
+- SHA-256 `c206a757c352f2e0c93ed2ef50f01b19460363e3a9b43d53c2aca2090fcbe32a`.
+
+Operações estruturais auditadas:
+
+- `1 CREATE TYPE`;
+- `1 CREATE TABLE`;
+- `1 CREATE UNIQUE INDEX`;
+- `2 CREATE INDEX`;
+- `1 ALTER TABLE`, somente na nova `SalesChannelCredential`, para adicionar a foreign key.
+
+Foreign key:
+
+`SalesChannelCredential.salesChannelId -> SalesChannel.id`
+
+Ações referenciais geradas:
+
+- `ON DELETE CASCADE`;
+- `ON UPDATE CASCADE`.
+
+O SQL não contém:
+
+- `DROP`;
+- DML de `UPDATE`;
+- `INSERT`;
+- `DELETE`;
+- `TRUNCATE`;
+- alteração estrutural em tabelas existentes.
+
+A migration materializada foi comparada byte a byte com o SQL regenerado pelo Prisma e é idêntica ao preview aprovado.
+
+#### Validações executadas
+
+Foram concluídas com sucesso:
+
+- `prisma validate`;
+- geração do Prisma Client;
+- build completo da API NestJS;
+- suíte completa de testes da API;
+- `git diff --check`;
+- auditoria do diff do schema;
+- auditoria estrutural do SQL;
+- regeneração do SQL com hash idêntico;
+- comparação byte a byte entre preview e `migration.sql`.
+
+A geração do Prisma Client não criou alteração tracked adicional.
+
+O build e os testes também não produziram alteração tracked ou untracked inesperada.
+
+#### Estado do banco
+
+A migration existe no repositório local, porém ainda NÃO foi aplicada.
+
+Até este checkpoint não foi executado:
+
+- `prisma migrate dev`;
+- `prisma migrate deploy`;
+- `prisma db execute`;
+- SQL manual.
+
+Portanto:
+
+> O banco continua intocado por esta migration.
+
+Esse estado é deliberado: schema e SQL foram validados antes de qualquer escrita no PostgreSQL.
+
+#### Arquivos deste checkpoint técnico
+
+- `packages/db/prisma/schema.prisma`;
+- `packages/db/prisma/migrations/20261031135015_add_sales_channel_credential/migration.sql`;
+- `docs/marto-ops/INTEGRATION_MASTER.md`.
+
+`docs/marto-ia/` continua explicitamente fora do Git.
+
+#### Limite desta implementação
+
+Este checkpoint prova somente que o banco possui um desenho válido para armazenar futuramente credenciais criptografadas por `SalesChannel`.
+
+Ele ainda NÃO prova:
+
+- implementação do envelope criptográfico;
+- armazenamento real criptografado;
+- gestão da chave externa;
+- troca de authorization code;
+- OAuth state;
+- PKCE;
+- refresh token rotation;
+- lock distribuído;
+- tratamento real de `invalid_grant`;
+- reconexão;
+- chamada autenticada ao Mercado Livre.
+
+Esses itens pertencem aos próximos checkpoints e não devem ser inferidos apenas porque o modelo Prisma agora existe.
+
+#### Próxima ação exata
+
+Auditar este checkpoint documental junto com o schema e a migration.
+
+Depois da auditoria, publicar o checkpoint de schema/migration no Git.
+
+Somente depois desse checkpoint publicado iniciar o serviço criptográfico isolado e seus testes.

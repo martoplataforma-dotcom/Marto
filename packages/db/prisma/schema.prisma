@@ -1165,6 +1165,14 @@ enum SalesChannelStatus {
   ERROR
 }
 
+enum SalesChannelCredentialStatus {
+  ACTIVE
+  REFRESHING
+  TRANSIENT_ERROR
+  ROTATION_UNCERTAIN
+  REAUTH_REQUIRED
+}
+
 model SalesChannel {
   id                String             @id @default(uuid())
   merchantId        String
@@ -1178,10 +1186,42 @@ model SalesChannel {
 
   merchant       Merchant                 @relation(fields: [merchantId], references: [id], onDelete: Restrict)
   externalOrders ExternalOrderReference[]
+  credential     SalesChannelCredential?
 
   @@unique([merchantId, type, externalAccountId])
   @@index([merchantId, status])
   @@index([type, status])
+}
+
+model SalesChannelCredential {
+  id                          String                       @id @default(uuid())
+  salesChannelId              String                       @unique
+  status                      SalesChannelCredentialStatus @default(ACTIVE)
+
+  accessTokenEncrypted        String
+  refreshTokenEncrypted       String
+  encryptionKeyVersion        String
+
+  tokenType                   String?
+  scope                       String?
+  accessTokenExpiresAt        DateTime
+  authorizedExternalAccountId String
+
+  tokenGeneration             Int                          @default(1)
+  refreshAttemptId            String?
+  refreshStartedAt            DateTime?
+  lastRotatedAt               DateTime?
+
+  lastErrorCode               String?
+  lastErrorAt                 DateTime?
+
+  createdAt                   DateTime                     @default(now())
+  updatedAt                   DateTime                     @updatedAt
+
+  salesChannel SalesChannel @relation(fields: [salesChannelId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([accessTokenExpiresAt])
 }
 
 model ExternalOrderReference {
