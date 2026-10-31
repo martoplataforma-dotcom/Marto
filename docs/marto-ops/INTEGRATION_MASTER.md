@@ -8689,3 +8689,235 @@ Auditar este checkpoint documental junto com o schema e a migration.
 Depois da auditoria, publicar o checkpoint de schema/migration no Git.
 
 Somente depois desse checkpoint publicado iniciar o serviço criptográfico isolado e seus testes.
+
+---
+
+### Checkpoint — serviço criptográfico de credenciais
+
+Depois da publicação do modelo Prisma de `SalesChannelCredential` no commit:
+
+`727bbf31355be3c7647982eb7f008a120be27cbb` — `feat(db): adiciona credencial de SalesChannel`
+
+foi implementado e testado o serviço criptográfico isolado responsável por proteger valores secretos que futuramente poderão ser persistidos nos campos criptografados da credencial.
+
+Este checkpoint NÃO integra o serviço ao Prisma e NÃO utiliza credencial real.
+
+#### Arquivos
+
+- `apps/api/src/modules/integrations/credentials/sales-channel-credential-crypto.service.ts`;
+- `apps/api/src/modules/integrations/credentials/sales-channel-credential-crypto.service.spec.ts`.
+
+O serviço foi colocado em `integrations/credentials` e deliberadamente não dentro da pasta do Mercado Livre.
+
+Motivo: proteção criptográfica de credenciais é infraestrutura genérica de `SalesChannel`, e não regra específica de um marketplace.
+
+#### Algoritmo
+
+A implementação utiliza exclusivamente o módulo nativo:
+
+`node:crypto`
+
+Algoritmo:
+
+`AES-256-GCM`
+
+Parâmetros fixados:
+
+- chave de `32` bytes;
+- nonce aleatório de `12` bytes por criptografia;
+- authentication tag de `16` bytes;
+- authenticated additional data (AAD) fixa para separar o contexto criptográfico do Marto.
+
+Nenhuma dependência criptográfica externa foi adicionada.
+
+#### Envelope
+
+Formato persistível atual:
+
+`v1.<nonce>.<ciphertext>.<tag>`
+
+Os três segmentos binários são codificados em Base64URL.
+
+O envelope contém:
+
+- versão do formato;
+- nonce;
+- ciphertext;
+- authentication tag.
+
+O envelope NÃO contém a chave de criptografia.
+
+O envelope também NÃO contém `keyVersion`.
+
+A versão da chave permanece separada porque o modelo Prisma já possui:
+
+`SalesChannelCredential.encryptionKeyVersion`
+
+Isso permite localizar externamente a chave correta sem misturar identidade da chave com o ciphertext.
+
+#### Keyring
+
+O serviço não lê variável de ambiente diretamente.
+
+Ele recebe uma abstração:
+
+`SalesChannelCredentialKeyring`
+
+com duas responsabilidades:
+
+- fornecer a chave atual para novas criptografias;
+- resolver uma chave anterior por versão para leitura de valores antigos.
+
+Essa separação permite rotação de chave sem reescrever o núcleo criptográfico.
+
+O serviço criptográfico NÃO conhece:
+
+- `ConfigService`;
+- `process.env`;
+- Prisma;
+- banco;
+- Mercado Livre;
+- OAuth;
+- HTTP;
+- merchant;
+- STORE5.
+
+A implementação concreta do keyring/configuração externa será um checkpoint posterior.
+
+#### Rotação de chave
+
+Uma nova criptografia sempre usa a chave indicada por `keyring.current()`.
+
+A descriptografia recebe separadamente:
+
+- `encryptedValue`;
+- `keyVersion`.
+
+Assim, depois de trocar a chave atual, dados criptografados com uma versão anterior continuam legíveis enquanto essa versão permanecer disponível no keyring.
+
+A auditoria confirmou leitura de valor produzido com `key-v1` mesmo quando `key-v2` passou a ser a chave corrente.
+
+Isso é rotação de chave de criptografia do Marto e não deve ser confundido com rotação de refresh token OAuth.
+
+#### Autenticação e adulteração
+
+AES-GCM autentica o conteúdo do envelope.
+
+Os testes provaram rejeição de adulteração em:
+
+- ciphertext;
+- nonce;
+- authentication tag.
+
+Também foram rejeitados:
+
+- versão de envelope desconhecida;
+- envelope malformado;
+- nonce vazio;
+- ciphertext vazio;
+- authentication tag vazia;
+- chave incorreta para a mesma versão;
+- chave com tamanho diferente de 32 bytes.
+
+O mesmo plaintext criptografado duas vezes produz envelopes diferentes porque um nonce novo é gerado para cada operação.
+
+#### Erros sanitizados
+
+Os erros públicos do serviço são deliberadamente curtos e não incluem material secreto.
+
+Contratos atuais:
+
+- `credential_plaintext_required`;
+- `credential_encryption_key_not_found`;
+- `credential_encryption_key_invalid`;
+- `credential_decryption_failed`.
+
+Falhas de autenticação ou parsing não retornam plaintext, chave, ciphertext original ou erro interno bruto do OpenSSL/Node.
+
+Também não existe logging dentro do serviço.
+
+#### Contratos testados
+
+O primeiro ciclo RED definiu 12 contratos antes da implementação.
+
+Depois do GREEN, a auditoria adversarial adicionou mais 4 contratos explícitos sem alterar uma única linha da implementação.
+
+Resultado final focado:
+
+`16/16 contratos PASS`
+
+Entre os contratos comprovados estão:
+
+1. encrypt/decrypt preserva valor opaco;
+2. versão da chave utilizada é retornada separadamente;
+3. envelope é `v1` e não contém plaintext;
+4. mesmo plaintext gera envelopes diferentes;
+5. chave antiga continua resolvível depois de rotação;
+6. versão de chave inexistente falha de forma sanitizada;
+7. ciphertext adulterado é rejeitado;
+8. chave incorreta é rejeitada;
+9. envelope malformado é rejeitado;
+10. plaintext vazio é rejeitado;
+11. chave deve ter exatamente 32 bytes;
+12. erro de autenticação não vaza token ou chave;
+13. nonce adulterado é rejeitado;
+14. authentication tag adulterada é rejeitada;
+15. versão de envelope desconhecida é rejeitada;
+16. segmentos vazios são rejeitados.
+
+#### Evidência por hash
+
+Spec final após auditoria adversarial:
+
+`e74512ac8255b688b93415d912736fe5cf743e88726f4359090f3f15539f26be`
+
+Implementação:
+
+`454b858ed18fd19751a255543512e7e869c282bb386468daff1b9ebb18d95b1c`
+
+A implementação permaneceu byte-idêntica durante toda a auditoria adversarial.
+
+Ou seja, os quatro novos testes não exigiram enfraquecimento, remendo ou alteração posterior do algoritmo.
+
+#### Validações
+
+Concluídas com sucesso:
+
+- 16/16 testes focados do serviço criptográfico;
+- suíte completa de testes da API;
+- build completo da API NestJS;
+- auditoria estática da fronteira;
+- auditoria de ausência de logging de segredo;
+- auditoria de ausência de dependência nova.
+
+#### Estado de segurança neste checkpoint
+
+Ainda NÃO existe:
+
+- chave real de produção;
+- access token real;
+- refresh token real;
+- client secret real;
+- `.env` novo para criptografia;
+- `ConfigService` conectado ao serviço;
+- keyring concreto de ambiente;
+- leitura ou escrita de `SalesChannelCredential` no Prisma;
+- endpoint OAuth;
+- callback OAuth;
+- authorization code;
+- state OAuth;
+- PKCE;
+- refresh automático;
+- chamada autenticada ao Mercado Livre.
+
+Nenhum banco foi acessado por este serviço.
+
+A migration de `SalesChannelCredential` continua não aplicada neste checkpoint.
+
+#### Fronteira seguinte
+
+O próximo passo depois de publicar este checkpoint é definir e testar como as chaves criptográficas externas serão fornecidas ao serviço.
+
+Essa próxima camada deverá resolver configuração/keyring sem colocar chave no banco, sem colocar segredo no Git e sem acoplar o núcleo criptográfico ao Mercado Livre.
+
+Ainda não será necessário conectar conta real ou executar OAuth apenas para definir essa fronteira.
