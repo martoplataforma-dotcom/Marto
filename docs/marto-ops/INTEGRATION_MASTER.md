@@ -9778,3 +9778,255 @@ A migration de `SalesChannelCredential` continua não aplicada.
 Depois de publicar esta fronteira documental, será criado primeiro o RED da composição NestJS.
 
 Somente depois dos contratos falharem pela ausência do módulo/tokens será escrita a implementação mínima.
+
+---
+
+### Checkpoint — composição NestJS do keyring de credenciais
+
+A composição NestJS planejada para o keyring externo foi implementada e validada localmente.
+
+O HEAD publicado utilizado como base continua sendo:
+
+`a2f129ef135ec694adc83f8937e9397cfe8bd53c` — `docs(integrations): define composicao NestJS do keyring`
+
+#### Arquivos implementados
+
+`apps/api/src/modules/integrations/credentials/sales-channel-credential.tokens.ts`
+
+`apps/api/src/modules/integrations/credentials/sales-channel-credential.module.ts`
+
+`apps/api/src/modules/integrations/credentials/sales-channel-credential.module.spec.ts`
+
+Nenhum outro arquivo de implementação foi alterado.
+
+#### Token runtime
+
+Foi criado:
+
+`SALES_CHANNEL_CREDENTIAL_KEYRING`
+
+O token é um `Symbol` e existe exclusivamente como identidade runtime da abstração `SalesChannelCredentialKeyring` dentro do container NestJS.
+
+O arquivo de token não conhece:
+
+- `ConfigService`;
+- nomes de variáveis de configuração;
+- `process.env`;
+- material criptográfico;
+- Buffer de chave;
+- Prisma;
+- OAuth.
+
+#### SalesChannelCredentialModule
+
+`SalesChannelCredentialModule` foi implementado como camada fina de composição.
+
+O módulo importa `ConfigModule`, mas NÃO executa outro `ConfigModule.forRoot()`.
+
+O módulo possui exatamente dois factory providers.
+
+Provider 1:
+
+`ConfigService -> SalesChannelCredentialConfigKeyring -> SALES_CHANNEL_CREDENTIAL_KEYRING`
+
+Provider 2:
+
+`SALES_CHANNEL_CREDENTIAL_KEYRING -> SalesChannelCredentialCryptoService`
+
+#### Configuração lida
+
+O provider do keyring consulta exatamente:
+
+`MARTO_CREDENTIAL_ENCRYPTION_CURRENT_KEY_VERSION`
+
+e:
+
+`MARTO_CREDENTIAL_ENCRYPTION_KEYS`
+
+Cada configuração é lida exatamente uma vez.
+
+`ConfigService.get<string>()` é chamado sem argumento default.
+
+Não existe fallback.
+
+Não existe `getOrThrow()`.
+
+Não existe acesso direto a `process.env`.
+
+#### Parsing e validação
+
+A camada NestJS não duplica parsing ou validação do keyring.
+
+O módulo NÃO contém:
+
+- `JSON.parse`;
+- decodificação Base64;
+- `Buffer.from()` para material de chave;
+- validação de 32 bytes;
+- geração automática de chave;
+- normalização de whitespace.
+
+Essas responsabilidades continuam exclusivamente no `SalesChannelCredentialConfigKeyring` publicado anteriormente.
+
+#### Erros
+
+A factory preserva os erros sanitizados do ConfigKeyring.
+
+Foram comprovados:
+
+- configuração obrigatória ausente -> `credential_keyring_config_invalid`;
+- JSON malformado -> `credential_keyring_config_invalid`;
+- versão corrente em branco -> `credential_keyring_config_invalid`;
+- versão corrente inexistente no conjunto -> `credential_keyring_current_key_not_found`.
+
+Material sintético inválido não aparece na mensagem de erro.
+
+#### CryptoService
+
+`SalesChannelCredentialCryptoService` continua sem decorator Nest e sem `ConfigService`.
+
+O módulo o instancia por factory usando o keyring injetado pelo token dedicado.
+
+Round-trip criptográfico com fixture sintética foi validado.
+
+#### Exports
+
+O módulo exporta:
+
+- `SALES_CHANNEL_CREDENTIAL_KEYRING`;
+- `SalesChannelCredentialCryptoService`.
+
+#### Isolamento do módulo
+
+`SalesChannelCredentialModule` não possui controller.
+
+`SalesChannelCredentialModule` não é `@Global()`.
+
+`AppModule` continua sem importar `SalesChannelCredentialModule`.
+
+Portanto a existência do módulo ainda não torna a configuração criptográfica obrigatória no bootstrap geral da API.
+
+A ativação no grafo operacional continua reservada para um futuro consumidor real de credenciais externas.
+
+#### RED
+
+O primeiro RED foi criado somente com a spec NestJS.
+
+Foram definidos 18 contratos.
+
+Resultado RED:
+
+`18/18 contratos falharam`
+
+A falha ocorreu pela ausência esperada de:
+
+- `sales-channel-credential.tokens.ts`;
+- `sales-channel-credential.module.ts`.
+
+Spec RED original:
+
+SHA256:
+
+`8b47621ce10e2c9bccb43fb34fcf267e8ac389e643a17ee11eca32a2a3cf8003`
+
+Git blob:
+
+`97dcdea56f13027f1e8cb24fa60c9b818a3949c5`
+
+#### GREEN inicial
+
+Foram criados somente o token e o módulo planejados.
+
+Resultado:
+
+`18/18 contratos focados PASS`
+
+`API build PASS`
+
+A spec permaneceu byte-idêntica durante o GREEN inicial.
+
+#### Auditoria adversarial
+
+A spec foi expandida com 6 contratos adversariais adicionais.
+
+Total final:
+
+`24/24 contratos focados PASS`
+
+Os contratos adicionais comprovaram:
+
+1. exatamente dois factory providers;
+2. cada configuração lida exatamente uma vez e sem argumento default;
+3. JSON malformado preserva `credential_keyring_config_invalid`;
+4. versão corrente em branco preserva `credential_keyring_config_invalid`;
+5. resolução real do keyring e do CryptoService por um `TestingModule` Nest compilado;
+6. arquivo de token permanece sem configuração ou tratamento de segredo.
+
+A auditoria também comprovou:
+
+`Suite completa da API PASS`
+
+`API build PASS`
+
+Os totais globais exatos de `Test Suites` e `Tests` não são registrados neste checkpoint porque não foram capturados no resumo fornecido; nenhum total é inferido.
+
+#### Hashes finais
+
+Spec adversarial final:
+
+SHA256:
+
+`200edb935a3d30357ad4450ed03cd903f05e1e9713fb292924e41b80ceab2c55`
+
+Git blob:
+
+`81871f371a74f423bcd991019f70685ab2c7c1d2`
+
+Token runtime:
+
+SHA256:
+
+`9aae804ba80df403d4852c11f7bde408854a46bffa10ed2da3545422a2b83196`
+
+Git blob:
+
+`e05b2dc3e404a86c8c83368a9c64a8abfc6b611a`
+
+Módulo NestJS:
+
+SHA256:
+
+`41b7532176525dece861e5d0468a2f2615a5d987f23f15cdcd5574f44431fca8`
+
+Git blob:
+
+`4083fb300829d156378f4f6ee6eec91d68ee6906`
+
+`sales-channel-credential.tokens.ts` e `sales-channel-credential.module.ts` permaneceram byte-idênticos durante toda a auditoria adversarial.
+
+`SalesChannelCredentialConfigKeyring` e `SalesChannelCredentialCryptoService` também permaneceram byte-idênticos.
+
+#### Fora desta fronteira
+
+Ainda NÃO foi feito:
+
+- import de `SalesChannelCredentialModule` no `AppModule`;
+- alteração de `.env.example`;
+- criação ou alteração de `.env` real;
+- inclusão de chave criptográfica real;
+- leitura/escrita Prisma de `SalesChannelCredential`;
+- aplicação da migration de `SalesChannelCredential`;
+- implementação OAuth;
+- armazenamento de access token real;
+- armazenamento de refresh token real;
+- client secret real;
+- refresh concorrente;
+- rotação operacional de credenciais.
+
+A migration de `SalesChannelCredential` continua não aplicada.
+
+#### Estado
+
+A composição NestJS está implementada e testada, mas ainda não está ativada no grafo operacional da aplicação.
+
+Esse estado é intencional e preserva o fail-fast do keyring sem exigir configuração secreta em ambientes que ainda não utilizam integrações autenticadas.
