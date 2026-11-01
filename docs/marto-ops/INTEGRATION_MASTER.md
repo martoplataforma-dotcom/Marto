@@ -9488,3 +9488,293 @@ Depois da publicação deste checkpoint, o próximo passo deve ser projetar a co
 Essa camada deverá ser fina e testável, sem deslocar parsing ou validação para `ConfigService`.
 
 O núcleo criptográfico e o ConfigKeyring devem continuar independentes de OAuth e Prisma.
+
+---
+
+### Fronteira — composição NestJS do keyring de credenciais
+
+O keyring externo de credenciais foi publicado no commit:
+
+`69f49f4e49e839014d1054924819cdb1eb10dd66` — `feat(integrations): adiciona keyring externo de credenciais`
+
+A próxima fronteira é conectar configuração NestJS ao keyring sem contaminar os componentes puros com dependências de framework.
+
+#### Estado atual da API
+
+O `AppModule` já possui:
+
+`ConfigModule.forRoot({ isGlobal: true })`
+
+Portanto `ConfigService` já pertence à infraestrutura disponível da aplicação.
+
+O núcleo de credenciais continua deliberadamente independente do NestJS:
+
+- `SalesChannelCredentialConfigKeyring` não usa `ConfigService`;
+- `SalesChannelCredentialConfigKeyring` não usa `process.env`;
+- `SalesChannelCredentialCryptoService` não possui `@Injectable()`;
+- `SalesChannelCredentialCryptoService` não usa `ConfigService`;
+- nenhum dos dois componentes deve receber decorators Nest.
+
+Essa separação deve permanecer.
+
+#### Módulo planejado
+
+A composição será encapsulada em:
+
+`SalesChannelCredentialModule`
+
+Arquivo planejado:
+
+`apps/api/src/modules/integrations/credentials/sales-channel-credential.module.ts`
+
+O módulo será responsável somente por composição de dependências.
+
+Não possuirá controller.
+
+Não possuirá endpoint.
+
+Não possuirá regra OAuth.
+
+Não possuirá acesso Prisma.
+
+#### Token de injeção
+
+`SalesChannelCredentialKeyring` é uma interface TypeScript e não existe em runtime.
+
+Portanto o NestJS não deverá tentar injetar essa interface diretamente.
+
+Será criado um token explícito:
+
+`SALES_CHANNEL_CREDENTIAL_KEYRING`
+
+O token deverá ser um `Symbol`, evitando colisão acidental com strings de outros módulos.
+
+Arquivo planejado:
+
+`apps/api/src/modules/integrations/credentials/sales-channel-credential.tokens.ts`
+
+O token não contém segredo e não representa uma chave criptográfica.
+
+#### Provider do keyring
+
+O keyring será criado por factory provider.
+
+Fluxo:
+
+`ConfigService -> factory provider -> SalesChannelCredentialConfigKeyring`
+
+A factory lerá exclusivamente:
+
+`MARTO_CREDENTIAL_ENCRYPTION_CURRENT_KEY_VERSION`
+
+e:
+
+`MARTO_CREDENTIAL_ENCRYPTION_KEYS`
+
+A factory passará os valores crus ao construtor já testado de `SalesChannelCredentialConfigKeyring`.
+
+A factory NÃO deverá duplicar parsing ou validação.
+
+Em especial, ela não deverá:
+
+- fazer `JSON.parse`;
+- decodificar Base64;
+- validar tamanho da chave;
+- escolher fallback;
+- gerar chave;
+- normalizar whitespace.
+
+Toda essa responsabilidade continua no `SalesChannelCredentialConfigKeyring`.
+
+#### Leitura com ConfigService
+
+A factory deverá utilizar `ConfigService.get<string>()` para obter os dois valores.
+
+Não será usado fallback.
+
+Não será usado valor default.
+
+Não será usado acesso direto a `process.env`.
+
+Também não será necessário usar `getOrThrow()` nessa camada.
+
+Motivo: ausência ou invalidade deve continuar chegando ao `SalesChannelCredentialConfigKeyring`, que já possui os erros sanitizados e estáveis:
+
+- `credential_keyring_config_invalid`;
+- `credential_keyring_current_key_not_found`.
+
+Assim evitamos introduzir uma segunda semântica de erro para a mesma configuração.
+
+#### Provider do serviço criptográfico
+
+`SalesChannelCredentialCryptoService` também permanecerá uma classe pura, sem decorator Nest.
+
+O NestJS deverá construí-lo por factory provider:
+
+`SALES_CHANNEL_CREDENTIAL_KEYRING -> factory provider -> SalesChannelCredentialCryptoService`
+
+A factory receberá o keyring pelo token `SALES_CHANNEL_CREDENTIAL_KEYRING` e executará somente:
+
+`new SalesChannelCredentialCryptoService(keyring)`
+
+Nenhuma chave deverá ser extraída ou manipulada nessa factory.
+
+#### Providers planejados
+
+Conceitualmente o módulo terá dois providers:
+
+1. `SALES_CHANNEL_CREDENTIAL_KEYRING`;
+2. `SalesChannelCredentialCryptoService`.
+
+O primeiro será produzido a partir de `ConfigService`.
+
+O segundo será produzido a partir do primeiro.
+
+#### Exports planejados
+
+O módulo exportará:
+
+- `SALES_CHANNEL_CREDENTIAL_KEYRING`;
+- `SalesChannelCredentialCryptoService`.
+
+Isso permitirá que futuros módulos consumidores escolham a abstração adequada.
+
+Nenhum consumidor deverá conhecer o JSON do keyring.
+
+Nenhum consumidor deverá receber `ConfigService` apenas para obter chave criptográfica.
+
+#### Não será @Global
+
+`SalesChannelCredentialModule` NÃO será marcado com `@Global()`.
+
+O acesso a credenciais deve ser explícito por import de módulo.
+
+Isso evita tornar infraestrutura sensível disponível implicitamente em toda a aplicação.
+
+#### AppModule ainda não será alterado
+
+`SalesChannelCredentialModule` NÃO será importado no `AppModule` neste checkpoint de implementação.
+
+Essa decisão é intencional.
+
+O keyring possui validação fail-fast.
+
+Se o módulo fosse ativado agora no grafo raiz, qualquer ambiente que ainda não possui configuração criptográfica passaria a falhar no bootstrap mesmo sem utilizar integrações autenticadas.
+
+A ativação deverá acontecer somente quando existir o primeiro fluxo que realmente dependa de credenciais externas.
+
+O candidato natural será o futuro módulo de integração autenticada/OAuth do marketplace.
+
+Nesse momento o módulo consumidor importará explicitamente `SalesChannelCredentialModule`.
+
+#### ConfigModule
+
+O módulo de credenciais poderá declarar `ConfigModule` como dependência explícita para tornar claro que sua factory usa `ConfigService`.
+
+Não deverá executar outro `ConfigModule.forRoot()`.
+
+A configuração raiz continua sendo responsabilidade do `AppModule`.
+
+#### .env.example
+
+Este próximo checkpoint de wiring NÃO precisa alterar `.env.example`.
+
+Os nomes de configuração já estão fixados documentalmente.
+
+Adicionar placeholders ao `.env.example` deverá ocorrer junto da ativação real do módulo, não antes.
+
+Nenhum `.env` real será criado ou alterado.
+
+#### Segurança
+
+A composição NestJS não poderá registrar:
+
+- `MARTO_CREDENTIAL_ENCRYPTION_KEYS`;
+- conteúdo Base64;
+- Buffer de chave;
+- access token;
+- refresh token;
+- client secret.
+
+Nenhum `Logger`, `console.log` ou `console.error` deverá ser necessário nesses providers.
+
+Erros de bootstrap deverão continuar sanitizados pelo ConfigKeyring.
+
+#### Imutabilidade
+
+A factory cria uma única instância do keyring no container NestJS.
+
+O snapshot continua imutável durante a vida do processo.
+
+Não haverá hot reload das variáveis.
+
+Mudança de versão corrente continuará exigindo restart/redeploy.
+
+#### Arquivos previstos para o RED/GREEN
+
+O próximo RED deverá trabalhar somente na camada NestJS e poderá introduzir:
+
+- `sales-channel-credential.tokens.ts`;
+- `sales-channel-credential.module.ts`;
+- `sales-channel-credential.module.spec.ts`.
+
+Os arquivos já publicados NÃO deverão ser alterados:
+
+- `sales-channel-credential-config.keyring.ts`;
+- `sales-channel-credential-config.keyring.spec.ts`;
+- `sales-channel-credential-crypto.service.ts`;
+- `sales-channel-credential-crypto.service.spec.ts`.
+
+#### Contratos mínimos do próximo RED
+
+A composição NestJS deverá provar no mínimo:
+
+1. existe um token runtime dedicado para `SalesChannelCredentialKeyring`;
+2. o token é um `Symbol`;
+3. a factory lê exatamente `MARTO_CREDENTIAL_ENCRYPTION_CURRENT_KEY_VERSION`;
+4. a factory lê exatamente `MARTO_CREDENTIAL_ENCRYPTION_KEYS`;
+5. configuração válida produz keyring funcional;
+6. chave histórica permanece resolvível pelo provider;
+7. configuração ausente propaga `credential_keyring_config_invalid`;
+8. versão corrente inexistente propaga `credential_keyring_current_key_not_found`;
+9. provider criptográfico recebe o keyring pelo token dedicado;
+10. serviço criptográfico produzido realiza round-trip com fixture falsa;
+11. módulo exporta o token do keyring;
+12. módulo exporta `SalesChannelCredentialCryptoService`;
+13. módulo não possui controller;
+14. módulo não é global;
+15. nenhuma factory lê `process.env`;
+16. nenhuma factory contém parsing JSON/Base64;
+17. nenhum segredo aparece em erro;
+18. `AppModule` permanece sem importar `SalesChannelCredentialModule`.
+
+Fixtures dos testes continuarão usando apenas Buffers sintéticos, como `Buffer.alloc(32, ...)`.
+
+Nenhuma chave real será utilizada.
+
+#### Estado desta fronteira
+
+Ainda NÃO existe:
+
+- `SalesChannelCredentialModule`;
+- token NestJS do keyring;
+- provider factory do keyring;
+- provider factory do crypto service;
+- import do módulo de credenciais no `AppModule`;
+- leitura operacional das variáveis de criptografia;
+- alteração de `.env.example`;
+- `.env` real de criptografia;
+- chave criptográfica real;
+- acesso Prisma às credenciais;
+- OAuth;
+- access token real;
+- refresh token real;
+- client secret real.
+
+A migration de `SalesChannelCredential` continua não aplicada.
+
+#### Próximo passo
+
+Depois de publicar esta fronteira documental, será criado primeiro o RED da composição NestJS.
+
+Somente depois dos contratos falharem pela ausência do módulo/tokens será escrita a implementação mínima.
