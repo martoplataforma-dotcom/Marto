@@ -8921,3 +8921,286 @@ O próximo passo depois de publicar este checkpoint é definir e testar como as 
 Essa próxima camada deverá resolver configuração/keyring sem colocar chave no banco, sem colocar segredo no Git e sem acoplar o núcleo criptográfico ao Mercado Livre.
 
 Ainda não será necessário conectar conta real ou executar OAuth apenas para definir essa fronteira.
+
+---
+
+### Fronteira — keyring externo de credenciais
+
+O serviço criptográfico de `SalesChannelCredential` foi publicado no commit:
+
+`8464517b6e22d8f5683e5fb83d9cf51f2d0a81ab` — `feat(integrations): adiciona criptografia de credenciais`
+
+Esse serviço já define a abstração:
+
+`SalesChannelCredentialKeyring`
+
+com as operações:
+
+- `current()` para obter a chave ativa usada em novas criptografias;
+- `resolve(version)` para recuperar uma chave específica usada em dados antigos.
+
+Este checkpoint fixa como a implementação concreta desse keyring deverá receber configuração externa.
+
+Nenhuma chave real é criada ou configurada neste checkpoint.
+
+#### Princípio
+
+Chaves criptográficas são configuração operacional secreta e não dado de domínio.
+
+Portanto, material de chave NÃO deverá ser armazenado em:
+
+- PostgreSQL;
+- Prisma;
+- `SalesChannelCredential`;
+- Git;
+- código-fonte;
+- documentação;
+- logs.
+
+O banco guarda apenas:
+
+`encryptionKeyVersion`
+
+A chave correspondente permanece fora do banco.
+
+#### Variáveis de configuração previstas
+
+A futura camada de wiring utilizará dois nomes de configuração:
+
+`MARTO_CREDENTIAL_ENCRYPTION_CURRENT_KEY_VERSION`
+
+e:
+
+`MARTO_CREDENTIAL_ENCRYPTION_KEYS`
+
+`MARTO_CREDENTIAL_ENCRYPTION_CURRENT_KEY_VERSION` contém somente o identificador da chave atualmente ativa.
+
+Esse identificador não é material criptográfico.
+
+`MARTO_CREDENTIAL_ENCRYPTION_KEYS` contém um objeto JSON com o keyring.
+
+Estrutura conceitual:
+
+`{"key-v1":"<base64>","key-v2":"<base64>"}`
+
+Os valores reais representados por `<base64>` nunca devem ser colocados neste documento, em `.env.example` ou no Git.
+
+#### Codificação das chaves
+
+Cada chave será representada externamente como Base64 canônico.
+
+Depois da decodificação, o material deve possuir exatamente:
+
+`32 bytes`
+
+porque o serviço utiliza AES-256-GCM.
+
+O parser não poderá aceitar silenciosamente:
+
+- string vazia;
+- chave menor que 32 bytes;
+- chave maior que 32 bytes;
+- Base64 malformado;
+- representação Base64 não canônica;
+- valor não textual.
+
+#### Implementação planejada
+
+A implementação concreta será:
+
+`SalesChannelCredentialConfigKeyring`
+
+Ela implementará:
+
+`SalesChannelCredentialKeyring`
+
+O núcleo do keyring continuará sem acessar `process.env` diretamente.
+
+A classe receberá um snapshot de configuração contendo conceitualmente:
+
+- `currentKeyVersion`;
+- `keys` serializadas.
+
+A responsabilidade de ler `ConfigService` ficará na futura camada de wiring do NestJS.
+
+Assim, o fluxo pretendido será:
+
+`ConfigService -> wiring/factory -> SalesChannelCredentialConfigKeyring -> SalesChannelCredentialCryptoService`
+
+O `SalesChannelCredentialCryptoService` continuará sem conhecer `ConfigService`.
+
+#### Validação no startup
+
+O keyring deverá falhar cedo durante construção/configuração se o estado for inválido.
+
+Será obrigatório validar:
+
+1. versão corrente presente e não vazia;
+2. JSON do keyring presente e válido;
+3. raiz JSON como objeto simples;
+4. pelo menos uma chave cadastrada;
+5. versões de chave não vazias;
+6. valores de chave como string;
+7. Base64 canônico;
+8. cada chave decodificada com exatamente 32 bytes;
+9. a versão corrente existente dentro do keyring.
+
+Nenhum fallback automático para outra versão será permitido.
+
+Nenhuma chave será gerada automaticamente quando a configuração estiver ausente.
+
+Configuração inválida deve impedir o uso do serviço em vez de produzir criptografia com estado imprevisível.
+
+#### Erros sanitizados
+
+Erros de configuração não devem incluir material secreto.
+
+Contratos previstos:
+
+- `credential_keyring_config_invalid`;
+- `credential_keyring_current_key_not_found`.
+
+`credential_keyring_config_invalid` cobrirá configuração ausente, JSON inválido, formato inválido ou material de chave inválido.
+
+`credential_keyring_current_key_not_found` será usado quando uma versão corrente válida for declarada, porém não existir no conjunto de chaves.
+
+Nenhum erro deve incorporar:
+
+- conteúdo de `MARTO_CREDENTIAL_ENCRYPTION_KEYS`;
+- chave Base64;
+- Buffer decodificado;
+- token;
+- segredo OAuth.
+
+#### Imutabilidade
+
+O keyring será carregado como snapshot no bootstrap da aplicação.
+
+Não haverá hot reload de chave dentro do mesmo processo neste checkpoint.
+
+`current()` e `resolve()` deverão devolver cópias do Buffer armazenado, evitando que um consumidor externo altere o material mantido internamente.
+
+Alterar um Buffer retornado pelo keyring não poderá modificar chamadas futuras.
+
+#### Resolução
+
+`current()` deverá retornar:
+
+- versão corrente;
+- cópia da chave corrente.
+
+`resolve(version)` deverá:
+
+- retornar uma cópia da chave quando a versão existir;
+- retornar `undefined` quando a versão for desconhecida.
+
+A ausência de uma versão histórica será convertida pelo serviço criptográfico em:
+
+`credential_encryption_key_not_found`
+
+#### Rotação
+
+A rotação planejada será explícita.
+
+Procedimento operacional conceitual:
+
+1. adicionar a nova chave ao keyring externo;
+2. manter as chaves antigas disponíveis;
+3. alterar `MARTO_CREDENTIAL_ENCRYPTION_CURRENT_KEY_VERSION` para a nova versão;
+4. reiniciar/reimplantar a aplicação;
+5. novas criptografias passam a utilizar a nova versão;
+6. dados antigos continuam descriptografáveis pelas versões anteriores.
+
+Uma chave antiga não poderá ser removida enquanto existirem registros cujo `encryptionKeyVersion` dependa dela.
+
+Recriptografia em massa e aposentadoria segura de versões antigas são assuntos posteriores.
+
+#### Separação de responsabilidades
+
+O keyring não realizará:
+
+- criptografia;
+- descriptografia;
+- persistência Prisma;
+- leitura de `SalesChannelCredential`;
+- escrita de `SalesChannelCredential`;
+- OAuth;
+- refresh de token;
+- HTTP;
+- chamadas ao Mercado Livre;
+- geração de chaves;
+- rotação automática;
+- logging de material secreto.
+
+Sua única responsabilidade será transformar uma configuração externa validada em material de chave versionado para o serviço criptográfico.
+
+#### ConfigService
+
+`@nestjs/config` já existe na API e `ConfigModule` já é global.
+
+Mesmo assim, o parser/keyring não será acoplado diretamente ao NestJS.
+
+A futura composição poderá utilizar `ConfigService` em uma factory/provider fina para obter os dois valores e construir o keyring.
+
+Isso mantém o componente criptográfico testável sem Nest, sem `.env` e sem processo real.
+
+#### `.env.example`
+
+Quando o wiring for implementado, `.env.example` poderá receber somente os nomes:
+
+`MARTO_CREDENTIAL_ENCRYPTION_CURRENT_KEY_VERSION=`
+
+`MARTO_CREDENTIAL_ENCRYPTION_KEYS=`
+
+Nenhuma chave de exemplo semelhante a uma chave real será necessária.
+
+Nenhum `.env` real será criado ou alterado automaticamente.
+
+#### Testes obrigatórios antes de implementação ser aceita
+
+O RED/GREEN do keyring deverá cobrir no mínimo:
+
+1. chave corrente válida;
+2. resolução de chave histórica;
+3. versão desconhecida retorna `undefined`;
+4. rotação muda somente a chave corrente;
+5. chave antiga permanece resolvível;
+6. configuração ausente é rejeitada;
+7. JSON inválido é rejeitado;
+8. array JSON é rejeitado;
+9. objeto vazio é rejeitado;
+10. versão corrente ausente é rejeitada;
+11. versão corrente não existente é rejeitada;
+12. chave Base64 inválida é rejeitada;
+13. chave com tamanho diferente de 32 bytes é rejeitada;
+14. material secreto não aparece em erros;
+15. Buffer retornado por `current()` não permite mutação interna;
+16. Buffer retornado por `resolve()` não permite mutação interna.
+
+#### Estado deste checkpoint
+
+Ainda NÃO existe:
+
+- `SalesChannelCredentialConfigKeyring`;
+- provider Nest para o keyring;
+- uso de `ConfigService` para chaves;
+- variáveis de criptografia em `.env.example`;
+- chave real;
+- `.env` real de criptografia;
+- integração Prisma do serviço criptográfico;
+- OAuth;
+- access token real;
+- refresh token real;
+- client secret real.
+
+Nenhum banco será acessado para definir ou testar esse keyring.
+
+#### Próximo passo
+
+Depois de publicar esta fronteira, o próximo checkpoint será RED/GREEN de `SalesChannelCredentialConfigKeyring` como componente puro.
+
+Primeiro serão criados os contratos de teste.
+
+Somente depois será escrita a implementação.
+
+O wiring NestJS com `ConfigService` continuará separado para um passo posterior.
