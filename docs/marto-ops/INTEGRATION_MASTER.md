@@ -9204,3 +9204,287 @@ Primeiro serão criados os contratos de teste.
 Somente depois será escrita a implementação.
 
 O wiring NestJS com `ConfigService` continuará separado para um passo posterior.
+
+---
+
+### Checkpoint — keyring externo de credenciais
+
+A fronteira do keyring externo foi publicada no commit:
+
+`2d0681098471f05411ee13cd468e44081e072dae` — `docs(integrations): define keyring externo de credenciais`
+
+Depois dessa fronteira foi executado RED/GREEN e auditoria adversarial do componente puro:
+
+`SalesChannelCredentialConfigKeyring`
+
+Arquivos:
+
+- `apps/api/src/modules/integrations/credentials/sales-channel-credential-config.keyring.ts`;
+- `apps/api/src/modules/integrations/credentials/sales-channel-credential-config.keyring.spec.ts`.
+
+O componente implementa a interface já definida pelo núcleo criptográfico:
+
+`SalesChannelCredentialKeyring`
+
+e permanece separado de NestJS, ambiente, banco e marketplace.
+
+#### Entrada
+
+O construtor recebe somente um snapshot explícito:
+
+- `currentKeyVersion`;
+- `serializedKeys`.
+
+Nenhuma leitura de `process.env` é feita pelo keyring.
+
+Nenhum `ConfigService` é injetado no keyring.
+
+Essa separação preserva a arquitetura definida anteriormente:
+
+`ConfigService -> wiring/factory -> SalesChannelCredentialConfigKeyring -> SalesChannelCredentialCryptoService`
+
+A camada `ConfigService -> wiring/factory` ainda NÃO foi implementada.
+
+#### Parsing do keyring
+
+`serializedKeys` deve ser um JSON válido cuja raiz seja um objeto.
+
+O parser rejeita:
+
+- configuração ausente;
+- string vazia;
+- JSON inválido;
+- `null`;
+- string JSON como raiz;
+- número JSON como raiz;
+- boolean JSON como raiz;
+- array JSON;
+- objeto vazio.
+
+Cada entrada representa:
+
+`versão -> chave codificada`
+
+A versão cadastrada deve ser string de nome não vazio e não pode possuir whitespace adicional no início ou no fim.
+
+O valor da chave deve ser uma string.
+
+#### Base64 canônico
+
+O material externo aceito é Base64 padrão canônico.
+
+O parser valida estrutura e depois exige que:
+
+`decoded.toString('base64') === value`
+
+Isso impede aceitar representações alternativas do mesmo material.
+
+São rejeitados explicitamente:
+
+- Base64 sem padding quando o padding é necessário;
+- Base64 com whitespace;
+- Base64URL no lugar de Base64 padrão;
+- caracteres fora do alfabeto esperado;
+- material não textual.
+
+Depois da decodificação, cada chave deve possuir exatamente:
+
+`32 bytes`
+
+compatíveis com AES-256.
+
+Chaves de 31 ou 33 bytes são rejeitadas.
+
+#### Versão corrente
+
+`currentKeyVersion` é obrigatória.
+
+São rejeitados:
+
+- valor ausente;
+- string vazia;
+- somente whitespace;
+- valor com whitespace adicional no início ou fim.
+
+Além disso, a versão corrente declarada precisa existir no keyring carregado.
+
+Se a configuração estrutural é inválida, o erro é:
+
+`credential_keyring_config_invalid`
+
+Se a versão corrente foi declarada corretamente, porém não existe no conjunto carregado, o erro é:
+
+`credential_keyring_current_key_not_found`
+
+#### current()
+
+`current()` retorna:
+
+- a versão corrente;
+- uma cópia do Buffer da chave correspondente.
+
+O Buffer interno nunca é devolvido diretamente.
+
+Modificar o Buffer recebido pelo consumidor não altera o material mantido pelo keyring.
+
+#### resolve(version)
+
+`resolve(version)` retorna uma cópia do Buffer da versão solicitada quando ela existe.
+
+Quando a versão é desconhecida retorna:
+
+`undefined`
+
+Isso permite que o `SalesChannelCredentialCryptoService` preserve sua própria semântica:
+
+`credential_encryption_key_not_found`
+
+#### Rotação por snapshot
+
+O keyring é imutável como snapshot de bootstrap.
+
+A rotação não muta uma instância existente.
+
+Uma nova instância pode receber o mesmo conjunto de chaves com outra `currentKeyVersion`.
+
+Nesse cenário:
+
+- `current()` passa a usar a nova versão;
+- versões antigas continuam disponíveis em `resolve()`;
+- nenhuma chave histórica é removida automaticamente.
+
+Isso confirma o modelo operacional previsto para implantação/restart controlado.
+
+#### Erros sanitizados
+
+Os testes verificam que material inválido enviado na configuração não aparece na mensagem de erro.
+
+O keyring não inclui em erros:
+
+- chave Base64;
+- conteúdo completo de `serializedKeys`;
+- Buffer decodificado;
+- token;
+- segredo OAuth.
+
+#### RED
+
+Antes da implementação foram definidos 16 contratos.
+
+O RED foi confirmado com:
+
+- `1` suite falhando;
+- `16/16` testes falhando;
+- motivo esperado: módulo `./sales-channel-credential-config.keyring` ainda inexistente.
+
+Nenhuma implementação existia naquele momento.
+
+#### GREEN
+
+Depois da implementação mínima:
+
+`16/16 contratos focados PASS`
+
+e:
+
+`API build PASS`
+
+A spec RED permaneceu byte-idêntica durante esse primeiro GREEN.
+
+#### Auditoria adversarial
+
+Depois do GREEN foram adicionados mais 5 contratos sem alterar a implementação.
+
+Os novos casos verificaram:
+
+17. raiz JSON `null` ou primitiva rejeitada;
+18. valor de chave não textual rejeitado;
+19. versão cadastrada com whitespace rejeitada;
+20. Base64 contendo whitespace rejeitado;
+21. Base64URL rejeitado quando Base64 padrão canônico é exigido.
+
+Resultado final:
+
+`21/21 contratos focados PASS`
+
+Também foram concluídos com sucesso:
+
+- suíte completa de testes da API;
+- build completo da API;
+- auditoria estática de fronteiras.
+
+A implementação permaneceu byte-idêntica durante toda a auditoria adversarial.
+
+O serviço AES também permaneceu byte-idêntico.
+
+#### Evidência por hash
+
+Spec final após auditoria adversarial:
+
+`d0b0a24d741e4aee5598d2876a80e29e1a2adaa2d93fe1478468ab6c852b885d`
+
+Git blob da spec:
+
+`9c6e571616668332b96872992a1fe49b30daeb4a`
+
+Implementação:
+
+`a55e37f19860241894a4d4c15b744b0bc10ac9f57b835abf27a4dd045d596d5c`
+
+Git blob da implementação:
+
+`d8edf2a5b24177ed9391f6d76dc166cc614a4829`
+
+Serviço AES preservado:
+
+`454b858ed18fd19751a255543512e7e869c282bb386468daff1b9ebb18d95b1c`
+
+#### Fronteira comprovada
+
+`SalesChannelCredentialConfigKeyring` NÃO utiliza:
+
+- `ConfigService`;
+- `process.env`;
+- `@nestjs/config`;
+- Prisma;
+- banco;
+- Mercado Livre;
+- OAuth;
+- HTTP;
+- `fetch`;
+- `axios`;
+- logging;
+- operações criptográficas AES.
+
+Criptografia e descriptografia continuam exclusivamente sob responsabilidade de:
+
+`SalesChannelCredentialCryptoService`
+
+#### Estado deste checkpoint
+
+Ainda NÃO existe:
+
+- provider/factory NestJS para composição do keyring;
+- leitura real de `MARTO_CREDENTIAL_ENCRYPTION_CURRENT_KEY_VERSION`;
+- leitura real de `MARTO_CREDENTIAL_ENCRYPTION_KEYS`;
+- alteração de `.env.example`;
+- alteração de `.env` real;
+- chave criptográfica real;
+- integração Prisma com `SalesChannelCredential`;
+- OAuth;
+- access token real;
+- refresh token real;
+- client secret real;
+- refresh automático.
+
+Nenhum banco foi acessado neste checkpoint.
+
+A migration de `SalesChannelCredential` continua não aplicada.
+
+#### Próxima fronteira
+
+Depois da publicação deste checkpoint, o próximo passo deve ser projetar a composição NestJS que lê configuração externa e constrói o keyring.
+
+Essa camada deverá ser fina e testável, sem deslocar parsing ou validação para `ConfigService`.
+
+O núcleo criptográfico e o ConfigKeyring devem continuar independentes de OAuth e Prisma.
