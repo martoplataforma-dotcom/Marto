@@ -10381,3 +10381,194 @@ A migration de `SalesChannelCredential` continua não aplicada.
 Auditar e publicar esta definição documental.
 
 Somente depois iniciar o RED do `MercadoLivreOAuthClient`, criando primeiro apenas a spec e sem transporte HTTP real.
+
+---
+
+### Checkpoint — implementação do MercadoLivreOAuthClient
+
+A fronteira documental do cliente OAuth foi publicada em:
+
+`806b139843c1ff96795e5c12ea1937151775c8c2` — `docs(integrations): define cliente OAuth Mercado Livre`
+
+Depois dessa fronteira foi implementado e testado o `MercadoLivreOAuthClient` isolado, ainda sem transporte HTTP real e sem conexão de conta.
+
+#### Arquivos
+
+- `apps/api/src/modules/integrations/mercado-livre/mercado-livre.oauth-client.ts`;
+- `apps/api/src/modules/integrations/mercado-livre/mercado-livre.oauth-client.spec.ts`.
+
+Nenhum `MercadoLivreOAuthFetchTransport` foi criado.
+
+#### Fluxo implementado
+
+`caller -> MercadoLivreOAuthClient -> MercadoLivreOAuthHttpTransport -> POST /oauth/token`
+
+O client OAuth permanece separado do fluxo GET existente.
+
+#### Authorization code
+
+A troca utiliza `POST /oauth/token` com `application/x-www-form-urlencoded` e:
+
+- `grant_type=authorization_code`;
+- `client_id`;
+- `client_secret`;
+- `code`;
+- `redirect_uri`;
+- `code_verifier` somente quando fornecido.
+
+O client não gera state, code verifier ou code challenge.
+
+#### Refresh
+
+O refresh utiliza `POST /oauth/token` com:
+
+- `grant_type=refresh_token`;
+- `client_id`;
+- `client_secret`;
+- `refresh_token`.
+
+O client não decide quando fazer refresh, não possui lock e não executa retry automático.
+
+#### Resultado
+
+A resposta válida é normalizada para:
+
+- `accessToken`;
+- `tokenType`;
+- `expiresIn`;
+- `scope?`;
+- `userId`;
+- `refreshToken`.
+
+`user_id` numérico é convertido para string.
+
+`user_id` string válido é preservado.
+
+`scope` é opcional.
+
+`expires_in` é preservado sem hardcode.
+
+O client não calcula `accessTokenExpiresAt`.
+
+#### Segurança e erros
+
+Payload inválido produz:
+
+`Mercado Livre OAuth returned an invalid token payload.`
+
+Foi implementado `MercadoLivreOAuthHttpError`, expondo apenas status HTTP e código OAuth sanitizado quando válido.
+
+`error_description`, access token, refresh token, authorization code e client secret não são incorporados à mensagem.
+
+`invalid_grant` permanece somente como código OAuth; o client não decide reautorização.
+
+HTTP 429 e 5xx permanecem erros HTTP.
+
+Falhas de rede são propagadas sem retry.
+
+#### Isolamento
+
+O client não utiliza Prisma, `ConfigService`, `process.env`, `SalesChannelCredentialCryptoService`, NestJS, Redis, BullMQ, fetch, axios ou logging.
+
+Também não incorpora estado operacional como `REAUTH_REQUIRED`, `ROTATION_UNCERTAIN`, `REFRESHING`, `refreshAttemptId`, `tokenGeneration` ou `accessTokenExpiresAt`.
+
+#### RED
+
+A primeira spec possuía 24 contratos.
+
+`24/24 contratos falharam`
+
+A falha esperada foi a ausência do OAuth client.
+
+Spec RED original SHA256:
+
+`4b1e67612e8f348b0ea5e53427e6f424031e2fdea7a0b103d39e6a5654a24478`
+
+Spec RED original Git blob:
+
+`28a5cd20c71633cdb2144b1d003622a9a46ac91c`
+
+#### GREEN inicial
+
+Foi criado somente `mercado-livre.oauth-client.ts`.
+
+`24/24 contratos focados PASS`
+
+`API build PASS`
+
+A spec RED permaneceu byte-idêntica no GREEN inicial.
+
+#### Auditoria adversarial
+
+Foram acrescentados 8 contratos.
+
+`32/32 contratos focados PASS`
+
+Foram comprovados adicionalmente:
+
+1. `scope` ausente é aceito;
+2. `user_id` string é preservado;
+3. payloads inválidos usam erro sanitizado estável;
+4. body HTTP não objeto não produz `oauthCode`;
+5. código OAuth vazio ou não-string é ignorado;
+6. mensagens não vazam segredos nem `error_description`;
+7. request com `code_verifier` contém exatamente os campos planejados;
+8. client continua sem estado de orquestração/persistência.
+
+O `MercadoLivreOAuthClient` permaneceu byte-idêntico durante a auditoria adversarial.
+
+#### Suíte completa
+
+`Test Suites: 17 passed, 17 total`
+
+`Tests: 240 passed, 240 total`
+
+`Suite completa API PASS`
+
+`API build PASS`
+
+#### Hashes finais
+
+Spec adversarial SHA256:
+
+`8f9b1797ccf2583d67a6cbf6a436536fb4bcd4ac45c94e6130d3244e3714d075`
+
+Spec adversarial Git blob:
+
+`3a19da434a84fd407f3e034e0fd7b2631af9e106`
+
+OAuth Client SHA256:
+
+`a6f3b4a75edc1367bfd6f6091361420790c66119d3d552c0d63ae50ad501d184`
+
+OAuth Client Git blob:
+
+`ac92182d82ac3836a6a5e40ecb9692ab6a2c1e2b`
+
+#### Fora desta fronteira
+
+Ainda NÃO foi feito:
+
+- `MercadoLivreOAuthFetchTransport`;
+- fetch OAuth real;
+- chamada real a `/oauth/token`;
+- endpoint/callback OAuth;
+- state store;
+- geração PKCE;
+- validação operacional de identidade externa;
+- persistência Prisma de tokens;
+- criptografia operacional de tokens;
+- cálculo/persistência de `accessTokenExpiresAt`;
+- coordenador de refresh;
+- lock distribuído;
+- credenciais reais;
+- conexão de conta;
+- sincronização autenticada.
+
+A migration de `SalesChannelCredential` continua não aplicada.
+
+`SalesChannelCredentialModule` continua sem ser importado no `AppModule`.
+
+#### Estado
+
+O cliente OAuth puro está implementado e testado, mas ainda não possui transporte HTTP real nem está ligado ao fluxo operacional de autorização.
