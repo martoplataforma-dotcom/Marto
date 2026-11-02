@@ -10030,3 +10030,354 @@ A migration de `SalesChannelCredential` continua não aplicada.
 A composição NestJS está implementada e testada, mas ainda não está ativada no grafo operacional da aplicação.
 
 Esse estado é intencional e preserva o fail-fast do keyring sem exigir configuração secreta em ambientes que ainda não utilizam integrações autenticadas.
+
+---
+
+### Fronteira — MercadoLivreOAuthClient isolado
+
+Depois da publicação da composição NestJS do keyring de credenciais em:
+
+`8a9a9b34b0805b4ac1a50a0ce2e430e60913adc0` — `feat(integrations): adiciona composicao NestJS do keyring`
+
+a próxima fronteira é implementar o cliente OAuth HTTP do Mercado Livre como componente isolado, totalmente mockado nos testes e ainda sem conectar conta real.
+
+Essa etapa corresponde ao próximo ponto da ordem de implementação OAuth já aprovada: criar o cliente OAuth isolado antes de authorization flow, state, persistência e refresh coordenado.
+
+#### Revalidação da documentação oficial
+
+A documentação oficial do Mercado Livre foi revalidada em 2026-11-01 antes deste desenho.
+
+O endpoint de token continua sendo:
+
+`POST https://api.mercadolibre.com/oauth/token`
+
+Os parâmetros da troca devem ser enviados no body com:
+
+`Content-Type: application/x-www-form-urlencoded`
+
+e NÃO em query string.
+
+O fluxo de authorization code utiliza:
+
+- `grant_type=authorization_code`;
+- `client_id`;
+- `client_secret`;
+- `code`;
+- `redirect_uri`;
+- `code_verifier` quando PKCE estiver habilitado/aplicável.
+
+O fluxo de refresh utiliza:
+
+- `grant_type=refresh_token`;
+- `client_id`;
+- `client_secret`;
+- `refresh_token`.
+
+O refresh token deve continuar sendo tratado como rotativo e de uso único.
+
+Exemplos oficiais apresentam valores distintos de `expires_in`; portanto o Marto NÃO deverá hardcodar duração de access token.
+
+O cliente deve devolver o `expires_in` efetivamente recebido.
+
+O cálculo de `accessTokenExpiresAt` pertence a uma camada posterior de orquestração/persistência.
+
+#### Separação do MercadoLivreClient atual
+
+O atual `MercadoLivreClient` e seu `MercadoLivreHttpTransport` permanecem exclusivamente orientados a recursos de negócio por GET.
+
+Eles NÃO serão ampliados para suportar OAuth.
+
+A nova fronteira utilizará abstração separada:
+
+`MercadoLivreOAuthClient -> MercadoLivreOAuthHttpTransport -> POST /oauth/token`
+
+Neste checkpoint será implementado somente o client e o port de transporte.
+
+Nenhum transporte `fetch` OAuth real será criado ainda.
+
+#### Arquivos planejados
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre.oauth-client.ts`
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre.oauth-client.spec.ts`
+
+O port `MercadoLivreOAuthHttpTransport` ficará definido junto ao client nesta primeira implementação, assim como o atual client de recursos define seu próprio contrato de transporte.
+
+Não será criado módulo NestJS para OAuth neste checkpoint.
+
+#### Request de transporte OAuth
+
+O contrato lógico do transporte deverá representar:
+
+- método `POST`;
+- path `/oauth/token`;
+- headers;
+- campos de formulário.
+
+O contrato NÃO deverá possuir mecanismo de query para segredos OAuth.
+
+Forma conceitual:
+
+```ts
+type MercadoLivreOAuthHttpRequest = {
+  method: 'POST';
+  path: string;
+  headers: Record<string, string>;
+  form: Record<string, string>;
+};
+```
+
+A codificação concreta do formulário em `URLSearchParams`/body pertence ao futuro transporte HTTP real, não ao client.
+
+#### Exchange de authorization code
+
+O client deverá expor uma operação semanticamente equivalente a:
+
+`exchangeAuthorizationCode(input)`
+
+Input planejado:
+
+- `clientId`;
+- `clientSecret`;
+- `code`;
+- `redirectUri`;
+- `codeVerifier?`.
+
+A operação deverá montar exatamente um request para:
+
+`POST /oauth/token`
+
+com:
+
+`grant_type=authorization_code`
+
+`code_verifier` será incluído somente quando fornecido.
+
+O client NÃO gera `code_verifier`.
+
+O client NÃO gera `code_challenge`.
+
+O client NÃO gera `state`.
+
+Essas responsabilidades pertencem ao futuro authorization flow.
+
+#### Refresh
+
+O client deverá expor uma operação semanticamente equivalente a:
+
+`refreshAccessToken(input)`
+
+Input planejado:
+
+- `clientId`;
+- `clientSecret`;
+- `refreshToken`.
+
+A operação deverá executar exatamente um request com:
+
+`grant_type=refresh_token`
+
+O client não decide QUANDO fazer refresh.
+
+O client não possui margem de expiração.
+
+O client não possui lock.
+
+O client não possui retry automático.
+
+O client não reutiliza refresh token.
+
+Essas políticas pertencem ao futuro coordenador de credenciais.
+
+#### Resultado normalizado
+
+Uma resposta OAuth válida deverá ser normalizada para estrutura contendo:
+
+- `accessToken`;
+- `tokenType`;
+- `expiresIn`;
+- `scope?`;
+- `userId`;
+- `refreshToken`.
+
+`user_id` externo deverá ser normalizado para string para poder ser comparado futuramente com `SalesChannel.externalAccountId`.
+
+`expires_in` deverá permanecer como duração retornada pelo provedor.
+
+O client NÃO calcula `accessTokenExpiresAt`.
+
+O client NÃO persiste a resposta.
+
+O client NÃO criptografa tokens.
+
+#### Validação da resposta
+
+Uma resposta considerada válida deverá exigir pelo menos:
+
+- `access_token` string não vazia;
+- `token_type` string não vazia;
+- `expires_in` número finito positivo;
+- `user_id` string ou número válido para normalização;
+- `refresh_token` string não vazia.
+
+`scope` poderá ser opcional; quando presente deverá ser string.
+
+Payload estruturalmente inválido deverá falhar com erro estável e sanitizado, sem reproduzir tokens.
+
+#### Erros OAuth
+
+O client deverá distinguir erro HTTP OAuth sem assumir política de negócio.
+
+Será criado um erro tipado/estruturado semanticamente equivalente a:
+
+`MercadoLivreOAuthHttpError`
+
+Ele poderá expor somente informação não secreta necessária para a futura orquestração, como:
+
+- status HTTP;
+- código OAuth sanitizado, por exemplo `invalid_grant`.
+
+A mensagem de erro não deverá conter:
+
+- access token;
+- refresh token;
+- authorization code;
+- client secret;
+- body OAuth integral.
+
+`error_description` não será necessário para decisão automática nesta primeira implementação e não deverá ser incorporado à mensagem de erro.
+
+O client NÃO decidirá que `invalid_grant` significa reautorização.
+
+Ele apenas preservará o código sanitizado para o futuro coordenador decidir.
+
+Da mesma forma, HTTP 429 e 5xx serão reportados sem serem convertidos automaticamente em revogação.
+
+#### Network errors
+
+Falhas lançadas pelo transport serão propagadas.
+
+O client não executará retry.
+
+Cada chamada pública deverá causar no máximo uma chamada ao transport.
+
+Retry/backoff pertence à camada futura de orquestração.
+
+#### Segurança
+
+O client NÃO poderá:
+
+- usar `console.log`;
+- usar `console.error`;
+- logar request body;
+- logar response body;
+- ler `process.env`;
+- conhecer `ConfigService`;
+- conhecer Prisma;
+- acessar `SalesChannelCredential`;
+- chamar `SalesChannelCredentialCryptoService`;
+- persistir tokens;
+- receber segredo real em testes.
+
+Todas as fixtures serão sintéticas.
+
+#### Fronteiras mantidas
+
+O client OAuth NÃO será responsável por:
+
+- construir URL de autorização do usuário;
+- gerar/armazenar `state`;
+- validar `state`;
+- gerar PKCE;
+- persistir authorization code;
+- validar ownership Marto do canal;
+- criar `SalesChannel`;
+- alterar `externalAccountId`;
+- criptografar access token;
+- criptografar refresh token;
+- ler/escrever `SalesChannelCredential`;
+- calcular `accessTokenExpiresAt`;
+- decidir se token atual ainda é válido;
+- coordenar refresh;
+- adquirir lock distribuído;
+- classificar credencial como `REAUTH_REQUIRED`;
+- executar `/users/me`;
+- executar sync de pedidos.
+
+#### Contratos previstos para o RED
+
+A primeira spec deverá proteger pelo menos estes 24 contratos:
+
+1. authorization code usa `POST`;
+2. authorization code usa exatamente `/oauth/token`;
+3. request usa `accept: application/json`;
+4. request usa `content-type: application/x-www-form-urlencoded`;
+5. authorization body possui `grant_type=authorization_code`;
+6. authorization body contém `client_id`, `client_secret`, `code` e `redirect_uri`;
+7. `code_verifier` é incluído quando fornecido;
+8. `code_verifier` é omitido quando ausente;
+9. refresh usa `POST /oauth/token`;
+10. refresh body possui `grant_type=refresh_token`;
+11. refresh body contém somente os campos OAuth esperados para refresh;
+12. nenhum segredo é enviado em query;
+13. resposta válida normaliza `access_token`;
+14. `user_id` numérico é normalizado para string;
+15. `expires_in` retornado é preservado sem hardcode;
+16. `refresh_token` novo é retornado ao caller;
+17. payload OAuth inválido falha com erro sanitizado;
+18. HTTP não bem-sucedido produz `MercadoLivreOAuthHttpError`;
+19. `invalid_grant` pode ser exposto como código OAuth sanitizado;
+20. 429/5xx permanecem erros HTTP e não viram decisão de reautorização;
+21. network error do transport é propagado sem retry;
+22. cada operação chama o transport exatamente uma vez;
+23. client não utiliza Prisma, ConfigService, process.env, crypto service ou logs;
+24. client não altera o atual `MercadoLivreClient`/`MercadoLivreHttpTransport` GET.
+
+Contratos adversariais adicionais poderão ser acrescentados depois do primeiro GREEN sem enfraquecer estes 24.
+
+#### Sequência RED/GREEN planejada
+
+Depois desta fronteira documental estar auditada e publicada:
+
+1. criar somente `mercado-livre.oauth-client.spec.ts`;
+2. comprovar RED pela ausência do OAuth client;
+3. criar `mercado-livre.oauth-client.ts` mínimo;
+4. fazer os contratos focados passarem;
+5. executar auditoria adversarial;
+6. executar suíte completa da API;
+7. executar build da API;
+8. documentar hashes/resultados;
+9. auditar o commit;
+10. somente então publicar.
+
+#### Ainda NÃO fazer
+
+- não criar `MercadoLivreOAuthFetchTransport`;
+- não executar `fetch`;
+- não chamar `/oauth/token` real;
+- não criar endpoint OAuth;
+- não criar callback;
+- não criar authorization URL;
+- não criar state store;
+- não criar PKCE generator;
+- não alterar `SalesChannelCredentialModule`;
+- não importar módulo novo no `AppModule`;
+- não alterar `.env.example`;
+- não alterar `.env` real;
+- não adicionar `client_id` real;
+- não adicionar `client_secret` real;
+- não adicionar token real;
+- não aplicar migration;
+- não ler/escrever banco;
+- não alterar `MercadoLivreClient`;
+- não alterar `MercadoLivreFetchTransport`;
+- não tocar na `main`;
+- não tocar em `docs/marto-ia/`.
+
+A migration de `SalesChannelCredential` continua não aplicada.
+
+#### Próxima ação exata
+
+Auditar e publicar esta definição documental.
+
+Somente depois iniciar o RED do `MercadoLivreOAuthClient`, criando primeiro apenas a spec e sem transporte HTTP real.
