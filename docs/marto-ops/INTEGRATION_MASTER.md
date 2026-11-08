@@ -10572,3 +10572,583 @@ A migration de `SalesChannelCredential` continua não aplicada.
 #### Estado
 
 O cliente OAuth puro está implementado e testado, mas ainda não possui transporte HTTP real nem está ligado ao fluxo operacional de autorização.
+
+---
+
+### Fronteira — MercadoLivreAuthorizationFlow
+
+Depois da publicação do cliente OAuth isolado em:
+
+`d33433f3e4425aae9a1779c0c067de8383cc5c1f` — `feat(integrations): adiciona cliente OAuth Mercado Livre`
+
+a próxima fronteira da ordem OAuth aprovada é:
+
+`fluxo de authorization code com state e identidade externa`
+
+Esta etapa continuará isolada de endpoint público, banco real, segredo real e transporte HTTP real.
+
+#### Decisão principal
+
+Será criado posteriormente um componente puro:
+
+`MercadoLivreAuthorizationFlow`
+
+Fluxo conceitual:
+
+`iniciar autorização -> state -> contexto server-side -> PKCE opcional -> callback lógico -> consumir state -> trocar code -> validar identidade externa`
+
+O flow não persistirá credenciais.
+
+O flow não criará nem alterará `SalesChannel`.
+
+O flow não chamará a rede diretamente.
+
+#### Arquivos planejados
+
+Primeiro RED:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-authorization-flow.spec.ts`
+
+Depois do RED:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-authorization-flow.ts`
+
+Nenhum controller NestJS será criado nesta fronteira.
+
+Nenhum módulo NestJS novo será criado nesta fronteira.
+
+#### Ports abstratos
+
+O flow dependerá somente de contratos abstratos equivalentes a:
+
+`MercadoLivreAuthorizationStateGenerator`
+
+`MercadoLivreAuthorizationStateStore`
+
+`MercadoLivrePkceGenerator`
+
+`MercadoLivreAuthorizationTargetPort`
+
+`MercadoLivreOAuthClientPort`
+
+`MercadoLivreAuthorizationClock`
+
+Nenhuma implementação concreta desses ports será criada no desenho documental.
+
+#### State
+
+O state deverá ser:
+
+- opaco;
+- imprevisível;
+- exclusivo por tentativa;
+- temporário;
+- de uso único;
+- validado no backend.
+
+A futura implementação de produção deverá utilizar CSPRNG.
+
+Não será permitido gerar state a partir de:
+
+- `merchantId`;
+- `salesChannelId`;
+- `userId`;
+- timestamp;
+- nome da conta;
+- qualquer contexto de negócio previsível.
+
+O state não carregará contexto de negócio codificado.
+
+O contexto ficará armazenado no backend.
+
+Como direção futura, 32 bytes aleatórios fornecem ampla entropia.
+
+O encoder concreto poderá ser Base64URL ou equivalente seguro.
+
+A geração concreta ainda não será criada nesta fronteira.
+
+#### State store
+
+Será definido um port com semântica equivalente a:
+
+`save(intent) -> void`
+
+`consume(state) -> intent | undefined`
+
+`consume(state)` deve ser atômico:
+
+`ler + invalidar`
+
+O mesmo state não poderá ser consumido duas vezes.
+
+Não será aceita como garantia de concorrência uma implementação composta por:
+
+`get(state)`
+
+seguido separadamente de:
+
+`delete(state)`
+
+quando dois callbacks puderem observar o mesmo registro.
+
+A implementação concreta do store será decidida posteriormente.
+
+Nesta fronteira:
+
+- não criar tabela Prisma de state;
+- não criar migration de state;
+- não adicionar Redis;
+- não adicionar dependência Redis;
+- não escolher armazenamento definitivo em memória.
+
+O port deverá permitir PostgreSQL, Redis ou mecanismo equivalente posteriormente.
+
+#### Authorization intent
+
+O intent transitório terá forma conceitual equivalente a:
+
+`MercadoLivreAuthorizationIntent`
+
+Campos:
+
+- `state: string`;
+- `initiatorUserId: string`;
+- `merchantId: string`;
+- `mode: CONNECT | RECONNECT`;
+- `salesChannelId?: string`;
+- `expectedExternalAccountId?: string`;
+- `codeVerifier?: string`;
+- `expiresAt: Date`.
+
+O intent não persistirá:
+
+- authorization code;
+- access token;
+- refresh token;
+- client secret.
+
+#### TTL e relógio
+
+Cada intent deverá expirar.
+
+O TTL não ficará hardcoded na regra de negócio.
+
+TTL/configuração serão injetados.
+
+O relógio será injetável para testes determinísticos.
+
+State expirado:
+
+1. é consumido;
+2. é detectado como expirado;
+3. é rejeitado;
+4. não chama OAuth;
+5. não volta ao store.
+
+Uma tentativa expirada exige iniciar nova autorização.
+
+#### Contexto confiável
+
+O browser não será fonte confiável de:
+
+- `merchantId`;
+- `salesChannelId`;
+- `expectedExternalAccountId`;
+- ownership;
+- modo real de conexão.
+
+A validação desse contexto será representada por:
+
+`MercadoLivreAuthorizationTargetPort`
+
+O port será mockado na primeira implementação.
+
+Nenhuma consulta Prisma real será criada ainda.
+
+#### CONNECT
+
+No modo `CONNECT` ainda pode não existir `SalesChannel`.
+
+Isso ocorre porque o `externalAccountId` somente poderá ser conhecido depois da autorização do Mercado Livre.
+
+Antes de iniciar o flow, o target port deverá comprovar que o usuário interno pode iniciar uma conexão para o Merchant.
+
+O intent guardará:
+
+- `initiatorUserId`;
+- `merchantId`;
+- `mode=CONNECT`.
+
+Não haverá `expectedExternalAccountId`.
+
+Depois do OAuth exchange:
+
+`tokenResult.userId`
+
+será tratado como:
+
+`authorizedExternalAccountId`
+
+Esse valor poderá futuramente originar:
+
+`SalesChannel.externalAccountId`
+
+Esta fronteira ainda NÃO cria o `SalesChannel`.
+
+#### RECONNECT
+
+No modo `RECONNECT` deverá existir:
+
+`salesChannelId`
+
+O target port deverá resolver o canal a partir de fontes backend confiáveis e comprovar:
+
+- canal existente;
+- Merchant correto;
+- canal do tipo `MERCADO_LIVRE`;
+- usuário interno autorizado;
+- `externalAccountId` existente e válido.
+
+O `expectedExternalAccountId` será obtido desse contexto backend.
+
+Ele não poderá vir de campo livre enviado pelo browser.
+
+#### Revalidação no callback
+
+Na reconexão, o target deverá ser revalidado antes do OAuth exchange.
+
+Isso evita confiar somente no snapshot salvo quando o usuário iniciou a autorização.
+
+Antes de trocar o authorization code, deverá ser comprovado novamente que:
+
+- o canal ainda existe;
+- ainda pertence ao contexto esperado;
+- continua sendo Mercado Livre;
+- o `externalAccountId` continua coerente.
+
+Target inválido:
+
+- rejeita callback;
+- não troca authorization code;
+- não persiste credencial.
+
+#### Authorization URL
+
+O início do flow produzirá uma URL de autorização com configuração injetada.
+
+O flow não lerá `ConfigService`.
+
+O flow não lerá `process.env`.
+
+A URL deverá conter:
+
+- `response_type=code`;
+- `client_id`;
+- `redirect_uri`;
+- `state`.
+
+O `redirect_uri` será o valor configurado para a aplicação.
+
+Contexto variável do Marto não será anexado ao `redirect_uri`.
+
+A URL não poderá conter:
+
+- `client_secret`;
+- authorization code;
+- access token;
+- refresh token;
+- `code_verifier`;
+- `merchantId`;
+- `salesChannelId`;
+- `expectedExternalAccountId`.
+
+#### PKCE
+
+PKCE será configurável.
+
+Quando desabilitado:
+
+- não gerar verifier;
+- não gerar challenge;
+- não incluir `code_challenge`;
+- não incluir `code_challenge_method`;
+- não enviar `code_verifier` ao OAuth client.
+
+Quando habilitado:
+
+1. gerar `code_verifier` seguro;
+2. derivar `code_challenge`;
+3. utilizar somente `S256`;
+4. colocar `code_challenge` na authorization URL;
+5. colocar `code_challenge_method=S256`;
+6. guardar `code_verifier` somente no intent server-side;
+7. recuperar o verifier pelo state no callback;
+8. nunca aceitar verifier fornecido pelo browser.
+
+`plain` não fará parte do contrato do Marto.
+
+A primeira implementação utilizará `MercadoLivrePkceGenerator` mockado.
+
+#### Callback lógico
+
+Esta fronteira NÃO criará endpoint HTTP.
+
+O componente terá operação lógica equivalente a:
+
+`completeAuthorization({ state, code })`
+
+O callback lógico receberá apenas os dados externos mínimos.
+
+A ordem obrigatória será:
+
+1. validar formato mínimo do state;
+2. validar formato mínimo do code;
+3. consumir atomicamente o state;
+4. rejeitar state inexistente;
+5. verificar expiração;
+6. revalidar target quando necessário;
+7. somente então executar OAuth exchange;
+8. validar identidade externa;
+9. retornar resultado transitório.
+
+O OAuth exchange nunca poderá acontecer antes da validação do state.
+
+#### One-shot e replay
+
+Como `consume()` invalida o intent:
+
+- callback repetido não reutiliza state;
+- callback concorrente não executa duas trocas para o mesmo state;
+- falha de rede não restaura state;
+- falha OAuth não restaura state;
+- identity mismatch não restaura state.
+
+Depois do consumo, uma nova tentativa exige novo authorization flow.
+
+#### OAuth exchange
+
+Depois das validações, o flow executará no máximo uma chamada a:
+
+`exchangeAuthorizationCode(...)`
+
+Usando:
+
+- `clientId` de configuração backend;
+- `clientSecret` de configuração backend;
+- `code` do callback;
+- `redirectUri` configurado;
+- `codeVerifier` recuperado do intent quando PKCE estiver habilitado.
+
+O client secret nunca vem do browser.
+
+O code verifier nunca vem do browser.
+
+O flow não executará retry automático.
+
+#### Identidade externa
+
+O `MercadoLivreOAuthClient` já normaliza `user_id` para string.
+
+Nesta fronteira:
+
+`tokenResult.userId`
+
+representa a identidade externa autorizada.
+
+Em `CONNECT`:
+
+- o valor vira `authorizedExternalAccountId`;
+- poderá ser usado futuramente na criação do `SalesChannel`.
+
+Em `RECONNECT`:
+
+- deverá ser exatamente igual ao `expectedExternalAccountId`;
+- divergência será rejeitada;
+- `SalesChannel.externalAccountId` não será alterado;
+- a credencial não será anexada silenciosamente a outra conta.
+
+#### /users/me
+
+Esta fronteira ainda NÃO executará:
+
+`GET /users/me`
+
+A validação aqui usa somente:
+
+`user_id` da resposta OAuth.
+
+A validação autenticada adicional da conta será um checkpoint posterior.
+
+Portanto:
+
+`OAuth user_id validation != live /users/me validation`
+
+#### Resultado transitório
+
+O resultado poderá conter estrutura equivalente a:
+
+`MercadoLivreAuthorizationResult`
+
+Campos:
+
+- `initiatorUserId`;
+- `merchantId`;
+- `mode`;
+- `salesChannelId?`;
+- `authorizedExternalAccountId`;
+- `token`.
+
+Tokens permanecerão somente em memória nessa fronteira.
+
+O flow não:
+
+- criptografa;
+- grava banco;
+- cria credencial;
+- cria canal;
+- altera canal.
+
+#### Erros
+
+Será utilizado erro sanitizado próprio:
+
+`MercadoLivreAuthorizationFlowError`
+
+Códigos internos previstos:
+
+- `authorization_input_invalid`;
+- `authorization_state_invalid`;
+- `authorization_state_expired`;
+- `authorization_target_invalid`;
+- `authorization_identity_mismatch`.
+
+Mensagens de erro não deverão conter:
+
+- state integral;
+- authorization code;
+- code verifier;
+- client secret;
+- access token;
+- refresh token;
+- body OAuth.
+
+Erro do OAuth client não será transformado em retry automático.
+
+#### Isolamento
+
+O `MercadoLivreAuthorizationFlow` não poderá:
+
+- usar Prisma diretamente;
+- usar NestJS;
+- usar `ConfigService`;
+- ler `process.env`;
+- usar fetch;
+- usar axios;
+- acessar Redis diretamente;
+- criar migration;
+- logar segredos;
+- persistir state concretamente;
+- persistir tokens;
+- criptografar tokens;
+- criar `SalesChannelCredential`;
+- alterar `SalesChannel`;
+- chamar `/users/me`;
+- sincronizar pedidos.
+
+#### Contratos previstos para o primeiro RED
+
+A primeira spec deverá proteger pelo menos estes 36 contratos:
+
+1. CONNECT valida contexto backend antes de iniciar;
+2. CONNECT não exige `salesChannelId`;
+3. RECONNECT exige `salesChannelId`;
+4. RECONNECT obtém `expectedExternalAccountId` pelo target port;
+5. target inválido impede criação da intenção;
+6. state generator é chamado uma vez por tentativa válida;
+7. state gerado é usado como identificador opaco;
+8. flow não constrói state com merchant/user/channel;
+9. intent salvo contém initiator, merchant, mode e expiração;
+10. TTL usa clock/configuração injetados;
+11. authorization URL usa `response_type=code`;
+12. authorization URL usa `client_id` configurado;
+13. authorization URL usa o `redirect_uri` configurado;
+14. authorization URL contém state;
+15. authorization URL não contém `client_secret`;
+16. authorization URL não contém verifier nem contexto interno;
+17. PKCE habilitado usa challenge e `S256`;
+18. PKCE desabilitado omite parâmetros PKCE;
+19. verifier fica somente no intent backend;
+20. callback consome state antes do OAuth exchange;
+21. state inexistente falha sem OAuth;
+22. state expirado falha sem OAuth;
+23. state consumido não pode ser reutilizado;
+24. callback não usa merchant/channel/account vindos do browser como contexto;
+25. RECONNECT revalida target antes do OAuth exchange;
+26. target alterado ou inválido impede OAuth;
+27. exchange recebe clientId/clientSecret/code/redirectUri corretos;
+28. exchange usa somente verifier armazenado quando PKCE está habilitado;
+29. exchange omite verifier quando PKCE está desabilitado;
+30. callback válido executa no máximo um OAuth exchange;
+31. CONNECT retorna OAuth userId como `authorizedExternalAccountId`;
+32. RECONNECT com identidade igual é aceito;
+33. RECONNECT com identidade divergente falha de forma sanitizada;
+34. identity mismatch não altera canal nem persiste credencial;
+35. erro OAuth/network propaga sem retry e state não é restaurado;
+36. flow permanece sem Prisma, Nest, ConfigService, process.env, fetch, Redis, logs ou persistência.
+
+Contratos adversariais adicionais poderão ser acrescentados depois do primeiro GREEN.
+
+#### Sequência RED/GREEN planejada
+
+Depois da publicação deste desenho:
+
+1. criar somente `mercado-livre-authorization-flow.spec.ts`;
+2. manter o source do flow inexistente;
+3. comprovar RED;
+4. criar flow mínimo e ports abstratos;
+5. fazer contratos iniciais passarem;
+6. executar auditoria adversarial;
+7. manter OAuth Client byte-idêntico;
+8. executar suíte completa da API;
+9. executar build da API;
+10. documentar hashes e resultados;
+11. auditar arquivos exatos;
+12. commit protegido;
+13. push protegido.
+
+#### Ainda NÃO fazer
+
+- não criar controller OAuth;
+- não criar callback HTTP;
+- não criar rota pública;
+- não criar state store PostgreSQL;
+- não criar state store Redis;
+- não adicionar Redis;
+- não criar migration;
+- não alterar `schema.prisma`;
+- não criar `MercadoLivreOAuthFetchTransport`;
+- não executar fetch OAuth real;
+- não chamar `/oauth/token` real;
+- não chamar `/users/me`;
+- não usar client ID real;
+- não usar client secret real;
+- não usar access token real;
+- não usar refresh token real;
+- não persistir `SalesChannelCredential`;
+- não importar `SalesChannelCredentialModule` no `AppModule`;
+- não alterar `.env.example`;
+- não alterar `.env`;
+- não conectar conta real;
+- não sincronizar pedidos reais;
+- não tocar na `main`;
+- não tocar em `docs/marto-ia/`.
+
+A migration de `SalesChannelCredential` continua não aplicada.
+
+#### Estado desejado
+
+Ao final desta fronteira teremos uma regra pura e testada para:
+
+`iniciar autorização -> state -> contexto backend -> PKCE opcional -> consumir state -> trocar code -> validar identidade`
+
+ainda sem abrir endpoint público e sem armazenar credencial real.
