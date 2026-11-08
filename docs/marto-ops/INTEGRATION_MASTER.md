@@ -11152,3 +11152,269 @@ Ao final desta fronteira teremos uma regra pura e testada para:
 `iniciar autorização -> state -> contexto backend -> PKCE opcional -> consumir state -> trocar code -> validar identidade`
 
 ainda sem abrir endpoint público e sem armazenar credencial real.
+
+---
+
+### Checkpoint — MercadoLivreAuthorizationFlow implementado
+
+A fronteira pura `MercadoLivreAuthorizationFlow` foi implementada e validada localmente depois do checkpoint documental publicado em:
+
+`bd8e576bb5fc2c055d9d1db70a8b1a118f8d86bb` — `docs(integrations): define authorization flow Mercado Livre`
+
+#### Arquivos da implementação
+
+Spec:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-authorization-flow.spec.ts`
+
+SHA256:
+
+`774bab189257066dd30941e758bc65121ae3fd6352c31e7c4d3dcce518f62473`
+
+Git blob:
+
+`3e74a35a1f7e340ee78e2cf959c25367d264dc69`
+
+Source:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-authorization-flow.ts`
+
+SHA256:
+
+`6a88fdfa86701bce20f6f962df43747c7eb4295abe1d51a4dffb61169680a108`
+
+Git blob:
+
+`10f759b505d8bbebf9cdeb5c521d330591c29156`
+
+#### RED inicial comprovado
+
+Antes da existência do source:
+
+- Test Suites: 1 failed / 1 total;
+- Tests: 36 failed / 36 total;
+- causa esperada: ausência de `mercado-livre-authorization-flow.ts`;
+- spec RED permaneceu independente de import estático do source;
+- nenhum código de produção foi criado antes da comprovação do RED.
+
+Spec RED inicial:
+
+SHA256:
+
+`c5bb874ab38343284db10078f26636df5bf8c5473d4b00ccb551373f0d05192f`
+
+Git blob:
+
+`e5494c317b092561543802a422ce474bb374f4dd`
+
+#### GREEN inicial
+
+Depois da implementação mínima do source:
+
+- 36/36 contratos focados PASS;
+- API build PASS;
+- spec RED permaneceu byte-idêntica durante o primeiro GREEN.
+
+#### Auditoria adversarial
+
+Foram acrescentados 8 contratos adversariais, elevando a fronteira de 36 para 44 contratos.
+
+A primeira execução adversarial encontrou exatamente 2 gaps:
+
+37. o target conseguia retornar `initiatorUserId` ou `merchantId` diferentes do contexto solicitado;
+38. em `RECONNECT`, o target conseguia retornar `salesChannelId` diferente do canal solicitado.
+
+Resultado dessa auditoria:
+
+- 42 PASS;
+- 2 FAIL;
+- 44 total.
+
+Os contratos que falharam foram exatamente 37 e 38.
+
+Nenhum outro contrato regrediu.
+
+#### Hardening aplicado
+
+O source foi corrigido sem enfraquecer a spec.
+
+Agora o contexto retornado pelo target precisa permanecer vinculado ao contexto solicitado.
+
+Para qualquer início de autorização:
+
+- `target.initiatorUserId === input.initiatorUserId`;
+- `target.merchantId === input.merchantId`.
+
+Para `RECONNECT`:
+
+- `target.salesChannelId === input.salesChannelId`.
+
+Divergência produz:
+
+`authorization_target_invalid`
+
+antes de:
+
+- gerar state;
+- salvar intent;
+- trocar authorization code;
+- persistir qualquer credencial.
+
+#### GREEN adversarial final
+
+Depois do hardening:
+
+- Test Suites focadas: 1 passed / 1 total;
+- Tests focados: 44 passed / 44 total;
+- gaps 37 e 38 fechados;
+- API build PASS.
+
+Spec adversarial final permaneceu:
+
+SHA256:
+
+`774bab189257066dd30941e758bc65121ae3fd6352c31e7c4d3dcce518f62473`
+
+Git blob:
+
+`3e74a35a1f7e340ee78e2cf959c25367d264dc69`
+
+Source final permaneceu:
+
+SHA256:
+
+`6a88fdfa86701bce20f6f962df43747c7eb4295abe1d51a4dffb61169680a108`
+
+Git blob:
+
+`10f759b505d8bbebf9cdeb5c521d330591c29156`
+
+#### Suíte completa
+
+Depois do GREEN adversarial:
+
+- Test Suites: 18 passed / 18 total;
+- Tests: 284 passed / 284 total.
+
+Nenhuma regressão foi detectada na suíte completa da API.
+
+#### Responsabilidades presentes
+
+A fronteira implementada cobre somente:
+
+- início lógico da autorização;
+- validação de input mínimo;
+- resolução de contexto confiável pelo target port;
+- state opaco produzido por generator abstrato;
+- intent transitório via state-store abstrato;
+- TTL configurável;
+- clock injetável;
+- URL de autorização;
+- PKCE opcional;
+- `S256`;
+- callback lógico;
+- consumo one-shot do state;
+- expiração;
+- revalidação de RECONNECT;
+- troca do authorization code via OAuth client port;
+- validação de identidade externa;
+- resultado transitório.
+
+#### Invariantes protegidas
+
+CONNECT:
+
+- não exige `SalesChannel` previamente existente;
+- não aceita identidade externa do browser;
+- OAuth `userId` é retornado como `authorizedExternalAccountId`;
+- ainda não cria `SalesChannel`.
+
+RECONNECT:
+
+- exige `salesChannelId`;
+- expected external identity vem do contexto backend;
+- target é revalidado antes do OAuth exchange;
+- OAuth `userId` precisa coincidir exatamente com `expectedExternalAccountId`;
+- identity mismatch não altera canal;
+- identity mismatch não persiste credencial.
+
+State:
+
+- é tratado como identificador opaco;
+- geração é responsabilidade de port abstrato;
+- contexto de negócio permanece server-side;
+- `consume(state)` representa consumo one-shot;
+- state expirado não chama OAuth;
+- state inexistente não chama OAuth;
+- state consumido não é restaurado após erro OAuth/network;
+- callback inválido é rejeitado antes do consumo quando aplicável.
+
+PKCE:
+
+- é opcional por configuração;
+- quando habilitado usa somente `S256`;
+- verifier fica server-side no intent;
+- verifier não aparece na authorization URL;
+- callback não aceita verifier do browser.
+
+#### Isolamento preservado
+
+O source permanece sem:
+
+- Prisma;
+- NestJS;
+- `ConfigService`;
+- `process.env`;
+- fetch;
+- axios;
+- Redis;
+- BullMQ;
+- logs;
+- persistência de credencial;
+- criação de `SalesChannelCredential`;
+- mutação de `SalesChannel.externalAccountId`;
+- `/users/me`;
+- controller;
+- endpoint HTTP;
+- callback HTTP;
+- state store concreto;
+- OAuth fetch transport.
+
+#### Infraestrutura ainda inexistente
+
+Continua NÃO existindo nesta fronteira:
+
+- implementação concreta de state generator;
+- implementação concreta de state store;
+- Redis para OAuth state;
+- tabela Prisma para OAuth state;
+- endpoint de início de autorização;
+- endpoint callback;
+- `MercadoLivreOAuthFetchTransport`;
+- credencial real;
+- client ID real;
+- client secret real;
+- autorização real de conta Mercado Livre;
+- `/users/me`;
+- persistência de tokens;
+- conexão com sync de pedidos.
+
+A migration de `SalesChannelCredential` continua não aplicada.
+
+#### Estado final desta implementação
+
+A fronteira pura agora está protegida por:
+
+`44/44 contratos focados PASS`
+
+e pela suíte completa:
+
+`18/18 suites PASS`
+
+`284/284 testes PASS`
+
+com:
+
+`API build PASS`
+
+A próxima fronteira da sequência OAuth permanece sendo o coordenador de acesso/refresh com proteção contra concorrência, mas somente depois da publicação protegida deste checkpoint e destes dois arquivos.
