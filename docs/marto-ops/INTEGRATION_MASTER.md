@@ -11418,3 +11418,858 @@ com:
 `API build PASS`
 
 A próxima fronteira da sequência OAuth permanece sendo o coordenador de acesso/refresh com proteção contra concorrência, mas somente depois da publicação protegida deste checkpoint e destes dois arquivos.
+
+---
+
+### Fronteira — MercadoLivreAccessTokenCoordinator
+
+Depois da publicação do `MercadoLivreAuthorizationFlow` em:
+
+`89d3d79e99133de34d9c85cefdf7b6cb47c9f764` — `feat(integrations): adiciona authorization flow Mercado Livre`
+
+a sequência OAuth aprovada entra no passo 7:
+
+`coordenador de access/refresh com proteção contra concorrência`
+
+Este checkpoint é somente documental.
+
+Nenhum coordinator será criado ainda.
+
+Nenhum spec será criado ainda.
+
+Nenhum acesso Prisma será implementado ainda.
+
+Nenhuma migration será aplicada.
+
+Nenhum Redis será adicionado.
+
+Nenhuma credencial real será utilizada.
+
+#### Fatos do provedor revalidados em 16/11/2026
+
+A documentação oficial do Mercado Livre continua estabelecendo que:
+
+- refresh token é de uso único;
+- somente o último refresh token gerado deve ser utilizado;
+- cada refresh bem-sucedido devolve um novo refresh token;
+- o refresh token anterior deixa de ser reutilizável;
+- `invalid_grant` pode indicar refresh token expirado, já utilizado, inexistente ou autorização revogada;
+- HTTP 429 é tratado pelo provedor como situação em que uma nova tentativa pode acontecer posteriormente;
+- a resposta OAuth fornece `expires_in`;
+- o Marto não deverá depender de duração hardcoded do access token.
+
+A política Marto continua sendo:
+
+`accessTokenExpiresAt = instante de recebimento da resposta + expires_in retornado`
+
+A margem operacional de segurança continuará explícita e configurável.
+
+#### Decisão principal
+
+Será criado posteriormente um componente puro:
+
+`MercadoLivreAccessTokenCoordinator`
+
+Responsabilidade:
+
+`SalesChannel -> credencial persistida -> access token utilizável`
+
+Quando necessário:
+
+`access expirando -> claim atômico -> refresh exclusivo -> rotação persistida`
+
+O coordinator será o único ponto lógico responsável por decidir se:
+
+- reutiliza o access token atual;
+- inicia refresh;
+- aguarda outro refresh já em andamento;
+- bloqueia uso por estado inseguro;
+- exige nova autorização.
+
+Ele não fará chamadas de recursos de negócio.
+
+Ele não sincronizará pedidos.
+
+Ele não criará `SalesChannel`.
+
+Ele não executará OAuth de authorization code.
+
+#### Operação pública prevista
+
+A operação pública principal será conceitualmente:
+
+`getAccessToken({ salesChannelId })`
+
+O retorno poderá conter somente dados necessários para uso do access token, equivalentes a:
+
+- `accessToken`;
+- `tokenType`;
+- `accessTokenExpiresAt`;
+- `authorizedExternalAccountId`;
+- `tokenGeneration`;
+- origem lógica `CACHED | REFRESHED`.
+
+O retorno nunca incluirá:
+
+- refresh token;
+- client secret;
+- encryption key;
+- encrypted refresh token;
+- `refreshAttemptId`.
+
+#### Contexto carregado
+
+O store deverá fornecer um snapshot coerente do canal e da credencial.
+
+O snapshot deverá permitir validar pelo menos:
+
+- `salesChannelId`;
+- `SalesChannel.type`;
+- `SalesChannel.status`;
+- `SalesChannel.externalAccountId`;
+- status da credencial;
+- `accessTokenEncrypted`;
+- `refreshTokenEncrypted`;
+- `encryptionKeyVersion`;
+- `tokenType`;
+- `scope`;
+- `accessTokenExpiresAt`;
+- `authorizedExternalAccountId`;
+- `tokenGeneration`;
+- `refreshAttemptId`;
+- `refreshStartedAt`;
+- `lastErrorCode`;
+- `lastErrorAt`.
+
+O coordinator somente poderá fornecer credencial para:
+
+`SalesChannel.type = MERCADO_LIVRE`
+
+e:
+
+`SalesChannel.status = ACTIVE`
+
+A identidade também deverá permanecer coerente:
+
+`SalesChannel.externalAccountId === SalesChannelCredential.authorizedExternalAccountId`
+
+Divergência de identidade bloqueia uso da credencial.
+
+Nunca corrigir `externalAccountId` automaticamente.
+
+#### Ports previstos
+
+A fronteira pura dependerá de abstrações equivalentes a:
+
+`MercadoLivreCredentialStorePort`
+
+`MercadoLivreOAuthRefreshClientPort`
+
+`SalesChannelCredentialCryptoPort`
+
+`MercadoLivreCredentialClock`
+
+`MercadoLivreRefreshAttemptIdGenerator`
+
+e de configuração injetada.
+
+A configuração deverá fornecer, sem leitura direta de ambiente:
+
+- `clientId`;
+- `clientSecret`;
+- `refreshSafetyWindowMs`;
+- `transientRetryDelayMs`;
+- `refreshStaleAfterMs`.
+
+O coordinator não lerá:
+
+`process.env`
+
+nem:
+
+`ConfigService`
+
+#### Store e concorrência
+
+A exclusividade de refresh NÃO dependerá inicialmente de Redis.
+
+A proteção será modelada no storage por compare-and-set atômico.
+
+A aquisição do direito de refresh deverá depender de:
+
+- `salesChannelId`;
+- `tokenGeneration` esperado;
+- status elegível;
+- novo `refreshAttemptId`.
+
+Estados inicialmente elegíveis para claim:
+
+- `ACTIVE`;
+- `TRANSIENT_ERROR`, quando a política de backoff permitir.
+
+A operação conceitual será equivalente a:
+
+`tryClaimRefresh(...)`
+
+Quando ganha o claim, o store muda atomicamente para:
+
+`REFRESHING`
+
+e grava:
+
+- `refreshAttemptId`;
+- `refreshStartedAt`.
+
+Nenhum segundo processo pode obter claim para a mesma geração.
+
+Não é suficiente fazer:
+
+`SELECT`
+
+seguido de:
+
+`UPDATE`
+
+sem condição de concorrência.
+
+A futura implementação concreta deverá utilizar operação atômica/transaction/CAS equivalente.
+
+#### tokenGeneration
+
+`tokenGeneration` identifica a geração persistida de access + refresh token.
+
+O refresh só pode começar contra a geração observada.
+
+O claim deve incluir:
+
+`expectedTokenGeneration`
+
+O commit de sucesso também deve incluir:
+
+`expectedTokenGeneration`
+
+e:
+
+`refreshAttemptId`
+
+Uma rotação bem-sucedida incrementa exatamente:
+
+`tokenGeneration + 1`
+
+Um processo atrasado nunca pode sobrescrever uma geração mais nova.
+
+#### refreshAttemptId
+
+Cada tentativa elegível recebe um identificador novo e opaco.
+
+A geração será injetada.
+
+A futura implementação deverá usar fonte criptograficamente segura ou UUID seguro equivalente.
+
+Não usar:
+
+`Math.random`
+
+O identifier não conterá:
+
+- refresh token;
+- access token;
+- seller id;
+- merchant id;
+- client secret.
+
+#### Access token reutilizável
+
+Um access token pode ser reutilizado quando:
+
+`accessTokenExpiresAt > now + refreshSafetyWindowMs`
+
+A comparação usa clock injetado.
+
+No limite exato:
+
+`accessTokenExpiresAt === now + refreshSafetyWindowMs`
+
+o token já entra na política de refresh.
+
+O coordinator não hardcodará seis horas.
+
+Ele utiliza a expiração persistida da geração.
+
+Para devolver token cached:
+
+- descriptografa somente o access token;
+- não descriptografa refresh token;
+- não chama OAuth;
+- não altera `tokenGeneration`;
+- não altera estado.
+
+#### TRANSIENT_ERROR
+
+`TRANSIENT_ERROR` não significa credencial revogada.
+
+Se o access token ainda estiver utilizável além da margem, ele poderá continuar sendo devolvido.
+
+Quando refresh for necessário, nova tentativa só poderá ocorrer depois de:
+
+`lastErrorAt + transientRetryDelayMs`
+
+Antes desse instante:
+
+`credential_refresh_backoff`
+
+No limite exato, uma nova tentativa pode disputar claim.
+
+Não haverá retry automático em loop dentro de uma mesma chamada.
+
+#### REFRESHING
+
+Quando outro processo já estiver em `REFRESHING` e a tentativa ainda for recente:
+
+- não descriptografar o refresh token;
+- não chamar OAuth;
+- não usar a mesma geração para nova rotação;
+- retornar estado lógico de refresh em andamento.
+
+Erro estável previsto:
+
+`credential_refresh_in_progress`
+
+O coordinator não ficará fazendo polling nem sleep dentro da requisição.
+
+#### REFRESHING stale
+
+Uma tentativa é stale quando:
+
+`now >= refreshStartedAt + refreshStaleAfterMs`
+
+Uma tentativa stale NÃO retorna automaticamente para `ACTIVE`.
+
+Também NÃO reutiliza automaticamente o refresh token antigo.
+
+Não existe informação suficiente para saber se um processo anterior chegou a enviar o refresh token ao provedor antes de cair.
+
+Portanto a recuperação conservadora será:
+
+`REFRESHING -> ROTATION_UNCERTAIN`
+
+por operação atômica condicionada ao mesmo:
+
+- `tokenGeneration`;
+- `refreshAttemptId`;
+- `refreshStartedAt`.
+
+Depois disso a credencial fica bloqueada para refresh automático.
+
+#### Claim perdido por concorrência
+
+Se `tryClaimRefresh` falhar porque outro processo alterou a credencial:
+
+o coordinator não repetirá o claim em loop.
+
+O store poderá devolver o snapshot atual.
+
+Se a geração já avançou e existe nova credencial `ACTIVE` utilizável:
+
+o coordinator pode devolver o access token da geração nova.
+
+Se estiver `REFRESHING`:
+
+retorna `credential_refresh_in_progress`.
+
+Se estiver:
+
+`ROTATION_UNCERTAIN`
+
+ou:
+
+`REAUTH_REQUIRED`
+
+o coordinator respeita o novo estado e não chama OAuth.
+
+#### Ordem segura do refresh
+
+Depois de ganhar o claim:
+
+1. confirmar snapshot e tentativa;
+2. descriptografar o refresh token daquela geração;
+3. executar no máximo uma chamada `refreshAccessToken`;
+4. validar a identidade externa da resposta;
+5. calcular a nova expiração usando `expires_in`;
+6. criptografar novo access token;
+7. criptografar novo refresh token;
+8. validar coerência de `encryptionKeyVersion`;
+9. persistir toda a nova geração de forma atômica;
+10. somente depois retornar o novo access token.
+
+Nunca chamar OAuth antes de possuir o claim.
+
+#### Chamada OAuth
+
+O coordinator chamará somente o port equivalente a:
+
+`refreshAccessToken`
+
+com:
+
+- `clientId`;
+- `clientSecret`;
+- refresh token descriptografado da geração reclamada.
+
+Ele não enviará:
+
+- access token antigo;
+- `salesChannelId`;
+- `tokenGeneration`;
+- `refreshAttemptId`;
+- dados de merchant.
+
+No máximo uma chamada OAuth por execução pública.
+
+#### Validação da identidade depois do refresh
+
+O `userId` devolvido pelo OAuth deverá coincidir exatamente com:
+
+`SalesChannelCredential.authorizedExternalAccountId`
+
+e:
+
+`SalesChannel.externalAccountId`
+
+Se houver divergência:
+
+- não persistir os novos tokens;
+- não alterar `externalAccountId`;
+- não tentar anexar a credencial a outro seller;
+- marcar a tentativa como `REAUTH_REQUIRED`, quando o CAS da tentativa ainda for válido;
+- retornar erro sanitizado.
+
+Como o refresh token antigo já pode ter sido consumido, a geração antiga não será reutilizada.
+
+#### Nova expiração
+
+A nova expiração será calculada depois de receber a resposta OAuth.
+
+Regra:
+
+`newAccessTokenExpiresAt = responseReceivedAt + token.expiresIn`
+
+`responseReceivedAt` vem do clock injetado.
+
+Não usar o horário de início da tentativa.
+
+Não hardcodar `21600`.
+
+Não hardcodar qualquer outra duração.
+
+#### Criptografia da nova geração
+
+Somente depois de:
+
+- resposta OAuth bem-sucedida;
+- identidade externa validada;
+
+o coordinator criptografará:
+
+- novo access token;
+- novo refresh token.
+
+Os dois valores formam uma única geração lógica.
+
+As duas operações devem utilizar versão de chave coerente.
+
+Se as duas criptografias retornarem versões diferentes:
+
+a nova geração não pode ser persistida parcialmente.
+
+Como o provedor já pode ter consumido o refresh token anterior:
+
+o estado será tratado como `ROTATION_UNCERTAIN`.
+
+#### Commit de rotação
+
+A persistência do refresh bem-sucedido deverá ser uma única operação lógica atômica equivalente a:
+
+`completeRefresh(...)`
+
+O CAS deverá exigir:
+
+- `salesChannelId`;
+- status `REFRESHING`;
+- `expectedTokenGeneration`;
+- `refreshAttemptId`.
+
+O commit deverá substituir como unidade:
+
+- `accessTokenEncrypted`;
+- `refreshTokenEncrypted`;
+- `encryptionKeyVersion`;
+- `tokenType`;
+- `scope`;
+- `accessTokenExpiresAt`;
+- identidade autorizada validada;
+- `tokenGeneration`.
+
+E também:
+
+- status volta para `ACTIVE`;
+- `refreshAttemptId = null`;
+- `refreshStartedAt = null`;
+- `lastRotatedAt = responseReceivedAt`;
+- `lastErrorCode = null`;
+- `lastErrorAt = null`.
+
+Não existe persistência parcial de apenas access token ou apenas refresh token.
+
+#### Falha de persistência depois do OAuth
+
+Se o OAuth respondeu com uma nova geração, mas o commit no storage:
+
+- falha;
+- lança exceção;
+- perde o CAS;
+- retorna resultado stale;
+
+o coordinator NÃO pode voltar para o refresh token antigo.
+
+A situação passa a ser considerada:
+
+`ROTATION_UNCERTAIN`
+
+O coordinator tentará registrar esse estado se ainda for possível identificar a tentativa.
+
+Se nem essa gravação puder ser confirmada:
+
+o erro retornado continuará sendo de rotação incerta.
+
+Uma execução futura que encontrar `REFRESHING` stale também convergirá para `ROTATION_UNCERTAIN`.
+
+#### Falha antes de chamar OAuth
+
+Se o refresh token não puder ser descriptografado depois do claim:
+
+nenhum refresh foi enviado ao provedor.
+
+O coordinator deverá encerrar a tentativa sem chamar OAuth.
+
+Para falhas operacionais recuperáveis de crypto/keyring, a geração pode ir para:
+
+`TRANSIENT_ERROR`
+
+e permanecer sujeita a backoff.
+
+Nenhum token deve aparecer no erro.
+
+#### invalid_grant
+
+Quando o cliente OAuth retornar:
+
+`oauthCode = invalid_grant`
+
+o coordinator deverá considerar que a geração atual não pode continuar automaticamente.
+
+Transição:
+
+`REFRESHING -> REAUTH_REQUIRED`
+
+Não tentar novamente o mesmo refresh token.
+
+Não fazer retry interno.
+
+Não tentar recuperar usando access/refresh token anterior.
+
+#### HTTP 429
+
+HTTP 429 será tratado como falha transitória controlada.
+
+Transição prevista:
+
+`REFRESHING -> TRANSIENT_ERROR`
+
+O refresh token atual permanece associado à mesma geração.
+
+Uma nova tentativa só poderá disputar claim depois do backoff configurado.
+
+Não existe retry imediato dentro da mesma chamada.
+
+#### Outros HTTP 4xx
+
+Erros HTTP 4xx que não sejam `invalid_grant` serão tratados como falha operacional não ambígua da tentativa, preservando a geração.
+
+Transição prevista:
+
+`REFRESHING -> TRANSIENT_ERROR`
+
+O código OAuth/status poderá ser guardado de forma sanitizada em `lastErrorCode`.
+
+Nenhum body bruto será persistido.
+
+#### HTTP 5xx
+
+Falha 5xx acontece depois de uma requisição ter alcançado o provedor e não fornece garantia suficiente de que nenhuma rotação ocorreu internamente.
+
+Política conservadora Marto:
+
+`REFRESHING -> ROTATION_UNCERTAIN`
+
+Não reutilizar automaticamente o refresh token antigo.
+
+#### Falha de rede desconhecida
+
+Erro de rede/transport desconhecido também será tratado conservadoramente quando não houver prova de que a requisição não foi enviada.
+
+Transição:
+
+`REFRESHING -> ROTATION_UNCERTAIN`
+
+Não fazer retry automático.
+
+#### Operações de falha no store
+
+A transição de falha deverá usar operação CAS equivalente a:
+
+`failRefresh(...)`
+
+Ela deverá exigir:
+
+- `salesChannelId`;
+- `expectedTokenGeneration`;
+- `refreshAttemptId`.
+
+Status de destino permitido pela fronteira:
+
+- `TRANSIENT_ERROR`;
+- `ROTATION_UNCERTAIN`;
+- `REAUTH_REQUIRED`.
+
+Uma tentativa velha nunca pode alterar o estado de uma geração nova.
+
+#### Estados bloqueados
+
+`ROTATION_UNCERTAIN`:
+
+- não fornece refresh automático;
+- não tenta reutilizar refresh token;
+- exige reconciliação ou política explícita de recuperação.
+
+`REAUTH_REQUIRED`:
+
+- não fornece refresh automático;
+- exige novo authorization flow.
+
+O coordinator não chama `MercadoLivreAuthorizationFlow` automaticamente.
+
+Reconexão continua sendo fluxo explícito separado.
+
+#### Erros estáveis previstos
+
+A fronteira poderá expor códigos sanitizados equivalentes a:
+
+`credential_input_invalid`
+
+`credential_not_found`
+
+`credential_channel_unavailable`
+
+`credential_identity_mismatch`
+
+`credential_state_invalid`
+
+`credential_crypto_unavailable`
+
+`credential_refresh_in_progress`
+
+`credential_refresh_backoff`
+
+`credential_refresh_conflict`
+
+`credential_refresh_failed`
+
+`credential_rotation_uncertain`
+
+`credential_reauth_required`
+
+Nenhum erro poderá conter:
+
+- access token;
+- refresh token;
+- client secret;
+- encrypted token;
+- chave de criptografia;
+- corpo OAuth bruto.
+
+#### Não introduzir lock em memória
+
+Mutex em memória não é suficiente.
+
+A API poderá possuir múltiplos processos ou instâncias.
+
+Portanto não serão aceitos como proteção única:
+
+- boolean local;
+- `Map` local;
+- promise cache local;
+- mutex apenas em processo;
+- variável global.
+
+A proteção real está no CAS persistente.
+
+#### Redis
+
+Redis não será adicionado nesta fronteira.
+
+BullMQ não participa desta fronteira.
+
+Se um mecanismo distribuído adicional vier a ser necessário no futuro, ele será uma otimização complementar.
+
+A correção da rotação não pode depender dele.
+
+#### Migration
+
+O schema de `SalesChannelCredential` já contém os campos necessários para modelar a coordenação.
+
+A migration existente continua não aplicada.
+
+Este checkpoint não altera:
+
+`schema.prisma`
+
+e não cria migration nova.
+
+#### Arquivos planejados
+
+Primeiro RED futuro:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-access-token-coordinator.spec.ts`
+
+Depois do RED:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-access-token-coordinator.ts`
+
+Nenhum repository Prisma concreto será criado junto com o coordinator puro.
+
+#### 60 contratos previstos para o primeiro ciclo TDD
+
+1. rejeita `salesChannelId` vazio antes de consultar o store.
+2. carrega o snapshot da credencial no máximo uma vez no caminho cached normal.
+3. credencial inexistente falha sem crypto e sem OAuth.
+4. canal de tipo diferente de `MERCADO_LIVRE` não fornece token.
+5. canal que não esteja `ACTIVE` não fornece token.
+6. divergência entre `externalAccountId` e `authorizedExternalAccountId` bloqueia a credencial.
+7. `ACTIVE` com access token além da margem retorna token cached.
+8. caminho cached descriptografa somente access token e não refresh token.
+9. validade cached utiliza clock injetado.
+10. validade cached utiliza `refreshSafetyWindowMs` configurado.
+11. no limite exato da margem o caminho entra em refresh.
+12. decisão cached usa `accessTokenExpiresAt` persistido e não duração hardcoded.
+13. `REAUTH_REQUIRED` bloqueia antes de crypto/OAuth.
+14. `ROTATION_UNCERTAIN` bloqueia antes de crypto/OAuth.
+15. `REFRESHING` recente retorna `credential_refresh_in_progress` sem OAuth.
+16. `REFRESHING` stale no limite exato tenta transição atômica para `ROTATION_UNCERTAIN`.
+17. `REFRESHING` stale nunca reutiliza o refresh token nem chama OAuth.
+18. `REFRESHING` malformado sem tentativa/horário válido não chama OAuth.
+19. `TRANSIENT_ERROR` ainda com access token utilizável pode devolver token cached.
+20. `TRANSIENT_ERROR` que precisa refresh respeita `transientRetryDelayMs`.
+21. no limite exato do backoff `TRANSIENT_ERROR` volta a ser elegível para claim.
+22. `ACTIVE` dentro da margem torna-se elegível para claim.
+23. `refreshAttemptId` só é gerado quando refresh realmente é necessário.
+24. gerador de `refreshAttemptId` é chamado no máximo uma vez por tentativa.
+25. claim recebe geração esperada, attempt id e horário de início.
+26. claim somente considera estados elegíveis `ACTIVE` ou `TRANSIENT_ERROR`.
+27. refresh token não é descriptografado antes de o claim ser obtido.
+28. claim perdido por concorrência não chama OAuth com a geração antiga.
+29. claim perdido para geração nova `ACTIVE` utilizável pode devolver o token mais novo.
+30. claim perdido para estado `REFRESHING` retorna refresh em andamento.
+31. claim perdido para estado bloqueado respeita `ROTATION_UNCERTAIN` ou `REAUTH_REQUIRED`.
+32. coordinator não entra em loop tentando adquirir claim repetidamente.
+33. refresh OAuth recebe somente client id, client secret e refresh token da geração reclamada.
+34. refresh OAuth não recebe access token nem contexto interno do Marto.
+35. cada execução pública realiza no máximo uma chamada OAuth de refresh.
+36. caminho cached válido realiza zero chamadas OAuth.
+37. `userId` da resposta refresh deve coincidir com `authorizedExternalAccountId`.
+38. `userId` da resposta refresh também deve coincidir com `SalesChannel.externalAccountId`.
+39. identity mismatch tenta marcar a tentativa como `REAUTH_REQUIRED`.
+40. identity mismatch nunca persiste os novos tokens recebidos.
+41. nova expiração usa clock depois da resposta OAuth mais `expiresIn`.
+42. nova expiração utiliza exatamente o `expiresIn` recebido e não hardcode.
+43. novos access/refresh tokens só são criptografados depois da validação de identidade.
+44. access e refresh criptografados precisam produzir a mesma `encryptionKeyVersion`.
+45. commit de sucesso usa CAS com geração esperada e `refreshAttemptId`.
+46. commit de sucesso incrementa `tokenGeneration` exatamente em um.
+47. sucesso volta para `ACTIVE` e limpa tentativa/erro.
+48. sucesso persiste access, refresh, metadados e expiração como uma única geração lógica.
+49. novo refresh token substitui o anterior e o refresh token antigo nunca é retornado/reutilizado.
+50. resultado público devolve access token/metadados, nunca refresh token.
+51. `invalid_grant` leva a `REAUTH_REQUIRED` sem retry interno.
+52. HTTP 429 leva a `TRANSIENT_ERROR` sem retry imediato.
+53. outro HTTP 4xx não-`invalid_grant` leva a `TRANSIENT_ERROR` controlado.
+54. HTTP 5xx leva a `ROTATION_UNCERTAIN`.
+55. erro de rede desconhecido/ambíguo leva a `ROTATION_UNCERTAIN`.
+56. falha ao descriptografar refresh antes do OAuth não chama OAuth e encerra a tentativa com estado seguro.
+57. falha ao criptografar nova geração depois de OAuth bem-sucedido leva a `ROTATION_UNCERTAIN`.
+58. falha/stale no commit depois de OAuth bem-sucedido não volta para a geração antiga e resulta em rotação incerta.
+59. transição de falha usa CAS de geração + attempt id e não sobrescreve geração mais nova.
+60. coordinator permanece sem Prisma, Nest, ConfigService, process.env, fetch, axios, Redis, BullMQ, logs, sleep/polling e retry loop interno.
+
+#### Fronteira de segurança
+
+A implementação futura nunca deverá logar:
+
+- access token;
+- refresh token;
+- client secret;
+- tokens criptografados;
+- chave de criptografia;
+- body OAuth contendo segredo.
+
+A implementação pura também não deverá importar:
+
+- Prisma;
+- NestJS;
+- `ConfigService`;
+- Redis;
+- BullMQ.
+
+#### Fora desta fronteira
+
+Ainda NÃO será criado:
+
+- repository Prisma concreto;
+- transaction Prisma concreta;
+- Redis lock;
+- mutex distribuído;
+- `MercadoLivreOAuthFetchTransport`;
+- controller;
+- endpoint;
+- cron;
+- worker de refresh;
+- job BullMQ;
+- retry scheduler;
+- persistência inicial do AuthorizationFlow;
+- autorização real;
+- segredo real;
+- conexão real com Mercado Livre;
+- sync autenticado real.
+
+#### Ordem depois deste checkpoint
+
+Depois de auditar e publicar este desenho:
+
+1. criar somente a spec RED com os 60 contratos;
+2. manter o source inexistente;
+3. comprovar RED;
+4. criar o coordinator puro mínimo;
+5. obter GREEN focado;
+6. executar auditoria adversarial;
+7. corrigir somente gaps reais;
+8. rodar suíte completa;
+9. rodar build;
+10. registrar checkpoint final;
+11. auditar;
+12. commit protegido;
+13. verificar remoto;
+14. push protegido.
+
+Somente depois disso será desenhada a implementação concreta do store/CAS e sua integração com Prisma.
+
+A migration de `SalesChannelCredential` continua não aplicada.
