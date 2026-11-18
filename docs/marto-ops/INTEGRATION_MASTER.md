@@ -12536,3 +12536,1037 @@ A implementação concreta deverá preservar integralmente:
 - estados conservadores de falha.
 
 Somente depois da validação do store concreto a sequência poderá avançar para credenciais reais.
+
+---
+
+## Passo 8 — Prisma credential store Mercado Livre
+
+Objetivo:
+
+implementar a fronteira concreta de persistência usada pelo
+MercadoLivreAccessTokenCoordinator para leitura e rotação segura
+de SalesChannelCredential.
+
+Este passo permanece anterior ao uso de credenciais reais.
+
+### Estado confirmado do repositório
+
+O modelo SalesChannelCredential já existe em:
+
+packages/db/prisma/schema.prisma
+
+A migration correspondente já está versionada em:
+
+packages/db/prisma/migrations/20261031135015_add_sales_channel_credential/migration.sql
+
+A existência do arquivo de migration no Git não significa, por si só,
+que a migration esteja aplicada em qualquer banco específico.
+
+Este passo não executará prisma migrate deploy, prisma migrate dev,
+db push nem qualquer alteração no banco real.
+
+A API já possui:
+
+apps/api/src/common/prisma/prisma.service.ts
+
+e:
+
+apps/api/src/common/prisma/prisma.module.ts
+
+PrismaModule é global e PrismaService estende PrismaClient.
+
+### Arquivos planejados
+
+Implementação:
+
+apps/api/src/modules/integrations/mercado-livre/mercado-livre-prisma-credential.store.ts
+
+Testes:
+
+apps/api/src/modules/integrations/mercado-livre/mercado-livre-prisma-credential.store.spec.ts
+
+Classe planejada:
+
+MercadoLivrePrismaCredentialStore
+
+Contrato implementado:
+
+MercadoLivreCredentialStorePort
+
+definido em:
+
+apps/api/src/modules/integrations/mercado-livre/mercado-livre-access-token-coordinator.ts
+
+### Responsabilidade
+
+O store será responsável somente por:
+
+- carregar snapshot persistido;
+- tentar claim atômico de uma geração;
+- persistir geração rotacionada;
+- persistir término por falha;
+- devolver snapshot atual quando um CAS perder.
+
+O store não será responsável por:
+
+- descriptografar token;
+- criptografar token;
+- chamar OAuth;
+- decidir janela de refresh;
+- decidir backoff;
+- gerar refreshAttemptId;
+- gerar datas;
+- criar SalesChannel;
+- executar authorization-code flow;
+- sincronizar pedidos;
+- aplicar migration;
+- fazer retry interno;
+- fazer polling;
+- usar Redis.
+
+### Regra central
+
+Nenhuma mutação poderá usar:
+
+SELECT seguido de UPDATE incondicional.
+
+As mutações deverão usar compare-and-set persistente por meio de
+uma única operação condicional do banco.
+
+Com Prisma, a operação planejada é updateMany com filtro completo
+de pré-condição.
+
+count = 1 significa CAS adquirido.
+
+count = 0 significa CAS perdido.
+
+Nunca haverá retry automático do mesmo CAS dentro do store.
+
+### load
+
+Assinatura lógica:
+
+load(salesChannelId)
+
+A leitura deverá buscar SalesChannelCredential pela chave única
+salesChannelId e carregar somente o contexto necessário de SalesChannel.
+
+O snapshot resultante deverá conter:
+
+- salesChannelId;
+- SalesChannel.type;
+- SalesChannel.status;
+- SalesChannel.externalAccountId;
+- credential.status;
+- accessTokenEncrypted;
+- refreshTokenEncrypted;
+- encryptionKeyVersion;
+- tokenType;
+- scope;
+- accessTokenExpiresAt;
+- authorizedExternalAccountId;
+- tokenGeneration;
+- refreshAttemptId;
+- refreshStartedAt;
+- lastRotatedAt quando necessário ao mapeamento;
+- lastErrorCode;
+- lastErrorAt.
+
+O port atualmente não expõe lastRotatedAt no snapshot público,
+portanto o adapter não deverá ampliar silenciosamente o contrato.
+
+Credencial inexistente deverá resultar em undefined.
+
+O store nunca retornará token descriptografado.
+
+### tryClaimRefresh
+
+O claim deverá ser uma única mutação condicional.
+
+Pré-condições mínimas no credential:
+
+- salesChannelId igual ao solicitado;
+- tokenGeneration igual a expectedTokenGeneration;
+- status igual a expectedStatus;
+- refreshAttemptId nulo;
+- refreshStartedAt nulo.
+
+expectedStatus só poderá representar:
+
+- ACTIVE;
+- TRANSIENT_ERROR.
+
+Como proteção adicional contra TOCTOU entre load e claim,
+o filtro deverá exigir que a relação SalesChannel continue:
+
+- type = MERCADO_LIVRE;
+- status = ACTIVE.
+
+O claim não deverá alterar:
+
+- accessTokenEncrypted;
+- refreshTokenEncrypted;
+- encryptionKeyVersion;
+- tokenGeneration;
+- identidade autorizada;
+- expiração;
+- tokenType;
+- scope.
+
+O claim deverá alterar somente o estado da tentativa:
+
+- status = REFRESHING;
+- refreshAttemptId = input.refreshAttemptId;
+- refreshStartedAt = input.refreshStartedAt.
+
+lastErrorCode e lastErrorAt anteriores poderão permanecer durante
+REFRESHING.
+
+Em sucesso:
+
+count = 1
+
+retorno:
+
+claimed = true
+
+Não é necessária uma leitura posterior.
+
+Em conflito:
+
+count = 0
+
+o store deverá executar uma leitura atual e retornar:
+
+claimed = false
+current = snapshot atual, quando existir.
+
+Essa leitura posterior é somente observacional.
+
+Ela não transforma o CAS em SELECT + UPDATE.
+
+### concorrência do claim
+
+Duas instâncias podem ler a mesma geração ACTIVE.
+
+Ambas podem tentar o mesmo tipo de claim.
+
+Somente uma operação updateMany poderá encontrar simultaneamente:
+
+- geração esperada;
+- estado esperado;
+- refreshAttemptId nulo;
+- refreshStartedAt nulo.
+
+A primeira muda a linha para REFRESHING.
+
+A segunda recebe count = 0.
+
+A segunda não pode executar OAuth usando a geração antiga.
+
+### completeRefresh
+
+completeRefresh representa o commit atômico da nova geração
+depois que o OAuth já respondeu.
+
+Antes de escrever, o adapter deverá validar defensivamente:
+
+newTokenGeneration =
+expectedTokenGeneration + 1
+
+Qualquer outro valor deverá falhar antes da mutação.
+
+O CAS deverá exigir no credential:
+
+- salesChannelId esperado;
+- status = REFRESHING;
+- tokenGeneration = expectedTokenGeneration;
+- refreshAttemptId exatamente igual ao claim vencedor;
+- authorizedExternalAccountId igual à identidade esperada.
+
+Como proteção contra alteração concorrente de identidade,
+o filtro também deverá exigir que SalesChannel.externalAccountId
+continue igual a authorizedExternalAccountId.
+
+SalesChannel.type deverá continuar MERCADO_LIVRE.
+
+### regra importante sobre PAUSED / DISCONNECTED
+
+completeRefresh NÃO deverá exigir:
+
+SalesChannel.status = ACTIVE
+
+Motivo:
+
+o provider pode já ter consumido o refresh token e devolvido uma nova
+geração antes de outro processo pausar ou desconectar logicamente o canal.
+
+Depois que a rotação OAuth pode ter ocorrido, perder a persistência
+do novo refresh token é mais perigoso do que persistir a nova geração.
+
+Portanto:
+
+- ACTIVE é requisito para iniciar um novo claim;
+- ACTIVE não é requisito para terminar com segurança uma rotação
+  que já pode ter ocorrido no provider.
+
+### escrita atômica de completeRefresh
+
+Uma única operação deverá substituir a geração inteira:
+
+- status = ACTIVE;
+- accessTokenEncrypted = novo valor;
+- refreshTokenEncrypted = novo valor;
+- encryptionKeyVersion = nova versão;
+- tokenType = novo valor;
+- scope = novo valor ou null quando ausente;
+- accessTokenExpiresAt = nova expiração;
+- authorizedExternalAccountId = identidade validada;
+- tokenGeneration = newTokenGeneration;
+- refreshAttemptId = null;
+- refreshStartedAt = null;
+- lastRotatedAt = input.lastRotatedAt;
+- lastErrorCode = null;
+- lastErrorAt = null.
+
+Não haverá escrita parcial de access token e refresh token.
+
+Não haverá atualização separada de tokenGeneration.
+
+Não haverá persistência do access token antes do refresh token.
+
+### completeRefresh perdido
+
+Se updateMany retornar count = 0:
+
+- nenhum campo poderá ser reescrito;
+- o store deverá carregar o snapshot atual;
+- retorno committed = false;
+- current deverá refletir a observação posterior quando existir.
+
+O store não tentará corrigir o conflito.
+
+O coordinator decidirá o estado conservador.
+
+### failRefresh
+
+failRefresh encerra um claim que ainda pertence à mesma geração
+e ao mesmo refreshAttemptId.
+
+O CAS deverá exigir:
+
+- salesChannelId esperado;
+- status = REFRESHING;
+- tokenGeneration = expectedTokenGeneration;
+- refreshAttemptId exatamente igual.
+
+Quando expectedRefreshStartedAt estiver presente,
+o filtro também deverá exigir igualdade exata de refreshStartedAt.
+
+Esse campo adicional protege a transição de REFRESHING stale.
+
+### escrita de failRefresh
+
+Em sucesso, uma única mutação deverá:
+
+- definir status = targetStatus;
+- definir lastErrorCode;
+- definir lastErrorAt = errorAt;
+- limpar refreshAttemptId;
+- limpar refreshStartedAt.
+
+failRefresh NÃO deverá alterar:
+
+- accessTokenEncrypted;
+- refreshTokenEncrypted;
+- encryptionKeyVersion;
+- tokenGeneration;
+- tokenType;
+- scope;
+- accessTokenExpiresAt;
+- authorizedExternalAccountId;
+- lastRotatedAt.
+
+Os estados de destino permitidos continuam sendo:
+
+- TRANSIENT_ERROR;
+- ROTATION_UNCERTAIN;
+- REAUTH_REQUIRED.
+
+### failRefresh perdido
+
+Se count = 0:
+
+- nenhuma tentativa de sobrescrever a linha;
+- nenhuma segunda mutação;
+- nenhuma redução de geração;
+- leitura observacional do snapshot atual;
+- retorno committed = false.
+
+Um failRefresh antigo nunca poderá sobrescrever uma geração nova.
+
+### stale REFRESHING
+
+A transição:
+
+REFRESHING -> ROTATION_UNCERTAIN
+
+para tentativa stale deverá usar simultaneamente:
+
+- salesChannelId;
+- expectedTokenGeneration;
+- refreshAttemptId;
+- expectedRefreshStartedAt.
+
+Isso impede que um observador antigo marque como incerta
+uma tentativa diferente.
+
+### monotonicidade
+
+tokenGeneration é monotônico.
+
+O store nunca:
+
+- decrementa tokenGeneration;
+- mantém a mesma geração em completeRefresh bem-sucedido;
+- aceita salto arbitrário de geração;
+- transforma geração antiga em geração atual.
+
+Somente completeRefresh bem-sucedido altera tokenGeneration.
+
+Incremento permitido:
+
+N -> N + 1
+
+### identidade
+
+O store não decide qual conta Mercado Livre está autorizada.
+
+A identidade vem do coordinator já validada.
+
+Porém o adapter deverá usar a identidade também como condição CAS
+em completeRefresh para impedir sobrescrita caso a identidade
+persistida ou SalesChannel.externalAccountId tenha mudado
+concorrentemente.
+
+O store nunca altera SalesChannel.externalAccountId.
+
+### atomicidade
+
+Não será mantida transação aberta durante:
+
+- descriptografia;
+- chamada OAuth;
+- criptografia;
+- espera de rede.
+
+Cada transição persistente é uma operação curta e atômica.
+
+Não há necessidade de lock distribuído Redis para corretude.
+
+O banco é a autoridade do CAS.
+
+### uso de Prisma
+
+A implementação concreta poderá importar:
+
+- PrismaService;
+- tipos/enums gerados pelo Prisma;
+- tipos do MercadoLivreAccessTokenCoordinator.
+
+Isso é permitido porque este arquivo será um adapter de infraestrutura,
+não o coordinator puro.
+
+O coordinator continuará sem importar Prisma.
+
+### retorno de current depois de CAS perdido
+
+Quando uma mutação retornar count = 0,
+o store poderá chamar load uma única vez.
+
+O snapshot retornado pode já representar uma evolução posterior.
+
+Isso é aceitável.
+
+O coordinator já trata de forma conservadora:
+
+- REFRESHING;
+- ACTIVE de geração realmente maior;
+- TRANSIENT_ERROR;
+- ROTATION_UNCERTAIN;
+- REAUTH_REQUIRED;
+- regressão de geração;
+- mudança de salesChannelId;
+- mudança de identidade.
+
+### ausência de retry
+
+Nenhum dos métodos:
+
+- tryClaimRefresh;
+- completeRefresh;
+- failRefresh
+
+terá loop interno.
+
+Nenhum deles repetirá updateMany após count = 0.
+
+Nenhum deles dormirá ou fará polling.
+
+### logs e segredos
+
+O store não deverá registrar:
+
+- accessTokenEncrypted;
+- refreshTokenEncrypted;
+- client secret;
+- token plaintext;
+- payload OAuth.
+
+Preferencialmente o store não terá logging neste passo.
+
+### testes RED planejados
+
+A spec do store deverá nascer antes da implementação.
+
+Os contratos deverão cobrir no mínimo:
+
+#### load
+
+1. credencial inexistente retorna undefined;
+2. snapshot é mapeado com contexto de SalesChannel;
+3. nenhum token é descriptografado;
+4. somente os campos necessários são expostos.
+
+#### claim
+
+5. claim usa salesChannelId;
+6. claim usa expectedTokenGeneration;
+7. claim usa expectedStatus;
+8. claim exige refreshAttemptId nulo;
+9. claim exige refreshStartedAt nulo;
+10. claim exige SalesChannel MERCADO_LIVRE;
+11. claim exige SalesChannel ACTIVE;
+12. claim escreve REFRESHING;
+13. claim escreve attempt id recebido;
+14. claim escreve startedAt recebido;
+15. claim não altera tokenGeneration;
+16. claim vencedor retorna claimed = true;
+17. claim vencedor não faz leitura posterior;
+18. claim perdido retorna claimed = false;
+19. claim perdido faz no máximo uma leitura observacional;
+20. claim perdido nunca tenta segundo update.
+
+#### completeRefresh
+
+21. exige status REFRESHING;
+22. exige geração esperada;
+23. exige refreshAttemptId esperado;
+24. exige identidade autorizada esperada;
+25. exige SalesChannel.type MERCADO_LIVRE;
+26. exige SalesChannel.externalAccountId ainda compatível;
+27. não exige SalesChannel.status ACTIVE;
+28. rejeita newTokenGeneration diferente de N + 1;
+29. persiste access e refresh token na mesma mutação;
+30. persiste nova encryptionKeyVersion;
+31. persiste expiresAt;
+32. persiste tokenType;
+33. scope ausente vira null;
+34. incrementa geração exatamente em um;
+35. limpa attempt id;
+36. limpa startedAt;
+37. limpa último erro;
+38. atualiza lastRotatedAt;
+39. sucesso retorna committed = true;
+40. sucesso não faz leitura posterior;
+41. conflito retorna committed = false;
+42. conflito não tenta segundo update;
+43. conflito faz no máximo uma leitura observacional.
+
+#### failRefresh
+
+44. exige status REFRESHING;
+45. exige geração esperada;
+46. exige refreshAttemptId esperado;
+47. inclui expectedRefreshStartedAt quando fornecido;
+48. não inclui startedAt extra quando não fornecido;
+49. grava somente status de destino permitido;
+50. grava lastErrorCode;
+51. grava lastErrorAt;
+52. limpa attempt id;
+53. limpa startedAt;
+54. preserva tokens;
+55. preserva tokenGeneration;
+56. preserva identidade;
+57. sucesso retorna committed = true;
+58. conflito retorna committed = false;
+59. conflito nunca tenta segundo update;
+60. conflito faz no máximo uma leitura observacional.
+
+#### adversarial / concorrência
+
+61. segundo claim da mesma geração perde;
+62. complete com geração stale perde;
+63. complete com attempt id stale perde;
+64. complete não sobrescreve identidade alterada;
+65. fail de geração stale perde;
+66. fail de attempt id stale perde;
+67. stale fail com refreshStartedAt diferente perde;
+68. CAS perdido nunca produz mutação compensatória;
+69. store não usa Redis;
+70. store não usa sleep, polling ou retry loop.
+
+### estratégia de teste
+
+A primeira camada será unitária e determinística.
+
+PrismaService será substituído por um mock mínimo do delegate necessário.
+
+Os testes deverão provar exatamente:
+
+- filtros enviados ao updateMany;
+- dados enviados ao updateMany;
+- interpretação de count;
+- número de chamadas;
+- ausência de segunda mutação;
+- leitura observacional somente quando o CAS perder.
+
+Não será necessário banco real para o primeiro GREEN.
+
+O comportamento atômico de updateMany é a primitiva escolhida
+para o CAS concreto.
+
+Teste contra banco real poderá ser adicionado depois,
+quando a migration puder ser aplicada de forma controlada.
+
+### fora deste passo
+
+Este passo não:
+
+- aplica migration;
+- conecta conta Mercado Livre;
+- lê secrets reais;
+- cria controller;
+- cria rota OAuth;
+- registra credencial real;
+- chama OAuth real;
+- altera o authorization flow;
+- altera sync de pedidos;
+- altera Marto Ops;
+- usa Redis.
+
+### sequência do Passo 8
+
+8.1 — publicar este desenho de persistência.
+
+8.2 — criar spec RED do MercadoLivrePrismaCredentialStore.
+
+8.3 — confirmar RED por ausência da implementação.
+
+8.4 — implementar somente o store Prisma.
+
+8.5 — obter GREEN dos contratos do store.
+
+8.6 — executar auditoria adversarial do CAS.
+
+8.7 — executar suíte completa da API e build.
+
+8.8 — registrar checkpoint final.
+
+8.9 — commit e push protegidos.
+
+Somente depois disso será avaliada a aplicação controlada da migration
+e qualquer uso de credencial real.
+
+---
+
+### Checkpoint final — Prisma credential store Mercado Livre
+
+O Passo 8 implementou e validou a fronteira concreta de persistência
+usada pelo MercadoLivreAccessTokenCoordinator.
+
+Implementação:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-prisma-credential.store.ts`
+
+Spec:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-prisma-credential.store.spec.ts`
+
+#### Base
+
+O Passo 8 foi iniciado sobre:
+
+`2d9d62c630f4b82d430732bfb2988ad5aabe1850`
+
+`feat(integrations): adiciona access token coordinator Mercado Livre`
+
+O desenho inicial do Passo 8 adicionou 641 linhas ao
+INTEGRATION_MASTER.md antes da implementação.
+
+#### Ciclo RED
+
+A spec foi criada antes do source.
+
+Spec RED inicial:
+
+SHA256:
+
+`44fa45062b1f4c1e7b7ad8d22f7ba9c013695bba1efd66a845f5e89826a1ea88`
+
+Git blob:
+
+`2daaab0d8a3862142534b7616f643805f6118a6a`
+
+Resultado:
+
+- 1/1 suite FAIL;
+- 70/70 testes FAIL;
+- causa controlada:
+  `Cannot find module './mercado-livre-prisma-credential.store'`.
+
+O RED foi obtido sem erro TypeScript da spec.
+
+#### Primeiro GREEN
+
+Foi criado somente:
+
+`mercado-livre-prisma-credential.store.ts`
+
+A spec RED permaneceu congelada durante a primeira implementação.
+
+Primeiro GREEN:
+
+- 1/1 suite PASS;
+- 70/70 testes PASS.
+
+Source GREEN:
+
+SHA256:
+
+`f771dab0efa4955b31fdf6c96b750a4f58edf27134d88fc6e433b7857773fafc`
+
+Git blob:
+
+`ee78db054395b46917e3cbf73189beda4b794d95`
+
+#### Auditoria adversarial
+
+Depois do primeiro GREEN foram adicionados 20 contratos adversariais,
+elevando a spec de 70 para 90 contratos.
+
+A auditoria cobriu adicionalmente:
+
+- conjunto mínimo de campos do claim;
+- conjunto exato das pré-condições CAS;
+- rejeição de count maior que um;
+- desaparecimento da credencial entre CAS perdido e leitura observacional;
+- completeRefresh sem dependência de SalesChannel.status ACTIVE;
+- escrita completa e única da nova geração;
+- rejeição de mesma geração;
+- rejeição de regressão de geração;
+- rejeição de overflow inseguro de geração;
+- failRefresh sem dependência do status atual do SalesChannel;
+- ausência de mutação compensatória;
+- vínculo da leitura observacional ao mesmo salesChannelId;
+- cópias defensivas de Date;
+- ausência de create, upsert, delete, update simples, raw SQL,
+  transaction própria e PrismaClient independente;
+- sentinelas after-commit obrigatoriamente nulas.
+
+Resultado adversarial:
+
+- 1/1 suite PASS;
+- 90/90 testes PASS.
+
+Spec adversarial final:
+
+SHA256:
+
+`69303f8b56883d9632d9c9c1494c6f88556ff196cf2f074998d3d038af8abd11`
+
+Git blob:
+
+`cfa7e81ffcc7b8c709a4864ddaec65f766880341`
+
+O source não precisou ser alterado para passar a auditoria adversarial.
+
+#### load
+
+O store implementa leitura por:
+
+`salesChannelId`
+
+e carrega somente o snapshot necessário ao coordinator.
+
+A leitura inclui contexto de SalesChannel:
+
+- type;
+- status;
+- externalAccountId.
+
+Tokens permanecem criptografados.
+
+O store não descriptografa segredo.
+
+Credencial inexistente retorna undefined.
+
+Datas expostas pelo snapshot são copiadas defensivamente.
+
+#### tryClaimRefresh
+
+O claim usa uma única chamada:
+
+`updateMany`
+
+com compare-and-set persistente.
+
+O filtro exige:
+
+- salesChannelId;
+- expected tokenGeneration;
+- expected credential status;
+- refreshAttemptId = null;
+- refreshStartedAt = null;
+- SalesChannel.type = MERCADO_LIVRE;
+- SalesChannel.status = ACTIVE.
+
+O claim vencedor grava somente:
+
+- status = REFRESHING;
+- refreshAttemptId;
+- refreshStartedAt.
+
+`count = 1` significa claim adquirido.
+
+`count = 0` significa claim perdido.
+
+Claim perdido realiza no máximo uma leitura observacional.
+
+Não existe segundo update automático.
+
+#### completeRefresh
+
+O commit da nova geração usa uma única chamada:
+
+`updateMany`
+
+e exige:
+
+- salesChannelId;
+- status = REFRESHING;
+- expected tokenGeneration;
+- refreshAttemptId vencedor;
+- authorizedExternalAccountId;
+- SalesChannel.type = MERCADO_LIVRE;
+- SalesChannel.externalAccountId ainda compatível.
+
+completeRefresh não exige SalesChannel.status ACTIVE.
+
+Essa regra é intencional porque o provider pode já ter consumido
+o refresh token antes de uma pausa ou desconexão lógica concorrente.
+
+A implementação valida antes do Prisma:
+
+`newTokenGeneration = expectedTokenGeneration + 1`
+
+e rejeita:
+
+- mesma geração;
+- regressão;
+- salto arbitrário;
+- overflow fora de inteiro seguro;
+- sentinelas after-commit incompatíveis.
+
+A nova geração é persistida em uma única mutação contendo:
+
+- novo accessTokenEncrypted;
+- novo refreshTokenEncrypted;
+- nova encryptionKeyVersion;
+- tokenType;
+- scope;
+- accessTokenExpiresAt;
+- authorizedExternalAccountId;
+- tokenGeneration N + 1;
+- refreshAttemptId = null;
+- refreshStartedAt = null;
+- lastRotatedAt;
+- lastErrorCode = null;
+- lastErrorAt = null;
+- status = ACTIVE.
+
+Não existe persistência parcial dos tokens.
+
+#### failRefresh
+
+failRefresh usa compare-and-set por:
+
+- salesChannelId;
+- status = REFRESHING;
+- tokenGeneration;
+- refreshAttemptId.
+
+Quando fornecido, também exige:
+
+- expectedRefreshStartedAt.
+
+Estados de destino permitidos:
+
+- TRANSIENT_ERROR;
+- ROTATION_UNCERTAIN;
+- REAUTH_REQUIRED.
+
+Uma mutação bem-sucedida grava somente:
+
+- status de destino;
+- lastErrorCode;
+- lastErrorAt;
+- refreshAttemptId = null;
+- refreshStartedAt = null.
+
+Tokens, geração, identidade e metadata da geração anterior
+não são sobrescritos pelo failRefresh.
+
+#### CAS e concorrência
+
+As três mutações são curtas.
+
+Não existe:
+
+- SELECT seguido de UPDATE incondicional;
+- mutex local como requisito de corretude;
+- lock Redis;
+- retry loop interno;
+- polling;
+- sleep;
+- transação aberta durante OAuth;
+- mutação compensatória depois de CAS perdido.
+
+O banco será a autoridade do compare-and-set.
+
+O adapter interpreta:
+
+- count = 1 como sucesso;
+- count = 0 como conflito;
+- count maior que um como estado impossível e erro.
+
+Depois de count = 0, ocorre no máximo uma leitura observacional
+do snapshot atual.
+
+#### Primitivas de persistência
+
+A implementação usa apenas as primitivas necessárias:
+
+- findUnique;
+- updateMany.
+
+Não cria PrismaClient independente.
+
+Não usa:
+
+- create;
+- createMany;
+- upsert;
+- delete;
+- deleteMany;
+- update simples;
+- raw SQL;
+- $transaction.
+
+#### Fronteiras preservadas
+
+O Prisma store não:
+
+- chama OAuth;
+- criptografa;
+- descriptografa;
+- gera refreshAttemptId;
+- decide janela de refresh;
+- decide backoff;
+- cria SalesChannel;
+- altera SalesChannel.externalAccountId;
+- sincroniza pedidos;
+- aplica migration;
+- usa Redis;
+- usa BullMQ;
+- faz polling;
+- faz retry interno.
+
+A lógica de decisão continua no MercadoLivreAccessTokenCoordinator.
+
+#### Validação global
+
+Validação focada final:
+
+- 90/90 testes PASS.
+
+Suite completa da API:
+
+- 20/20 test suites PASS;
+- 440/440 testes PASS.
+
+Build:
+
+- Nest/TypeScript PASS.
+
+#### Prisma e migration
+
+O modelo SalesChannelCredential continua presente em:
+
+`packages/db/prisma/schema.prisma`
+
+A migration continua versionada em:
+
+`packages/db/prisma/migrations/20261031135015_add_sales_channel_credential/migration.sql`
+
+Nenhuma migration foi aplicada durante este passo.
+
+Nenhum banco real foi acessado durante os testes deste passo.
+
+Os testes usaram um mock mínimo do delegate Prisma.
+
+Portanto este GREEN comprova o contrato do adapter,
+não comprova ainda o schema aplicado em PostgreSQL real.
+
+#### Wiring
+
+O store concreto está implementado como adapter compatível com
+MercadoLivreCredentialStorePort.
+
+Ele ainda não foi registrado em um módulo Nest para uso runtime
+do coordinator.
+
+Nenhuma rota ou controller usa o store neste momento.
+
+Nenhuma credencial real usa este fluxo neste momento.
+
+#### Estado final do Passo 8
+
+O store Prisma foi:
+
+- desenhado;
+- colocado em RED;
+- implementado;
+- colocado em GREEN;
+- submetido a auditoria adversarial;
+- validado na suíte completa;
+- validado no build.
+
+A migration continua não aplicada.
+
+Nenhuma credencial real foi usada.
+
+Nenhuma chamada OAuth real foi feita.
+
+#### Próxima fronteira
+
+Antes de qualquer credencial real, a próxima fronteira deverá
+tratar de forma controlada:
+
+- auditoria/publicação deste Passo 8;
+- verificação do estado real das migrations;
+- aplicação controlada da migration quando apropriado;
+- wiring explícito do store/coordinator no runtime Nest;
+- somente depois, configuração e autorização de credencial real.
+
+Nenhum desses passos deve ser agrupado silenciosamente com este commit.
