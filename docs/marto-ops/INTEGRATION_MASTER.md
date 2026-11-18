@@ -12273,3 +12273,266 @@ Depois de auditar e publicar este desenho:
 Somente depois disso será desenhada a implementação concreta do store/CAS e sua integração com Prisma.
 
 A migration de `SalesChannelCredential` continua não aplicada.
+
+---
+
+### Checkpoint final — MercadoLivreAccessTokenCoordinator
+
+O passo 7 da sequência OAuth Mercado Livre foi implementado e validado:
+
+`access/refresh coordinator com proteção contra concorrência`
+
+Base documental publicada:
+
+`a85578c2436e67b3f6aab46ab9a79c66b7156a76` — `docs(integrations): define access token coordinator Mercado Livre`
+
+#### Arquivos implementados
+
+Spec:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-access-token-coordinator.spec.ts`
+
+Source:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-access-token-coordinator.ts`
+
+#### Spec final
+
+SHA256:
+
+`94da67fdd12690b34f91ec9481406cbde587437630fe70f429e6b3770a457a7b`
+
+Git blob:
+
+`6c4bb4ba09cc94e13b46bcbd667eb5ed87ee747f`
+
+A spec final contém:
+
+- 60 contratos originalmente planejados;
+- 6 contratos adversariais adicionais;
+- total de 66 testes focados.
+
+#### Source final
+
+SHA256:
+
+`d17d4041254dd3e315d3393ada96cf225987e54fb25ca9c450c5f64488451526`
+
+Git blob:
+
+`91011267bddb56828c4ce2fffe0f7c9d2d3a3888`
+
+#### Ciclo RED
+
+Antes da existência do source:
+
+- 1 suite falhou;
+- 60/60 testes falharam;
+- causa controlada:
+  `Cannot find module './mercado-livre-access-token-coordinator'`.
+
+Isso confirmou que os contratos estavam efetivamente em RED antes da implementação.
+
+#### Primeiro GREEN
+
+Depois da implementação mínima do coordinator puro:
+
+- 1/1 suite PASS;
+- 60/60 contratos PASS.
+
+Nenhum contrato da spec RED original foi alterado para obter GREEN.
+
+#### Auditoria adversarial
+
+Foram adicionados os testes 61 a 66.
+
+A primeira execução adversarial resultou em:
+
+- 63 PASS;
+- 3 FAIL;
+- 66 total.
+
+Os três gaps reais encontrados foram:
+
+1. após perder o claim, o coordinator poderia aceitar snapshot de outro `salesChannelId`;
+2. após perder o claim, o coordinator poderia aceitar outra identidade externa coerente internamente, mas diferente da identidade original;
+3. após perder o claim, uma credencial `ACTIVE` utilizável da mesma `tokenGeneration` poderia ser tratada como se fosse uma geração nova.
+
+#### Correções adversariais
+
+O handoff depois de perder o claim passou a manter vínculo explícito com o snapshot originalmente reclamado.
+
+Agora:
+
+- `salesChannelId` precisa permanecer exatamente o mesmo;
+- `externalAccountId` precisa permanecer exatamente o mesmo;
+- `authorizedExternalAccountId` precisa permanecer exatamente o mesmo;
+- geração menor que a original é rejeitada;
+- geração igual à original não pode ser tratada como geração nova;
+- somente `tokenGeneration` maior pode fornecer uma credencial `ACTIVE` nova e utilizável.
+
+Depois das correções:
+
+- 1/1 suite focada PASS;
+- 66/66 testes PASS.
+
+#### Build TypeScript
+
+A primeira validação global encontrou somente um erro de narrowing TypeScript.
+
+O runtime já chegava a `refreshClaimedGeneration` apenas com:
+
+- `ACTIVE`;
+- `TRANSIENT_ERROR`.
+
+Entretanto o compilador ainda enxergava:
+
+`MercadoLivreCredentialStatus`
+
+como união mais ampla.
+
+Foi adicionada uma guarda explícita local:
+
+`ACTIVE | TRANSIENT_ERROR`
+
+antes de preencher `expectedStatus` do claim.
+
+Nenhuma regra de negócio foi alterada por essa correção.
+
+Depois do narrowing explícito:
+
+- 66/66 testes focados PASS;
+- suíte completa da API PASS;
+- build Nest/TypeScript PASS.
+
+#### Validação global final
+
+Resultado final:
+
+- 19/19 test suites PASS;
+- 350/350 testes PASS;
+- API build PASS;
+- 66/66 contratos focados PASS.
+
+#### Proteção contra concorrência
+
+A correção continua baseada em CAS persistente e não em mutex local.
+
+O coordinator usa abstrações equivalentes a:
+
+- `load`;
+- `tryClaimRefresh`;
+- `completeRefresh`;
+- `failRefresh`.
+
+A exclusividade lógica continua vinculada a:
+
+- `salesChannelId`;
+- `expectedTokenGeneration`;
+- `refreshAttemptId`;
+- status elegível.
+
+#### Estados de credencial preservados
+
+A implementação continua respeitando:
+
+- `ACTIVE`;
+- `REFRESHING`;
+- `TRANSIENT_ERROR`;
+- `ROTATION_UNCERTAIN`;
+- `REAUTH_REQUIRED`.
+
+Políticas principais:
+
+- access token válido além da margem pode ser reutilizado;
+- limite exato da margem entra em refresh;
+- `REFRESHING` recente não inicia outro refresh;
+- `REFRESHING` stale converge conservadoramente para `ROTATION_UNCERTAIN`;
+- `invalid_grant` converge para `REAUTH_REQUIRED`;
+- HTTP 429 converge para `TRANSIENT_ERROR`;
+- outros HTTP 4xx não-`invalid_grant` convergem para `TRANSIENT_ERROR`;
+- HTTP 5xx converge para `ROTATION_UNCERTAIN`;
+- erro de rede ambíguo converge para `ROTATION_UNCERTAIN`;
+- falha depois de OAuth possivelmente consumido nunca reutiliza cegamente a geração antiga.
+
+#### Rotação
+
+Refresh bem-sucedido:
+
+- valida `userId` contra a identidade autorizada;
+- valida também contra `SalesChannel.externalAccountId`;
+- usa o `expiresIn` retornado pelo OAuth;
+- calcula expiração a partir do clock depois da resposta;
+- criptografa access e refresh token;
+- exige mesma `encryptionKeyVersion`;
+- persiste uma única nova geração lógica;
+- incrementa `tokenGeneration` exatamente em um;
+- limpa estado de tentativa/erro no commit;
+- nunca retorna refresh token publicamente.
+
+#### Segurança
+
+O coordinator continua puro e sem infraestrutura concreta.
+
+O source permanece sem:
+
+- Prisma;
+- NestJS;
+- `ConfigService`;
+- `process.env`;
+- `fetch`;
+- axios;
+- Redis;
+- BullMQ;
+- logs de segredo;
+- polling;
+- sleep;
+- retry loop interno.
+
+O coordinator também não:
+
+- cria `SalesChannel`;
+- executa authorization-code flow;
+- sincroniza pedidos;
+- aplica migration;
+- lê credencial real;
+- faz chamada real ao Mercado Livre.
+
+#### Prisma / Redis / migration
+
+Nenhum repository Prisma concreto foi criado.
+
+Nenhum lock Redis foi criado.
+
+Redis continua não sendo requisito de corretude desta fronteira.
+
+A migration de `SalesChannelCredential` continua não aplicada.
+
+#### Estado do passo 7
+
+O passo 7 está implementado e validado em nível de componente puro.
+
+Ainda não existe integração concreta do coordinator com Prisma.
+
+Ainda não existe uso de credencial real.
+
+Ainda não existe refresh OAuth real através deste coordinator.
+
+Ainda não existe autorização real de conta.
+
+#### Próxima fronteira
+
+Depois da publicação deste checkpoint e do código validado:
+
+`passo 8 — persistência/concurrency da rotação e testes de falha no adapter/store concreto`
+
+A implementação concreta deverá preservar integralmente:
+
+- CAS por geração;
+- binding de `salesChannelId`;
+- binding de identidade externa;
+- `refreshAttemptId`;
+- atomicidade da nova geração;
+- estados conservadores de falha.
+
+Somente depois da validação do store concreto a sequência poderá avançar para credenciais reais.
