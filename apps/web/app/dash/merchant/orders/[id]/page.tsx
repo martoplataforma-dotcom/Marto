@@ -42,9 +42,9 @@ type Order = {
   events: OrderEvent[];
 };
 
-type SalesOk = { ok: true; items: Order[] };
-type SalesFail = { ok: false; message?: string; items?: Order[] };
-type SalesResponse = SalesOk | SalesFail;
+type OrderOk = { ok: true; order: Order };
+type OrderFail = { ok: false; message?: string; order?: Order };
+type OrderResponse = OrderOk | OrderFail;
 
 type SetStatusOk = { ok: true; order: { id: string; status: string } };
 type SetStatusFail = { ok: false; message?: string };
@@ -73,10 +73,10 @@ function badgeClass(status: string) {
   return 'bg-white/10 text-white/90 border-white/15';
 }
 
-function isSalesOk(res: unknown): res is SalesOk {
+function isOrderOk(res: unknown): res is OrderOk {
   if (!res || typeof res !== 'object') return false;
   const r = res as Record<string, unknown>;
-  return r.ok === true && Array.isArray(r.items);
+  return r.ok === true && !!r.order && typeof r.order === 'object';
 }
 
 function errorMessageFromRes(res: unknown): string {
@@ -273,16 +273,15 @@ export default function MerchantOrderDetailsPage({
       const token = getToken();
       if (!token) throw new Error('Sem token. Faça login novamente.');
 
-      // MVP: usa /orders/sales e filtra pelo id
-      const res = await fetchJSON<SalesResponse>('/orders/sales', {
+      // Carrega diretamente o pedido pelo ID
+      const res = await fetchJSON<OrderResponse>(`/orders/${encodeURIComponent(orderId)}`, {
         method: 'GET',
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      if (!isSalesOk(res)) throw new Error(errorMessageFromRes(res));
+      if (!isOrderOk(res)) throw new Error(errorMessageFromRes(res));
 
-      const found = res.items.find((o) => String(o.id) === orderId) ?? null;
-      setOrder(found);
+      setOrder(res.order);
     } catch (e) {
       const ae = e as ApiError;
       setErr(ae?.message || 'Erro ao carregar');
