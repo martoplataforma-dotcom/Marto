@@ -15310,3 +15310,105 @@ Essa próxima etapa deve continuar preservando o princípio já provado:
 - bootstrap não deve consultar credencial automaticamente;
 - ativação deve continuar explícita e fail-closed;
 - secrets reais não devem ser introduzidos antes de a fronteira correspondente estar definida e validada.
+
+
+---
+
+## Checkpoint - Mercado Livre runtime preparado - WAITING FOR DEVELOPERS APP
+
+Depois da publicação do Activation Boundary e do wiring principal do
+`AppModule`, a superfície de configuração do Mercado Livre foi preparada
+para permitir a continuidade sem depender imediatamente da criação da
+aplicação no Mercado Livre Developers.
+
+### `.env.example`
+
+O arquivo rastreado:
+
+`.env.example`
+
+passou a documentar as oito variáveis necessárias para o runtime:
+
+- `MARTO_MERCADO_LIVRE_ENABLED`;
+- `MARTO_MERCADO_LIVRE_CLIENT_ID`;
+- `MARTO_MERCADO_LIVRE_CLIENT_SECRET`;
+- `MARTO_MERCADO_LIVRE_REFRESH_SAFETY_WINDOW_MS`;
+- `MARTO_MERCADO_LIVRE_TRANSIENT_RETRY_DELAY_MS`;
+- `MARTO_MERCADO_LIVRE_REFRESH_STALE_AFTER_MS`;
+- `MARTO_CREDENTIAL_ENCRYPTION_CURRENT_KEY_VERSION`;
+- `MARTO_CREDENTIAL_ENCRYPTION_KEYS`.
+
+O default documentado permanece:
+
+`MARTO_MERCADO_LIVRE_ENABLED=false`
+
+Os campos de `CLIENT_ID`, `CLIENT_SECRET` e keyring no `.env.example`
+são somente placeholders e não contêm secrets reais.
+
+Configuração temporal documentada:
+
+- refresh safety window: `300000 ms`;
+- transient retry delay: `60000 ms`;
+- refresh stale after: `120000 ms`.
+
+### Runtime local
+
+O arquivo local:
+
+`apps/api/.env`
+
+permanece ignorado pelo Git.
+
+Ele foi preparado localmente com:
+
+- `MARTO_MERCADO_LIVRE_ENABLED=false`;
+- parâmetros temporais configurados;
+- versão de keyring local definida;
+- chave criptográfica privada aleatória de 32 bytes gerada localmente;
+- Base64 canônica validada.
+
+Nenhum valor privado do keyring é registrado neste documento.
+
+### Credenciais Mercado Livre
+
+Ainda NÃO existem no runtime local:
+
+- `MARTO_MERCADO_LIVRE_CLIENT_ID`;
+- `MARTO_MERCADO_LIVRE_CLIENT_SECRET`.
+
+Nenhum valor fictício foi utilizado para substituir essas credenciais.
+
+A integração continua deliberadamente desativada.
+
+### Estado atual
+
+O lado do Marto está preparado até a fronteira que depende do Mercado
+Livre Developers.
+
+Estado:
+
+`READY / WAITING FOR DEVELOPERS APP`
+
+Não é necessário alterar código para simplesmente aguardar essa etapa.
+
+### Próxima ação exata quando o Mercado Livre Developers estiver disponível
+
+1. criar ou preparar a aplicação específica do Marto no Mercado Livre Developers;
+2. não alterar a aplicação já utilizada para outra finalidade;
+3. obter o `CLIENT_ID` e o `CLIENT_SECRET` da aplicação do Marto;
+4. definir e validar a URL de callback/OAuth correspondente;
+5. inserir `CLIENT_ID` e `CLIENT_SECRET` somente no runtime privado;
+6. manter `MARTO_MERCADO_LIVRE_ENABLED=false` durante a primeira validação;
+7. executar bootstrap controlado e validações de configuração;
+8. executar o fluxo OAuth inicial de forma explícita;
+9. somente depois considerar `MARTO_MERCADO_LIVRE_ENABLED=true`.
+
+### Proteções que permanecem obrigatórias
+
+- nenhum secret real deve entrar no Git;
+- nenhum OAuth deve ocorrer simplesmente pelo bootstrap da API;
+- nenhuma credencial deve ser consultada simplesmente pelo bootstrap;
+- ativação continua explícita;
+- configuração inválida continua fail-closed;
+- `docs/marto-ia/` permanece fora dos checkpoints de integração;
+- alterações futuras continuam seguindo contrato -> teste -> implementação -> validação -> checkpoint.
