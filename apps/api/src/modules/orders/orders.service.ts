@@ -1343,6 +1343,22 @@ export class OrdersService {
           orderBy: { createdAt: 'desc' },
           take: 20,
         },
+        externalOrderReferences: {
+          select: {
+            id: true,
+            externalOrderId: true,
+            externalStatus: true,
+            salesChannel: {
+              select: {
+                id: true,
+                type: true,
+                name: true,
+                externalAccountId: true,
+                status: true,
+              },
+            },
+          },
+        },
       },
     });
 
