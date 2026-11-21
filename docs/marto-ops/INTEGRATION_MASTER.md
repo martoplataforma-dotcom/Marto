@@ -13570,3 +13570,1143 @@ tratar de forma controlada:
 - somente depois, configuração e autorização de credencial real.
 
 Nenhum desses passos deve ser agrupado silenciosamente com este commit.
+
+---
+
+### Checkpoint pós-migration local — credenciais Mercado Livre
+
+Depois da publicação do Passo 8, foi auditado de forma controlada
+o estado real das migrations no PostgreSQL local usado pela API.
+
+Banco auditado:
+
+- PostgreSQL;
+- host configurado: `127.0.0.1`;
+- porta: `5432`;
+- database: `marto`;
+- schema: `public`.
+
+A `DATABASE_URL` usada por:
+
+- `apps/api/.env`;
+- `packages/db/.env`;
+
+foi confirmada como idêntica durante a auditoria.
+
+Nenhum segredo foi registrado neste documento.
+
+#### Estado anterior ao deploy
+
+`prisma migrate status` encontrou 67 migrations locais.
+
+Duas estavam pendentes:
+
+`20260912185200_add_external_order_item_reference`
+
+`20261031135015_add_sales_channel_credential`
+
+As migrations-base anteriores foram auditadas no
+`_prisma_migrations` e estavam aplicadas e finalizadas.
+
+Foram verificadas especificamente:
+
+`20251220203253_add_orders_order_items`
+
+`20260905010401_add_sales_channels_external_order_reference`
+
+`20260905184105_support_external_order_items_buyers`
+
+Os checksums registrados no banco batiam exatamente com
+os blobs versionados no Git.
+
+A divergência observada inicialmente pelo `Get-FileHash`
+do Windows era exclusivamente causada por:
+
+`CRLF` no working tree versus `LF` no conteúdo versionado.
+
+Depois da normalização dos line endings, os conteúdos eram idênticos.
+
+Não havia drift real nessas migrations históricas.
+
+#### Preflight físico
+
+Antes do deploy foi confirmado que as dependências já existiam
+no schema `public`:
+
+- `OrderItem`;
+- `ExternalOrderReference`;
+- `SalesChannel`.
+
+Também foi confirmado que ainda não existiam:
+
+- `ExternalOrderItemReference`;
+- `SalesChannelCredential`;
+- enum `SalesChannelCredentialStatus`.
+
+As duas migrations pendentes ainda não possuíam registro em
+`_prisma_migrations`.
+
+#### Deploy controlado
+
+Foi executado:
+
+`prisma migrate deploy`
+
+somente contra o PostgreSQL local auditado.
+
+O Prisma aplicou, em ordem:
+
+`20260912185200_add_external_order_item_reference`
+
+`20261031135015_add_sales_channel_credential`
+
+Resultado:
+
+- deploy exit code 0;
+- todas as migrations aplicadas com sucesso.
+
+Depois do deploy:
+
+`prisma migrate status`
+
+retornou:
+
+`Database schema is up to date!`
+
+com exit code 0.
+
+#### Estado final das migrations
+
+O banco local passou a possuir:
+
+- 67 migrations registradas;
+- 67 migrations aplicadas;
+- 0 migrations unfinished;
+- 0 migrations rolled back.
+
+As duas migrations novas possuem:
+
+- `finished_at` preenchido;
+- `rolled_back_at = null`;
+- `applied_steps_count = 1`.
+
+#### ExternalOrderItemReference
+
+A tabela:
+
+`ExternalOrderItemReference`
+
+foi criada com sucesso.
+
+Foram confirmados fisicamente:
+
+- primary key;
+- índice por `orderItemId`;
+- unique por `externalOrderReferenceId + externalItemId`;
+- unique por `externalOrderReferenceId + orderItemId`;
+- FK para `OrderItem`;
+- FK para `ExternalOrderReference`.
+
+Após a migration:
+
+- quantidade de registros = 0.
+
+Nenhum dado operacional existente foi criado ou alterado por essa tabela.
+
+#### SalesChannelCredential
+
+A tabela:
+
+`SalesChannelCredential`
+
+foi criada com sucesso.
+
+Foram confirmados fisicamente:
+
+- primary key;
+- unique de `salesChannelId`;
+- índice por `status`;
+- índice por `accessTokenExpiresAt`;
+- FK para `SalesChannel`.
+
+O enum:
+
+`SalesChannelCredentialStatus`
+
+foi criado com exatamente:
+
+- `ACTIVE`;
+- `REFRESHING`;
+- `TRANSIENT_ERROR`;
+- `ROTATION_UNCERTAIN`;
+- `REAUTH_REQUIRED`.
+
+Após a migration:
+
+- quantidade de registros = 0.
+
+Portanto nenhuma credencial real foi criada durante a aplicação
+da migration.
+
+#### Prisma Client
+
+O diagnóstico pós-migration confirmou Prisma Client:
+
+`6.19.1`
+
+O DMMF local contém:
+
+- `SalesChannelCredential`;
+- `ExternalOrderItemReference`.
+
+Os delegates:
+
+- `prisma.salesChannelCredential`;
+- `prisma.externalOrderItemReference`;
+
+estão disponíveis.
+
+Chamadas read-only:
+
+`count()`
+
+funcionaram nos dois models e retornaram zero.
+
+Não foi necessário executar:
+
+`prisma generate`
+
+durante essa validação.
+
+#### Falha aparente do primeiro postflight
+
+O primeiro postflight posterior ao deploy exibiu:
+
+`PrismaClientKnownRequestError`
+
+através do PowerShell.
+
+Esse resultado não representava falha comprovada do schema.
+
+Uma auditoria posterior, capturando stdout/stderr de maneira segura,
+confirmou:
+
+- conexão correta;
+- 67/67 migrations;
+- tabelas presentes;
+- colunas presentes;
+- índices presentes;
+- constraints presentes;
+- enum correto;
+- Prisma Client atualizado;
+- delegates funcionando;
+- counts funcionando;
+- diagnostic exit code 0.
+
+Portanto a falha aparente foi tratada como problema do mecanismo
+de captura do script de validação, não como falha persistente
+do banco ou do Prisma Client.
+
+#### Integridade do repositório
+
+A aplicação das migrations não alterou arquivos do repositório.
+
+Permaneceu:
+
+- HEAD local:
+  `da82a3afbaeb7d33f12ee1eb087ae1fd2177a9f6`;
+- remoto:
+  `da82a3afbaeb7d33f12ee1eb087ae1fd2177a9f6`;
+- nenhum arquivo staged;
+- nenhum novo commit;
+- nenhum novo push;
+- `docs/marto-ia/` fora do Git.
+
+#### Estado de credenciais reais
+
+Mesmo após a migration:
+
+- nenhuma credencial Mercado Livre real foi criada;
+- nenhum access token real foi persistido;
+- nenhum refresh token real foi persistido;
+- nenhuma chave de criptografia real foi configurada neste passo;
+- nenhuma autorização OAuth real foi iniciada;
+- nenhuma chamada OAuth real foi executada.
+
+#### Próxima fronteira
+
+Com o schema local agora aplicado e validado,
+a próxima fronteira é o wiring de runtime.
+
+A ordem deverá continuar controlada:
+
+1. completar a infraestrutura concreta necessária ao OAuth runtime;
+2. montar store + crypto + OAuth client + coordinator no Nest;
+3. validar o módulo isoladamente;
+4. não importar silenciosamente no `AppModule`;
+5. somente depois configurar secrets reais;
+6. somente depois executar a primeira autorização controlada.
+
+Um ponto ainda ausente no runtime é um transporte HTTP concreto
+para o contrato:
+
+`MercadoLivreOAuthHttpTransport`
+
+usado pelo:
+
+`MercadoLivreOAuthClient`.
+
+O `MercadoLivreFetchTransport` existente continua reservado ao
+cliente de recursos GET e não deve ser ampliado silenciosamente
+para assumir OAuth POST.
+
+Portanto o próximo microstep de implementação deverá tratar
+primeiro o OAuth HTTP transport concreto e isolado,
+antes do wiring Nest completo.
+
+---
+
+### Checkpoint — OAuth Fetch Transport Mercado Livre
+
+Depois da aplicação e validação controlada das migrations locais,
+foi implementada a infraestrutura HTTP concreta responsável
+exclusivamente pelo endpoint OAuth do Mercado Livre.
+
+Implementação:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre.oauth-fetch-transport.ts`
+
+Spec:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre.oauth-fetch-transport.spec.ts`
+
+#### Motivação
+
+O cliente:
+
+`MercadoLivreOAuthClient`
+
+já possuía um contrato puro:
+
+`MercadoLivreOAuthHttpTransport`
+
+mas ainda não havia uma implementação concreta de transporte HTTP
+para runtime.
+
+O transporte GET já existente:
+
+`MercadoLivreFetchTransport`
+
+permaneceu separado.
+
+Ele não foi ampliado para assumir OAuth POST.
+
+A separação continua intencional:
+
+- recursos da API usam o transporte GET;
+- OAuth usa transporte próprio;
+- nenhuma responsabilidade de credencial foi misturada ao resource client.
+
+#### Arquivo concreto
+
+Foi criado:
+
+`mercado-livre.oauth-fetch-transport.ts`
+
+O adapter implementa:
+
+`MercadoLivreOAuthHttpTransport`
+
+e usa:
+
+`globalThis.fetch`
+
+como implementação padrão.
+
+Base URL padrão:
+
+`https://api.mercadolibre.com`
+
+Endpoint permitido:
+
+`/oauth/token`
+
+#### Fronteira de endpoint
+
+O transporte aceita exclusivamente:
+
+`/oauth/token`
+
+São rejeitados antes de qualquer fetch:
+
+- URL absoluta;
+- protocol-relative URL;
+- path sem barra inicial;
+- resource path diferente;
+- query string;
+- fragment;
+- trailing slash;
+- mudança de case;
+- forma percent-encoded equivalente;
+- whitespace antes ou depois do path.
+
+Isso mantém o transporte estritamente limitado ao endpoint OAuth.
+
+#### Form body
+
+O objeto `form` recebido do OAuth client é serializado com:
+
+`URLSearchParams`
+
+e enviado no body.
+
+O transporte não move dados do form para a URL.
+
+Portanto permanecem fora da query string:
+
+- `client_secret`;
+- `refresh_token`;
+- authorization code;
+- redirect URI;
+- demais parâmetros OAuth.
+
+Caracteres reservados e Unicode são percent-encoded pela primitiva
+de URL encoding.
+
+O transporte não concatena manualmente pares `key=value`.
+
+#### Headers
+
+O transporte apenas encaminha os headers recebidos do OAuth client.
+
+Ele não inventa:
+
+`Authorization`
+
+nem qualquer outro mecanismo de autenticação.
+
+Headers do caller não são mutados.
+
+#### Imutabilidade
+
+O transporte não altera:
+
+- request;
+- headers;
+- form.
+
+A auditoria confirmou funcionamento inclusive com:
+
+- request congelado;
+- headers congelados;
+- form congelado.
+
+Propriedades herdadas do objeto form não são serializadas.
+
+#### Resposta
+
+O transporte preserva:
+
+- HTTP status;
+- response headers.
+
+Os nomes de headers de resposta são normalizados para lowercase.
+
+Body:
+
+- JSON válido é convertido para o valor JSON correspondente;
+- objetos permanecem objetos;
+- arrays permanecem arrays;
+- primitivas JSON permanecem primitivas;
+- `null` permanece `null`;
+- resposta não JSON permanece texto;
+- resposta vazia produz body ausente.
+
+O transporte não interpreta semanticamente erros OAuth.
+
+Essa responsabilidade continua no:
+
+`MercadoLivreOAuthClient`.
+
+#### Rede e retry
+
+Cada chamada ao transporte executa no máximo:
+
+`1 fetch`
+
+Não existe:
+
+- retry;
+- sleep;
+- polling;
+- timeout loop;
+- Redis;
+- BullMQ.
+
+Falha de rede é propagada ao caller.
+
+Falha síncrona do fetch também é propagada.
+
+A classificação conservadora da falha continua fora deste adapter.
+
+#### Fronteiras preservadas
+
+O OAuth Fetch Transport não importa nem usa:
+
+- Nest;
+- Prisma;
+- PrismaService;
+- ConfigService;
+- `process.env`;
+- Redis;
+- BullMQ;
+- axios.
+
+Ele não:
+
+- persiste credenciais;
+- criptografa tokens;
+- descriptografa tokens;
+- conhece SalesChannel;
+- conhece Merchant;
+- decide refresh;
+- decide backoff;
+- cria OAuth state;
+- executa autorização automaticamente;
+- sincroniza pedidos.
+
+#### Ciclo RED
+
+A spec foi criada antes do source.
+
+RED inicial:
+
+- 1 suite FAIL;
+- 25 contratos;
+- causa controlada:
+  source `mercado-livre.oauth-fetch-transport.ts` ausente.
+
+A spec compilava sem erro TypeScript.
+
+Spec RED inicial:
+
+SHA256:
+
+`7f181a2efb192980c70a961df58d585c22e7e6d014f07d9987e02e6a030dd02d`
+
+Git blob:
+
+`a46a1bd7a7787657034f8395b8d952aeca6872df`
+
+#### Primeiro GREEN
+
+Foi criado somente:
+
+`mercado-livre.oauth-fetch-transport.ts`
+
+A spec RED original permaneceu congelada.
+
+Resultado:
+
+- 1/1 suite PASS;
+- 25/25 testes PASS.
+
+Source GREEN:
+
+SHA256:
+
+`22621e223d014326f427dc462a7113523ca34a35c772e5feca6486413da04ba7`
+
+Git blob:
+
+`f3fe00836fd95d76564c758271ab84d3f9c302e8`
+
+#### Auditoria adversarial
+
+Depois do primeiro GREEN foram adicionados 15 contratos
+adversariais somente à spec.
+
+Total:
+
+- 40 contratos.
+
+A auditoria adicional cobriu:
+
+- shape mínimo do fetch init;
+- ausência de propriedades herdadas do form;
+- chave própria `__proto__`;
+- Unicode e caracteres reservados;
+- valores explicitamente vazios;
+- imutabilidade de headers;
+- request/header/form congelados;
+- trailing slash;
+- case alterado;
+- path percent-encoded;
+- whitespace no path;
+- base URL contendo path/query;
+- JSON primitive;
+- JSON null;
+- falha síncrona do fetch;
+- ausência de retry.
+
+O source permaneceu sem alteração durante toda a auditoria.
+
+Resultado:
+
+- 1/1 suite PASS;
+- 40/40 testes PASS.
+
+Spec adversarial final:
+
+SHA256:
+
+`2ed7464a6cc488ae75544fd2b4293742db2d7ca0aa2b51274b1d087d496b3669`
+
+Git blob:
+
+`b547dad12a565cc9afae2073d3ab64641b74343c`
+
+Source permaneceu:
+
+SHA256:
+
+`22621e223d014326f427dc462a7113523ca34a35c772e5feca6486413da04ba7`
+
+Git blob:
+
+`f3fe00836fd95d76564c758271ab84d3f9c302e8`
+
+#### Validação global
+
+Depois do GREEN adversarial foi executada a suíte completa da API.
+
+Resultado:
+
+- 21/21 test suites PASS;
+- 480/480 testes PASS.
+
+Build completo da API:
+
+- Nest/TypeScript PASS.
+
+Nenhum ajuste no source foi necessário para passar
+a suíte completa ou o build.
+
+#### Banco e credenciais
+
+Nenhum banco foi acessado durante a implementação ou testes
+do OAuth Fetch Transport.
+
+Nenhuma migration foi executada neste passo.
+
+Nenhuma credencial real foi criada.
+
+Nenhum:
+
+- client id real;
+- client secret real;
+- access token real;
+- refresh token real;
+
+foi usado.
+
+Nenhuma chamada real ao Mercado Livre foi feita.
+
+Todos os dados usados nos testes são sintéticos.
+
+#### Estado do runtime
+
+Mesmo com o transporte concreto pronto:
+
+- ele ainda não está registrado em módulo Nest;
+- o coordinator ainda não está registrado em runtime;
+- nenhuma rota OAuth usa essa implementação;
+- nenhuma autorização real pode ocorrer por consequência deste passo.
+
+Portanto este checkpoint ainda não ativa a integração Mercado Livre.
+
+#### Próxima fronteira
+
+Com as migrations locais validadas e o transporte OAuth concreto
+testado, a próxima fronteira é o wiring explícito de runtime.
+
+Esse wiring deverá montar de forma controlada:
+
+- Prisma credential store;
+- crypto service;
+- OAuth fetch transport;
+- OAuth client;
+- refresh adapter/config;
+- access token coordinator.
+
+O wiring deverá ser validado isoladamente antes de qualquer
+importação no `AppModule`.
+
+Não deverão ser configurados secrets reais antes de essa composição
+estar testada.
+
+---
+
+### Checkpoint — Credential Runtime Mercado Livre
+
+Depois da implementação e validação global do OAuth Fetch Transport,
+foi criada a composição Nest isolada responsável pelo runtime de
+credenciais do Mercado Livre.
+
+Arquivo:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-credential-runtime.module.ts`
+
+Spec:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-credential-runtime.module.spec.ts`
+
+#### Objetivo da fronteira
+
+O módulo monta as dependências concretas necessárias para o:
+
+`MercadoLivreAccessTokenCoordinator`
+
+sem ainda importar essa composição no:
+
+`AppModule`.
+
+Portanto existe agora uma composição testável de runtime,
+mas ela ainda não ativa a integração no processo principal da API.
+
+#### Composição
+
+O módulo importa:
+
+- `ConfigModule`;
+- `PrismaModule`;
+- `SalesChannelCredentialModule`.
+
+E compõe:
+
+- `MercadoLivrePrismaCredentialStore`;
+- `SalesChannelCredentialCryptoService`;
+- `MercadoLivreOAuthFetchTransport`;
+- `MercadoLivreOAuthClient`;
+- clock de credencial;
+- gerador de `refreshAttemptId`;
+- configuração do coordinator;
+- `MercadoLivreAccessTokenCoordinator`.
+
+O coordinator é exportado pelo módulo para consumo futuro
+por um módulo pai.
+
+#### Prisma
+
+O store concreto:
+
+`MercadoLivrePrismaCredentialStore`
+
+recebe o:
+
+`PrismaService`
+
+já pertencente à infraestrutura existente do projeto.
+
+Não é criado:
+
+`new PrismaClient()`
+
+dentro do runtime Mercado Livre.
+
+Também não foi criada uma segunda conexão de banco deliberada.
+
+#### Crypto
+
+O runtime reutiliza:
+
+`SalesChannelCredentialModule`
+
+e:
+
+`SalesChannelCredentialCryptoService`.
+
+Assim a composição mantém a fronteira de criptografia previamente
+implementada e não replica a construção do keyring.
+
+As configurações de criptografia continuam pertencendo à fronteira:
+
+- `MARTO_CREDENTIAL_ENCRYPTION_CURRENT_KEY_VERSION`;
+- `MARTO_CREDENTIAL_ENCRYPTION_KEYS`.
+
+Nenhum segredo real foi configurado neste checkpoint.
+
+#### OAuth
+
+O runtime cria:
+
+`MercadoLivreOAuthFetchTransport`
+
+e injeta exatamente essa instância no:
+
+`MercadoLivreOAuthClient`.
+
+Nenhum request OAuth ocorre durante a construção do módulo.
+
+O bootstrap isolado foi testado com `globalThis.fetch` espionado
+e confirmou zero chamadas de rede.
+
+#### Clock
+
+Foi criado um provider específico para:
+
+`MercadoLivreCredentialClock`.
+
+A implementação concreta retorna:
+
+`new Date()`
+
+a cada leitura.
+
+O clock é injetado no coordinator em vez de o coordinator acessar
+o relógio diretamente.
+
+#### Refresh attempt ID
+
+Foi criado provider específico para:
+
+`MercadoLivreRefreshAttemptIdGenerator`.
+
+A implementação usa:
+
+`randomUUID()`
+
+de:
+
+`node:crypto`.
+
+Não usa:
+
+`Math.random`.
+
+A auditoria confirmou UUID v4 válido e identificadores diferentes
+em chamadas consecutivas.
+
+O identifier não contém token, seller id, merchant id ou segredo.
+
+#### Configuração Mercado Livre
+
+Como ainda não havia convenção de environment variables do
+Mercado Livre publicada no projeto, esta fronteira estabeleceu
+nomes namespaced específicos:
+
+- `MARTO_MERCADO_LIVRE_CLIENT_ID`;
+- `MARTO_MERCADO_LIVRE_CLIENT_SECRET`;
+- `MARTO_MERCADO_LIVRE_REFRESH_SAFETY_WINDOW_MS`;
+- `MARTO_MERCADO_LIVRE_TRANSIENT_RETRY_DELAY_MS`;
+- `MARTO_MERCADO_LIVRE_REFRESH_STALE_AFTER_MS`.
+
+O coordinator puro continua sem:
+
+- `ConfigService`;
+- `process.env`.
+
+A leitura de configuração ocorre somente no boundary Nest.
+
+#### Validação de client id e client secret
+
+`clientId` e `clientSecret` precisam ser:
+
+- string;
+- não vazios;
+- não compostos somente por whitespace;
+- sem whitespace adicional no início ou fim.
+
+Valores inválidos geram erro sanitizado:
+
+`mercado_livre_runtime_config_invalid`.
+
+O runtime não imprime os valores recebidos.
+
+#### Durações
+
+As três durações são recebidas em milissegundos.
+
+Aceitas para:
+
+`refreshSafetyWindowMs`
+
+- inteiro decimal canônico;
+- zero ou positivo.
+
+Aceitas para:
+
+`transientRetryDelayMs`
+
+- inteiro decimal canônico;
+- zero ou positivo.
+
+Aceitas para:
+
+`refreshStaleAfterMs`
+
+- inteiro decimal canônico;
+- estritamente maior que zero.
+
+Também é exigido:
+
+`Number.isSafeInteger(...)`.
+
+São rejeitados:
+
+- negativos;
+- decimal fracionário;
+- notação científica;
+- sinal `+`;
+- whitespace externo;
+- zeros não canônicos como `01`;
+- valores acima do safe integer do JavaScript;
+- valores ausentes;
+- texto arbitrário.
+
+#### Bootstrap sem efeitos colaterais
+
+A montagem do runtime não:
+
+- chama OAuth;
+- consulta credencial;
+- atualiza credencial;
+- executa refresh;
+- faz polling;
+- cria controller;
+- cria rota;
+- sincroniza pedidos.
+
+A spec confirmou que durante bootstrap:
+
+`Prisma.salesChannelCredential.findUnique`
+
+não é chamado.
+
+Também:
+
+`Prisma.salesChannelCredential.updateMany`
+
+não é chamado.
+
+#### Fronteiras mantidas
+
+O runtime module permanece sem:
+
+- `AppModule`;
+- `@Controller`;
+- controller;
+- `process.env`;
+- `new PrismaClient`;
+- import direto de `@prisma/client`;
+- Redis;
+- BullMQ;
+- `Math.random`;
+- polling;
+- timer de retry;
+- authorization flow;
+- logs de segredo.
+
+O:
+
+`MercadoLivreAuthorizationFlow`
+
+não foi incorporado neste módulo.
+
+Isso é intencional.
+
+A autorização inicial/reconexão possui ciclo de vida e persistência
+temporária próprios e deverá ser tratada em fronteira separada.
+
+#### Ciclo RED
+
+A primeira spec do runtime foi criada antes do source.
+
+A primeira execução encontrou um erro de sintaxe na própria spec,
+causado por uma string inválida do guard estático.
+
+Esse erro foi corrigido somente na spec antes de qualquer source
+de runtime existir.
+
+Depois da correção, o RED legítimo foi confirmado:
+
+- runtime module ausente;
+- 24 contratos definidos;
+- nenhum erro TypeScript da spec;
+- nenhum teste executado por causa da ausência controlada do módulo.
+
+Spec RED corrigida:
+
+SHA256:
+
+`87fce54561fbe9c97a5f248f1a87ec21e27689392dd14ca0bcedbdd975585fb7`
+
+Git blob:
+
+`127919f61c6a2d90d60905ef6a6b6d3c8898ec60`
+
+#### Primeiro GREEN
+
+Foi criado somente:
+
+`mercado-livre-credential-runtime.module.ts`
+
+A spec RED permaneceu congelada.
+
+Resultado:
+
+- 1/1 suite PASS;
+- 24/24 testes PASS.
+
+Runtime source:
+
+SHA256:
+
+`474cac9729774e08038785aeda845dde44d3abcc925e36e9e701b14f4219620b`
+
+Git blob:
+
+`a372bb85262507a150fef85a1ad9958db2ef769c`
+
+#### Auditoria adversarial
+
+Depois do primeiro GREEN foram acrescentados 16 contratos
+adversariais exclusivamente à spec.
+
+A auditoria passou a totalizar:
+
+- 40 contratos.
+
+Foram validados adicionalmente:
+
+- mesma instância de clock chegando ao coordinator;
+- mesma instância do gerador chegando ao coordinator;
+- mesmo objeto de config chegando ao coordinator;
+- store construído sobre o PrismaService injetado;
+- OAuth client construído sobre o OAuth transport injetado;
+- safety window zero permitido;
+- retry delay zero permitido;
+- stale threshold zero rejeitado;
+- negativos rejeitados;
+- decimal rejeitado;
+- scientific notation rejeitada;
+- sinal `+` rejeitado;
+- whitespace numérico rejeitado;
+- leading zero não canônico rejeitado;
+- overflow de safe integer rejeitado;
+- client id vazio rejeitado;
+- whitespace em client id rejeitado;
+- client secret vazio rejeitado;
+- leitura exata das cinco configurações namespaced;
+- bootstrap inválido sem atividade OAuth;
+- ausência de logging e authorization flow no source.
+
+O runtime source permaneceu congelado durante toda essa expansão.
+
+Resultado:
+
+- 1/1 suite PASS;
+- 40/40 testes PASS.
+
+Spec adversarial final:
+
+SHA256:
+
+`f15a1af654222c13104ac5133ce282d48d4815567f227b54075f11fc47a92d78`
+
+Git blob:
+
+`6510ec1bee8230dc6bf4107f0958f3052242e98f`
+
+Runtime source permaneceu:
+
+SHA256:
+
+`474cac9729774e08038785aeda845dde44d3abcc925e36e9e701b14f4219620b`
+
+Git blob:
+
+`a372bb85262507a150fef85a1ad9958db2ef769c`
+
+#### Validação global
+
+Depois do GREEN adversarial foi executada novamente a suíte
+completa da API.
+
+Resultado:
+
+- 22/22 test suites PASS;
+- 520/520 testes PASS.
+
+Build completo:
+
+- Nest/TypeScript PASS.
+
+Nenhum ajuste de código foi necessário depois da auditoria adversarial.
+
+#### Estado de ativação
+
+Este módulo existe e está testado isoladamente.
+
+Porém:
+
+`AppModule`
+
+continua sem importar:
+
+`MercadoLivreCredentialRuntimeModule`.
+
+Consequentemente, neste checkpoint:
+
+- nenhuma configuração Mercado Livre é exigida no startup principal;
+- nenhum client secret real precisa existir;
+- nenhum credential keyring novo é exigido por causa desse módulo;
+- nenhuma integração OAuth é ativada;
+- nenhuma chamada real ao Mercado Livre pode ocorrer por esse wiring.
+
+Essa separação é deliberada para evitar ativação acidental.
+
+#### Banco
+
+As migrations necessárias já haviam sido aplicadas e validadas
+antes deste runtime.
+
+Nenhuma migration foi executada nesta implementação.
+
+Os testes do módulo usam PrismaService substituído por mock.
+
+Nenhum banco real foi acessado durante os testes do runtime module.
+
+#### Secrets
+
+Nenhum valor real foi usado para:
+
+- client id;
+- client secret;
+- access token;
+- refresh token;
+- chave de criptografia.
+
+Os valores presentes na spec são exclusivamente sintéticos.
+
+Nenhum secret foi persistido em Git.
+
+#### Próxima fronteira
+
+Antes de uma autorização real, ainda é necessário decidir e validar
+o passo de ativação controlada do runtime principal.
+
+A próxima mudança não deve misturar várias responsabilidades.
+
+Em especial, ainda permanecem separados:
+
+1. importação do runtime no grafo principal;
+2. configuração local dos secrets;
+3. authorization state/PKCE persistence;
+4. persistência da primeira credencial após authorization code;
+5. primeira autorização real;
+6. primeira chamada autenticada controlada.
+
+A importação no `AppModule` não deverá ser feita até que o contrato
+de startup com configuração ausente/presente esteja explicitamente
+definido e testado.
