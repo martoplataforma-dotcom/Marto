@@ -133,7 +133,25 @@ A autorização operacional futura deverá ser capaz de responder, no backend:
 
 O proprietário deverá possuir acesso integral à própria operação.
 
-A forma exata de representar o proprietário na futura política unificada de autorização — inclusive se também existirá uma linha explícita de membership para ele — será decidida no checkpoint de desenho do modelo, antes de qualquer alteração no Prisma.
+#### Decisão do contrato mínimo sobre o proprietário
+
+Na primeira versão da Etapa 4, o proprietário não precisará possuir uma linha duplicada em `MerchantMember`.
+
+`Merchant.userId` continuará sendo a fonte autoritativa para identificar o proprietário principal.
+
+Portanto:
+
+- proprietário do Merchant → identificado por `Merchant.userId`;
+- membro adicional da equipe → identificado por `MerchantMember`;
+- o proprietário terá acesso operacional integral à própria empresa;
+- um usuário que já seja `Merchant.userId` daquele Merchant não deverá receber um `MerchantMember` redundante para o mesmo Merchant;
+- a futura camada de autorização deverá tratar owner e member por uma política única de acesso, sem exigir que ambos sejam persistidos da mesma forma.
+
+Essa decisão evita duas fontes persistentes concorrentes para propriedade da empresa e permite evolução aditiva da estrutura atual.
+
+Se no futuro houver necessidade comprovada de materializar o proprietário também como membership — por exemplo, para algum mecanismo específico de auditoria ou billing — isso deverá ocorrer em migration própria, com regra explícita de consistência.
+
+Limites de usuários por plano e contabilização de seats não fazem parte deste primeiro contrato estrutural.
 
 Nenhum membro adicional deverá substituir `Merchant.userId` em fluxos financeiros apenas por possuir acesso operacional.
 
@@ -157,6 +175,120 @@ Neste checkpoint ainda não serão criados:
 - interface web de equipe.
 
 Primeiro será definido e auditado o contrato mínimo de domínio da equipe e das permissões.
+
+#### Definição — contrato mínimo de MerchantMember v1
+
+`MerchantMember` representará o vínculo operacional entre um usuário adicional e um `Merchant`.
+
+O primeiro modelo deverá possuir conceitualmente:
+
+- `id`;
+- `merchantId`;
+- `userId`;
+- `role`;
+- `status`;
+- `createdAt`;
+- `updatedAt`.
+
+Relações:
+
+- `MerchantMember.merchantId → Merchant.id`;
+- `MerchantMember.userId → User.id`;
+- `Merchant → MerchantMember[]`;
+- `User → MerchantMember[]`.
+
+Invariante estrutural obrigatória:
+
+`(merchantId, userId) = UNIQUE`
+
+Um mesmo usuário não poderá possuir memberships duplicados dentro do mesmo Merchant.
+
+O mesmo usuário poderá, porém, participar de Merchants diferentes, desde que exista membership explícito em cada empresa.
+
+O proprietário identificado por `Merchant.userId` não deverá possuir membership redundante no mesmo Merchant nesta primeira versão.
+
+#### Lifecycle mínimo
+
+`MerchantMember.status` deverá controlar se o vínculo concede acesso operacional.
+
+O contrato inicial deverá distinguir pelo menos:
+
+- `ACTIVE` → membership válido para autorização;
+- `INACTIVE` → membership mantido para histórico, mas sem conceder acesso.
+
+O fluxo normal de remoção de acesso deverá preferir desativação do vínculo em vez de apagar silenciosamente o histórico da relação.
+
+Convites ainda não pertencem a `MerchantMember`.
+
+Uma futura estrutura de convite poderá existir separadamente para representar alguém que ainda não aceitou ou ainda não possui vínculo ativo.
+
+Neste checkpoint não será criado `MerchantInvitation`.
+
+#### Papel dentro do Merchant
+
+O papel do membro pertence ao contexto daquele Merchant e não deve reutilizar semanticamente `RoleCode` como se fossem a mesma coisa.
+
+`RoleCode` e membership possuem responsabilidades independentes:
+
+- `RoleCode` representa papéis globais do usuário no ecossistema Marto;
+- `MerchantMember` representa autorização organizacional dentro de um `Merchant` específico.
+
+Um membro adicional da equipe não deverá precisar receber `RoleCode.MERCHANT` apenas para trabalhar dentro de um Merchant ao qual possui acesso válido.
+
+Criar, ativar, alterar ou desativar um `MerchantMember` não deverá, por consequência automática:
+
+- alterar `User.activeRole`;
+- criar ou remover `UserRole`;
+- criar outro `Merchant`;
+- transformar o membro em proprietário da empresa;
+- transformar o membro em recebedor financeiro.
+
+Da mesma forma, possuir `RoleCode.MERCHANT` sem ser proprietário nem possuir membership válido não concede acesso operacional a um Merchant de terceiros.
+
+Se o campo do membership for chamado `role`, seu domínio deverá ser específico da equipe do Merchant, por exemplo um futuro `MerchantMemberRole`, e não `RoleCode`.
+
+Exemplo conceitual:
+
+um usuário pode possuir seus próprios papéis globais no Marto e, independentemente deles, possuir um papel operacional específico dentro de determinado Merchant por meio do membership.
+
+A enumeração final dos papéis e a matriz `papel → permissões` serão definidas no próximo checkpoint documental antes da implementação Prisma.
+
+Até essa definição existir, não deverão ser inventados papéis diretamente no schema.
+
+#### Regra de autorização resultante
+
+Para acessar operação interna de um Merchant, a futura camada de autorização deverá seguir conceitualmente:
+
+1. identificar o usuário autenticado;
+2. identificar o Merchant alvo;
+3. se `Merchant.userId === userId`, autorizar como proprietário;
+4. caso contrário, localizar `MerchantMember` por `(merchantId, userId)`;
+5. exigir membership `ACTIVE`;
+6. validar a permissão necessária para a ação;
+7. negar por padrão quando nenhuma dessas condições for satisfeita.
+
+Possuir apenas `RoleCode.MERCHANT` não será suficiente para acessar qualquer Merchant arbitrariamente.
+
+A autorização deverá sempre permanecer vinculada ao Merchant correto.
+
+#### Exclusões deste micro-checkpoint
+
+Ainda não serão definidos ou implementados:
+
+- enum final de papéis de equipe;
+- matriz de permissões;
+- convites;
+- limite de membros por plano;
+- cobrança por seat;
+- endpoints de equipe;
+- guards de membership;
+- mudanças nos controllers atuais;
+- mudanças nos fluxos financeiros;
+- schema Prisma;
+- migration;
+- UI.
+
+O próximo checkpoint da Etapa 4 deverá definir os papéis mínimos e as permissões operacionais necessárias antes de qualquer alteração no banco.
 
 ### 5.5 Visões derivadas
 
