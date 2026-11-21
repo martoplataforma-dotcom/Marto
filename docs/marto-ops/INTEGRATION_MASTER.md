@@ -14710,3 +14710,603 @@ Em especial, ainda permanecem separados:
 A importação no `AppModule` não deverá ser feita até que o contrato
 de startup com configuração ausente/presente esteja explicitamente
 definido e testado.
+
+---
+
+### Checkpoint — Activation Boundary Mercado Livre
+
+Depois do Credential Runtime Mercado Livre ter sido implementado,
+testado isoladamente e publicado, foi criada uma fronteira específica
+para controlar se esse runtime deve ou não entrar no grafo Nest.
+
+Arquivos:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-activation.module.ts`
+
+Spec:
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-activation.module.spec.ts`
+
+#### Objetivo
+
+Evitar que a simples existência do runtime de credenciais obrigue
+a aplicação principal a possuir imediatamente:
+
+- client id do Mercado Livre;
+- client secret do Mercado Livre;
+- configurações de refresh;
+- keyring de criptografia.
+
+A ativação passa a depender explicitamente de:
+
+`MARTO_MERCADO_LIVRE_ENABLED`
+
+#### Estados aceitos
+
+Flag ausente:
+
+`MARTO_MERCADO_LIVRE_ENABLED`
+
+Resultado:
+
+integração desabilitada.
+
+Valor:
+
+`false`
+
+Resultado:
+
+integração desabilitada.
+
+Valor:
+
+`true`
+
+Resultado:
+
+`MercadoLivreCredentialRuntimeModule`
+
+é carregado.
+
+Nenhum outro valor é aceito.
+
+Valores como:
+
+`TRUE`
+
+`False`
+
+`yes`
+
+`1`
+
+ou valores com whitespace externo são rejeitados.
+
+Erro sanitizado:
+
+`mercado_livre_activation_config_invalid`
+
+#### Fail closed
+
+A fronteira foi desenhada para falhar fechado.
+
+Ela não tenta interpretar valores parecidos com boolean.
+
+Não existe coerção silenciosa.
+
+Somente:
+
+`true`
+
+habilita.
+
+Somente:
+
+`false`
+
+desabilita explicitamente.
+
+Ausência da flag também mantém o Mercado Livre desabilitado.
+
+#### ConditionalModule
+
+A fronteira utiliza:
+
+`ConditionalModule.registerWhen(...)`
+
+do:
+
+`@nestjs/config`
+
+para carregar condicionalmente:
+
+`MercadoLivreCredentialRuntimeModule`.
+
+Assim a decisão ocorre dentro do mecanismo de configuração Nest,
+depois do carregamento das environment variables pelo ConfigModule.
+
+A implementação não lê:
+
+`process.env`
+
+diretamente.
+
+Também não usa:
+
+`ConfigService`
+
+na própria activation boundary.
+
+#### Modo desabilitado
+
+Com a integração desabilitada:
+
+- o credential runtime não é montado;
+- client id não é exigido;
+- client secret não é exigido;
+- durações de refresh não são exigidas;
+- keyring de criptografia não é exigido.
+
+A auditoria adversarial confirmou que o modo desabilitado continua
+inicializando mesmo quando todas as configurações internas do runtime
+estão ausentes ou propositalmente inválidas.
+
+Isso prova que o runtime realmente permanece fora do grafo quando
+a flag está desligada.
+
+#### Modo habilitado
+
+Quando:
+
+`MARTO_MERCADO_LIVRE_ENABLED=true`
+
+o activation boundary passa a montar:
+
+`MercadoLivreCredentialRuntimeModule`.
+
+A partir desse ponto voltam a valer os contratos já definidos pelo
+runtime.
+
+São exigidos:
+
+`MARTO_MERCADO_LIVRE_CLIENT_ID`
+
+`MARTO_MERCADO_LIVRE_CLIENT_SECRET`
+
+`MARTO_MERCADO_LIVRE_REFRESH_SAFETY_WINDOW_MS`
+
+`MARTO_MERCADO_LIVRE_TRANSIENT_RETRY_DELAY_MS`
+
+`MARTO_MERCADO_LIVRE_REFRESH_STALE_AFTER_MS`
+
+Também são exigidas as configurações já existentes do keyring:
+
+`MARTO_CREDENTIAL_ENCRYPTION_CURRENT_KEY_VERSION`
+
+`MARTO_CREDENTIAL_ENCRYPTION_KEYS`
+
+#### Erros do runtime preservados
+
+A activation boundary não substitui nem enfraquece a validação interna
+do credential runtime.
+
+Quando habilitada, configuração Mercado Livre inválida continua
+gerando:
+
+`mercado_livre_runtime_config_invalid`
+
+Por exemplo:
+
+- client id ausente;
+- client secret ausente;
+- duração ausente;
+- duração malformada;
+- notação científica não canônica.
+
+#### Erros do keyring preservados
+
+A activation boundary também não mascara os erros da fronteira de
+criptografia.
+
+Configuração inválida do keyring continua gerando:
+
+`credential_keyring_config_invalid`
+
+Versão corrente que não existe no keyring continua gerando:
+
+`credential_keyring_current_key_not_found`
+
+#### Bootstrap sem efeitos colaterais
+
+Mesmo com:
+
+`MARTO_MERCADO_LIVRE_ENABLED=true`
+
+a montagem do activation boundary e do credential runtime não:
+
+- realiza OAuth;
+- executa refresh;
+- chama fetch;
+- lê credencial persistida;
+- atualiza credencial persistida;
+- sincroniza pedido;
+- inicia polling.
+
+A spec confirmou zero chamadas de:
+
+`globalThis.fetch`
+
+durante bootstrap.
+
+Também confirmou zero chamadas de:
+
+`Prisma.salesChannelCredential.findUnique`
+
+e:
+
+`Prisma.salesChannelCredential.updateMany`
+
+durante bootstrap.
+
+#### Fronteira mínima
+
+O activation module não contém:
+
+- controller;
+- rota;
+- PrismaService;
+- OAuth client;
+- credential store;
+- crypto service;
+- access token coordinator;
+- timer;
+- polling;
+- logger;
+- acesso direto a process.env.
+
+Sua responsabilidade é exclusivamente decidir se o runtime deve
+entrar ou não no grafo.
+
+#### AppModule
+
+Neste checkpoint:
+
+`AppModule`
+
+continua sem importar:
+
+`MercadoLivreActivationModule`.
+
+Blob preservado:
+
+`5daed3774a7b6f62a3835612afd5baa7e0329002`
+
+Portanto esta implementação ainda não muda o startup normal da API.
+
+A flag:
+
+`MARTO_MERCADO_LIVRE_ENABLED`
+
+ainda não participa do grafo principal.
+
+Isso é deliberado.
+
+#### Primeiro RED
+
+A activation spec foi criada antes do source.
+
+RED legítimo confirmado com:
+
+- 15 contratos;
+- activation source ausente;
+- nenhum erro TypeScript;
+- AppModule intocado.
+
+Spec RED:
+
+SHA256:
+
+`8117c107fcb9a2fcb8cb25499fea2554fe90ba41cfebc54f115b1d645fe26f51`
+
+Git blob:
+
+`06d267caeaa3ba8420e87b748d1eb335c7f3a2b4`
+
+#### Primeiro GREEN
+
+Foi criado somente:
+
+`mercado-livre-activation.module.ts`
+
+Resultado:
+
+- 1/1 suite PASS;
+- 15/15 testes PASS.
+
+Activation source:
+
+SHA256:
+
+`dac09851bd92199ad2365d652a6f167037c880fcf494f50d99f4f43e95b7da15`
+
+Git blob:
+
+`ed508986a2806669b8507e3c528d5a95d5fbdec9`
+
+#### Auditoria adversarial
+
+Depois do primeiro GREEN foram adicionados dez contratos
+adversariais exclusivamente à spec.
+
+Total:
+
+- 25 contratos.
+
+A auditoria confirmou adicionalmente:
+
+- runtime inválido não interfere quando activation=false;
+- ausência da safety window falha quando habilitado;
+- ausência do retry delay falha quando habilitado;
+- ausência do stale threshold falha quando habilitado;
+- validação numérica rígida continua ativa;
+- key version ausente falha quando habilitado;
+- keyring malformado falha quando habilitado;
+- current key inexistente falha quando habilitado;
+- safety window zero continua permitido;
+- transient retry delay zero continua permitido;
+- bootstrap habilitado continua sem atividade OAuth ou Prisma;
+- source continua sem logging;
+- source continua sem timers;
+- source continua sem persistência;
+- source continua sem acesso direto a environment variables.
+
+O activation source permaneceu congelado durante essa expansão.
+
+Spec adversarial final:
+
+SHA256:
+
+`3fceb0cde4c74acddba06d56b6998392a25714644540dd7ba39b4ac38a0cd4a6`
+
+Git blob:
+
+`bc678d74cac022380c679ef02e38501caea8c6aa`
+
+Activation source permaneceu:
+
+SHA256:
+
+`dac09851bd92199ad2365d652a6f167037c880fcf494f50d99f4f43e95b7da15`
+
+Git blob:
+
+`ed508986a2806669b8507e3c528d5a95d5fbdec9`
+
+#### Validação global
+
+Depois da auditoria adversarial foi executada novamente a suíte
+completa da API.
+
+Resultado:
+
+- 23/23 test suites PASS;
+- 545/545 testes PASS.
+
+Build completo:
+
+- Nest/TypeScript PASS.
+
+Nenhuma alteração de código foi necessária depois do primeiro GREEN.
+
+#### Secrets
+
+Nenhum secret real foi usado.
+
+Os testes utilizam exclusivamente:
+
+- client id sintético;
+- client secret sintético;
+- chave de criptografia sintética;
+- configurações temporais sintéticas.
+
+Nenhuma autorização real foi executada.
+
+Nenhum access token real foi obtido.
+
+Nenhum refresh token real foi utilizado.
+
+#### Banco
+
+Nenhum banco real foi acessado durante a implementação e validação
+desta fronteira.
+
+O PrismaService usado nos testes permanece substituído por mock.
+
+#### Estado atual
+
+Existem agora três camadas distintas para esta parte da integração:
+
+OAuth HTTP transport concreto;
+
+credential runtime concreto;
+
+activation boundary condicional.
+
+Porém a última camada continua fora do grafo principal.
+
+Consequentemente a API publicada continua operando exatamente como
+antes quanto à ativação Mercado Livre.
+
+#### Próxima fronteira
+
+O próximo passo deverá ser tratado separadamente:
+
+importar:
+
+`MercadoLivreActivationModule`
+
+no:
+
+`AppModule`.
+
+Esse passo deve possuir contrato próprio antes da alteração.
+
+O comportamento esperado deverá provar no mínimo:
+
+- startup principal continua funcionando com a flag ausente;
+- startup principal continua funcionando com flag=false;
+- nenhum secret Mercado Livre é exigido nesses estados;
+- flag=true conecta o activation boundary ao grafo principal;
+- flag=true com configuração incompleta falha fechado;
+- nenhum OAuth ocorre apenas pelo bootstrap da API;
+- nenhum acesso a credencial ocorre apenas pelo bootstrap da API.
+
+Somente depois desse wiring principal estar validado deverá ser
+considerada a configuração de credenciais reais.
+
+## Checkpoint - Mercado Livre AppModule principal wiring - GLOBAL GREEN
+
+O wiring principal do Mercado Livre foi concluído e validado.
+
+### Alteração mínima aplicada
+
+`MercadoLivreActivationModule`
+
+foi importado por:
+
+`apps/api/src/app.module.ts`
+
+e conectado ao array `imports` do `AppModule`.
+
+A alteração de produção permaneceu mínima:
+
+- 4 linhas adicionadas;
+- 0 linhas removidas;
+- nenhum outro módulo principal alterado;
+- nenhum secret real configurado;
+- nenhum OAuth executado apenas pelo bootstrap;
+- nenhum acesso a credencial executado apenas pelo bootstrap.
+
+### Contrato próprio do AppModule
+
+Foi criado:
+
+`apps/api/src/app.module.spec.ts`
+
+O primeiro RED provou que o `AppModule` ainda não possuía o wiring.
+
+Depois da alteração mínima, o primeiro GREEN fechou em:
+
+- 1 suite PASS;
+- 6/6 contratos PASS.
+
+A cobertura foi então ampliada adversarialmente para 11 contratos.
+
+Estado final do contrato do `AppModule`:
+
+- startup principal funciona com flag ausente;
+- startup principal funciona com flag=false;
+- configuração interna inválida não é exigida quando a integração está desabilitada;
+- secrets existentes, sem flag de ativação, não ativam a integração;
+- flag=true conecta o activation boundary ao grafo principal;
+- flag=true com configuração incompleta falha fechado;
+- validação estrita da flag continua preservada;
+- configuração temporal incompleta falha fechado;
+- keyring inválido falha fechado;
+- nenhum OAuth ocorre apenas pelo bootstrap;
+- nenhum acesso Prisma de credencial ocorre apenas pelo bootstrap.
+
+Resultado:
+
+- 1 suite PASS;
+- 11/11 contratos PASS.
+
+### Activation Boundary + AppModule
+
+A validação conjunta foi executada com:
+
+`mercado-livre-activation.module.spec.ts`
+
+e:
+
+`app.module.spec.ts`
+
+Resultado:
+
+- 2/2 suites PASS;
+- 36/36 contratos PASS.
+
+Os 25 contratos do Activation Boundary permaneceram intactos.
+
+### Validação global da API
+
+A suíte global foi executada depois do wiring principal.
+
+Resultado final:
+
+- 24/24 test suites PASS;
+- 556/556 tests PASS;
+- 0 snapshots;
+- Jest exit code 0.
+
+O baseline anterior era:
+
+- 23/23 suites;
+- 545/545 testes.
+
+O novo `app.module.spec.ts` adicionou 11 contratos sem regressão nas suites existentes.
+
+### Build
+
+O build da API foi executado com:
+
+`nest build`
+
+Resultado:
+
+- build PASS;
+- exit code 0.
+
+### Artefatos congelados
+
+`apps/api/src/app.module.ts`
+
+- SHA256 `560bae5fbb0d0cc4cba5eda4d9318df342226d51765cd125effb2cbeb3f7657c`
+- blob `4e0d6f167fb8552540d2c1bd40039cb5d6623d54`
+
+`apps/api/src/app.module.spec.ts`
+
+- SHA256 `fb2d748fff05ad36310e100d2a960d0d6a6f399bdef3701978a383fb4a9ec959`
+- blob `6e0fb3d5ac206d2d44a6cec276a86bc64931be5d`
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-activation.module.ts`
+
+- SHA256 `dac09851bd92199ad2365d652a6f167037c880fcf494f50d99f4f43e95b7da15`
+- blob `ed508986a2806669b8507e3c528d5a95d5fbdec9`
+
+`apps/api/src/modules/integrations/mercado-livre/mercado-livre-activation.module.spec.ts`
+
+- SHA256 `3fceb0cde4c74acddba06d56b6998392a25714644540dd7ba39b4ac38a0cd4a6`
+- blob `bc678d74cac022380c679ef02e38501caea8c6aa`
+
+### Estado de segurança
+
+Durante toda a etapa:
+
+- nenhum stage foi criado;
+- nenhum commit foi criado;
+- nenhum push foi executado;
+- `docs/marto-ia/` permaneceu fora do escopo;
+- credenciais reais do Mercado Livre não foram introduzidas.
+
+### Próxima fronteira
+
+Com o wiring principal agora validado, pode ser considerada a configuração de credenciais reais do Mercado Livre, conforme previsto no checkpoint anterior.
+
+Essa próxima etapa deve continuar preservando o princípio já provado:
+
+- bootstrap não deve disparar OAuth automaticamente;
+- bootstrap não deve consultar credencial automaticamente;
+- ativação deve continuar explícita e fail-closed;
+- secrets reais não devem ser introduzidos antes de a fronteira correspondente estar definida e validada.

@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
+import { MercadoLivreActivationModule } from './modules/integrations/mercado-livre/mercado-livre-activation.module';
+
 
 import { IdentityModule } from './modules/identity/identity.module';
 import { CatalogModule } from './modules/catalog/catalog.module';
@@ -37,6 +39,8 @@ import { TransportModule } from './modules/transport/transport.module';
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    MercadoLivreActivationModule,
+
 
     IdentityModule,
     CatalogModule,
