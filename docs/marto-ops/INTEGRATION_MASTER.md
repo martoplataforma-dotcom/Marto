@@ -96,6 +96,68 @@ Direção:
 
 Permissões devem ser validadas no backend.
 
+#### Fronteira arquitetural confirmada para a Etapa 4
+
+A relação atual:
+
+`Merchant.userId`
+
+permanece representando o proprietário principal do `Merchant`.
+
+Ela não deverá ser substituída indiscriminadamente por membership, porque hoje também participa de responsabilidades que não pertencem automaticamente a funcionários da operação, incluindo identificação do recebedor financeiro em fluxos existentes de pagamento e payout.
+
+Equipe operacional e propriedade da empresa são conceitos distintos.
+
+A futura estrutura de membership deverá permitir que outros `User` possuam acesso explícito a um `Merchant` sem:
+
+- compartilhar o login do proprietário;
+- assumir a titularidade do `Merchant`;
+- tornar-se recebedor financeiro automaticamente;
+- receber acesso a credenciais externas;
+- depender apenas do `RoleCode` global do usuário.
+
+`RoleCode` continua representando o papel global do usuário dentro do ecossistema Marto.
+
+Membership/permissões representarão o escopo de atuação desse usuário dentro de um `Merchant` específico.
+
+Portanto:
+
+`papel global do usuário ≠ permissão operacional dentro da empresa`
+
+A autorização operacional futura deverá ser capaz de responder, no backend:
+
+1. qual usuário está autenticado;
+2. qual `Merchant` está sendo acessado;
+3. se o usuário é o proprietário ou possui membership válido naquele `Merchant`;
+4. quais ações aquele contexto está autorizado a executar.
+
+O proprietário deverá possuir acesso integral à própria operação.
+
+A forma exata de representar o proprietário na futura política unificada de autorização — inclusive se também existirá uma linha explícita de membership para ele — será decidida no checkpoint de desenho do modelo, antes de qualquer alteração no Prisma.
+
+Nenhum membro adicional deverá substituir `Merchant.userId` em fluxos financeiros apenas por possuir acesso operacional.
+
+Os usos atuais de `merchant.userId` deverão ser classificados antes da migração:
+
+- usos de propriedade/titularidade/recebimento financeiro devem permanecer associados ao proprietário;
+- usos utilizados apenas como autorização operacional deverão evoluir para a futura camada de membership/permissões.
+
+A evolução deverá ser aditiva e compatível com o comportamento atual do proprietário.
+
+Neste checkpoint ainda não serão criados:
+
+- model Prisma de membership;
+- enum de permissões;
+- migration;
+- endpoint de convite;
+- endpoint de gestão de equipe;
+- alteração no `RolesGuard`;
+- alteração nos controllers de Merchant;
+- alteração nos fluxos de pagamento ou payout;
+- interface web de equipe.
+
+Primeiro será definido e auditado o contrato mínimo de domínio da equipe e das permissões.
+
 ### 5.5 Visões derivadas
 
 `Dossiê`, `Hoje`, `Central Operacional`, `Pós-venda/SLA` e dashboards devem ler fatos canônicos, não criar cópias paralelas quando isso não for necessário.
