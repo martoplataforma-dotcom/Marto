@@ -240,6 +240,7 @@ function StepDot({ active }: { active: boolean }) {
 
 function statusLabel(s?: string | null) {
   const v = String(s ?? '').toUpperCase();
+  if (v === 'CREATED') return 'Criado';
   if (v === 'PAID') return 'Pago';
   if (v === 'CONFIRMED_BY_SELLER') return 'Confirmado';
   if (v === 'READY_FOR_PICKUP') return 'Pronto p/ coleta';
@@ -362,7 +363,7 @@ export default function MerchantOrderDetailsPage({
   const timelineSteps = useMemo(() => {
     const current = String(order?.status ?? '').toUpperCase();
 
-    const flow = ['PAID', 'CONFIRMED_BY_SELLER', 'READY_FOR_PICKUP', 'IN_TRANSIT', 'DELIVERED'] as const;
+    const flow = ['CREATED', 'PAID', 'CONFIRMED_BY_SELLER', 'READY_FOR_PICKUP', 'IN_TRANSIT', 'DELIVERED'] as const;
 
     // se cancelado, a timeline vira “encerrado”
     if (current.includes('CANCEL')) {
