@@ -922,6 +922,22 @@ export class OrdersService {
       include: {
         items: true,
         events: { orderBy: { createdAt: 'asc' } },
+        externalOrderReferences: {
+          select: {
+            id: true,
+            externalOrderId: true,
+            externalStatus: true,
+            salesChannel: {
+              select: {
+                id: true,
+                type: true,
+                name: true,
+                externalAccountId: true,
+                status: true,
+              },
+            },
+          },
+        },
       },
     });
 
