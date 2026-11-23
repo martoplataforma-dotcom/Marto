@@ -16,6 +16,20 @@ type OrderItem = {
   unitPrice: string;
 };
 
+type SalesChannel = {
+  id: string;
+  type: string;
+  name: string;
+  externalAccountId: string;
+  status: string;
+};
+
+type ExternalOrderReference = {
+  id: string;
+  externalOrderId: string;
+  externalStatus: string | null;
+  salesChannel: SalesChannel;
+};
 type Order = {
   id: string;
   status: string;
@@ -24,6 +38,7 @@ type Order = {
   createdAt: string;
   updatedAt: string;
   items: OrderItem[];
+  externalOrderReferences?: ExternalOrderReference[];
 };
 
 type SalesOk = { ok: true; items: Order[] };
@@ -71,6 +86,55 @@ function moneyBRL(value: number) {
   return n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 }
 
+function salesChannelLabel(type?: string | null) {
+  const value = String(type ?? '').toUpperCase();
+
+  const labels: Record<string, string> = {
+    MARTO: 'Marto',
+    MERCADO_LIVRE: 'Mercado Livre',
+    SHOPEE: 'Shopee',
+    SITE: 'Site',
+    AMAZON: 'Amazon',
+    MAGALU: 'Magalu',
+    OTHER: 'Outro',
+  };
+
+  return labels[value] ?? (value || 'Externo');
+}
+
+function orderChannelLabel(order: Order) {
+  const references = Array.isArray(order.externalOrderReferences)
+    ? order.externalOrderReferences
+    : [];
+
+  if (references.length === 0) return 'Marto';
+
+  const types = Array.from(
+    new Set(
+      references
+        .map((reference) => reference?.salesChannel?.type)
+        .filter((type): type is string => Boolean(type)),
+    ),
+  );
+
+  if (types.length === 0) return 'Externo';
+  if (types.length === 1) return salesChannelLabel(types[0]);
+
+  return 'Multicanal';
+}
+
+function ChannelPill({ order }: { order: Order }) {
+  const label = orderChannelLabel(order);
+
+  return (
+    <span
+      className="inline-flex items-center rounded-full border border-sky-400/25 bg-sky-400/10 px-3 py-1 text-xs font-semibold text-sky-100"
+      title={`Origem da venda: ${label}`}
+    >
+      {label}
+    </span>
+  );
+}
 type RangeKey = 'ALL' | '7D' | '30D' | '90D';
 
 function parseTime(value?: string | null) {
@@ -476,6 +540,7 @@ function MerchantOrdersListContent() {
                           Pedido
                         </div>
                         <StatusPill status={o.status} />
+                        <ChannelPill order={o} />
                       </div>
 
                       <div className="mt-3 grid gap-1 text-sm text-white/80">
