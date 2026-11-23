@@ -29,6 +29,20 @@ type OrderEvent = {
   createdAt: string;
 };
 
+type SalesChannel = {
+  id: string;
+  type: string;
+  name: string;
+  externalAccountId: string;
+  status: string;
+};
+
+type ExternalOrderReference = {
+  id: string;
+  externalOrderId: string;
+  externalStatus: string | null;
+  salesChannel: SalesChannel;
+};
 type Order = {
   id: string;
   status: string;
@@ -40,6 +54,7 @@ type Order = {
   updatedAt: string;
   items: OrderItem[];
   events: OrderEvent[];
+  externalOrderReferences?: ExternalOrderReference[];
 };
 
 type OrderOk = { ok: true; order: Order };
@@ -73,6 +88,55 @@ function badgeClass(status: string) {
   return 'bg-white/10 text-white/90 border-white/15';
 }
 
+function salesChannelLabel(type?: string | null) {
+  const value = String(type ?? '').toUpperCase();
+
+  const labels: Record<string, string> = {
+    MARTO: 'Marto',
+    MERCADO_LIVRE: 'Mercado Livre',
+    SHOPEE: 'Shopee',
+    SITE: 'Site',
+    AMAZON: 'Amazon',
+    MAGALU: 'Magalu',
+    OTHER: 'Outro',
+  };
+
+  return labels[value] ?? (value || 'Externo');
+}
+
+function orderChannelLabel(order: Order) {
+  const references = Array.isArray(order.externalOrderReferences)
+    ? order.externalOrderReferences
+    : [];
+
+  if (references.length === 0) return 'Marto';
+
+  const types = Array.from(
+    new Set(
+      references
+        .map((reference) => reference?.salesChannel?.type)
+        .filter((type): type is string => Boolean(type)),
+    ),
+  );
+
+  if (types.length === 0) return 'Externo';
+  if (types.length === 1) return salesChannelLabel(types[0]);
+
+  return 'Multicanal';
+}
+
+function ChannelPill({ order }: { order: Order }) {
+  const label = orderChannelLabel(order);
+
+  return (
+    <span
+      className="rounded-full border border-sky-400/25 bg-sky-400/10 px-3 py-1 text-xs font-semibold text-sky-100"
+      title={`Origem da venda: ${label}`}
+    >
+      {label}
+    </span>
+  );
+}
 function isOrderOk(res: unknown): res is OrderOk {
   if (!res || typeof res !== 'object') return false;
   const r = res as Record<string, unknown>;
@@ -454,13 +518,16 @@ export default function MerchantOrderDetailsPage({
                   </div>
                 </div>
 
-                <span
-                  className={`shrink-0 rounded-full border px-3 py-1 text-xs font-semibold ${badgeClass(
-                    order.status,
-                  )}`}
-                >
-                  {statusLabel(order.status)}
-                </span>
+                <div className="flex shrink-0 flex-wrap justify-end gap-2">
+                  <ChannelPill order={order} />
+                  <span
+                    className={`rounded-full border px-3 py-1 text-xs font-semibold ${badgeClass(
+                      order.status,
+                    )}`}
+                  >
+                    {statusLabel(order.status)}
+                  </span>
+                </div>
               </div>
 
               {/* mini timeline */}
