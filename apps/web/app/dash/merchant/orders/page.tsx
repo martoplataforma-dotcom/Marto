@@ -300,6 +300,11 @@ function MerchantOrdersListContent() {
       const okQ =
         !qq ||
         String(o.id ?? '').toLowerCase().includes(qq) ||
+        (Array.isArray(o.externalOrderReferences) &&
+          o.externalOrderReferences.some(
+            (reference) =>
+              String(reference?.externalOrderId ?? '').toLowerCase().includes(qq),
+          )) ||
         String(o.city ?? '').toLowerCase().includes(qq) ||
         String(o.state ?? '').toLowerCase().includes(qq);
 
@@ -407,7 +412,7 @@ function MerchantOrdersListContent() {
           <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
             <div className="flex-1">
               <label className="mb-1 block text-xs font-semibold text-white/80">
-                Busca (ID/cidade/UF)
+                Busca (ID interno/externo/cidade/UF)
               </label>
 
               <div className="relative">
@@ -417,7 +422,7 @@ function MerchantOrdersListContent() {
                   onKeyDown={(e) => {
                     if (e.key === 'Escape') setQ('');
                   }}
-                  placeholder="Cole o ID do pedido, cidade ou UF…"
+                  placeholder="Cole o ID interno ou externo, cidade ou UF…"
                   className="w-full rounded-xl border border-white/15 bg-black/80 px-3 py-2 pr-10 text-sm text-white placeholder:text-white/65 outline-none focus:border-white/25 focus:ring-2 focus:ring-white/10"
                 />
 
