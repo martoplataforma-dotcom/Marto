@@ -135,6 +135,28 @@ function ChannelPill({ order }: { order: Order }) {
     </span>
   );
 }
+function orderChannelKeys(order: Order): string[] {
+  const references = Array.isArray(order.externalOrderReferences)
+    ? order.externalOrderReferences
+    : [];
+
+  if (references.length === 0) return ['MARTO'];
+
+  const types = references.map((reference) =>
+    String(reference?.salesChannel?.type ?? '').trim().toUpperCase(),
+  ).filter(Boolean);
+
+  if (types.length === 0) return ['EXTERNAL_UNKNOWN'];
+
+  return Array.from(new Set(types));
+}
+
+function channelFilterLabel(channel: string) {
+  if (channel === 'ALL') return 'Todos os canais';
+  if (channel === 'EXTERNAL_UNKNOWN') return 'Externo';
+  return salesChannelLabel(channel);
+}
+
 type RangeKey = 'ALL' | '7D' | '30D' | '90D';
 
 function parseTime(value?: string | null) {
@@ -202,11 +224,13 @@ function MerchantOrdersListContent() {
 
   const [q, setQ] = useState('');
   const [status, setStatus] = useState('ALL');
+  const [channel, setChannel] = useState('ALL');
   const [range, setRange] = useState<RangeKey>('ALL');
 
   function resetFilters() {
     setQ('');
     setStatus('ALL');
+    setChannel('ALL');
     setRange('ALL');
   }
 
@@ -271,6 +295,20 @@ function MerchantOrdersListContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  const channels = useMemo(() => {
+    const values = new Set<string>();
+
+    for (const order of items) {
+      for (const key of orderChannelKeys(order)) {
+        values.add(key);
+      }
+    }
+
+    return ['ALL', ...Array.from(values).sort((a, b) =>
+      channelFilterLabel(a).localeCompare(channelFilterLabel(b), 'pt-BR'),
+    )];
+  }, [items]);
+
   const statuses = useMemo(() => {
     const s = new Set<string>();
     for (const o of items) {
@@ -311,9 +349,12 @@ function MerchantOrdersListContent() {
       const t = parseTime(o.createdAt);
       const okRange = minTime ? (t ? t >= minTime : false) : true;
 
-      return okStatus && okQ && okRange;
+      const okChannel =
+        channel === 'ALL' || orderChannelKeys(o).includes(channel);
+
+      return okStatus && okQ && okRange && okChannel;
     });
-  }, [items, q, status, range]);
+  }, [items, q, status, range, channel]);
 
   const sorted = useMemo(() => {
     const copy = [...filtered];
@@ -409,8 +450,8 @@ function MerchantOrdersListContent() {
         </section>
 
         <section className="mb-4 rounded-2xl border border-white/15 bg-neutral-950/75 p-4 shadow-[0_0_0_1px_rgba(255,255,255,0.04)] backdrop-blur">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
-            <div className="flex-1">
+          <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 lg:items-end">
+            <div className="min-w-0 sm:col-span-2 md:col-span-3 lg:col-span-2">
               <label className="mb-1 block text-xs font-semibold text-white/80">
                 Busca (ID interno/externo/cidade/UF)
               </label>
@@ -440,7 +481,25 @@ function MerchantOrdersListContent() {
               </div>
             </div>
 
-            <div className="sm:w-56">
+            <div className="min-w-0">
+              <label htmlFor="sales-channel" className="mb-1 block text-xs font-semibold text-white/80">
+                Canal de venda
+              </label>
+              <select
+                id="sales-channel"
+                value={channel}
+                onChange={(e) => setChannel(e.target.value)}
+                className="w-full rounded-xl border border-white/15 bg-black/80 px-3 py-2 text-sm text-white outline-none focus:border-white/25 focus:ring-2 focus:ring-white/10"
+              >
+                {channels.map((c) => (
+                  <option key={c} value={c} className="bg-neutral-950">
+                    {channelFilterLabel(c)}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="min-w-0">
               <label className="mb-1 block text-xs font-semibold text-white/80">
                 Status
               </label>
@@ -457,7 +516,7 @@ function MerchantOrdersListContent() {
               </select>
             </div>
 
-            <div className="sm:w-56">
+            <div className="min-w-0">
               <label className="mb-1 block text-xs font-semibold text-white/80">
                 Período
               </label>
